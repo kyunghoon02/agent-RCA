@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-infra-lab.local/schemas/incident.schema.json",
+  "title": "Incident",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "incident_id",
+    "deduplication_key",
+    "status",
+    "severity",
+    "source",
+    "triggered_at",
+    "window",
+    "alert",
+    "source_entity",
+    "collector_statuses",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "deduplication_key": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 256
+    },
+    "status": {
+      "enum": [
+        "RECEIVED",
+        "COLLECTING",
+        "LOCALIZING",
+        "ANALYZING",
+        "REPORTED",
+        "PARTIAL",
+        "FAILED"
+      ]
+    },
+    "severity": {
+      "enum": [
+        "info",
+        "warning",
+        "critical"
+      ]
+    },
+    "source": {
+      "enum": [
+        "alertmanager",
+        "cloud-monitoring"
+      ]
+    },
+    "triggered_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_start",
+        "incident_start",
+        "incident_end",
+        "recovery_end"
+      ],
+      "properties": {
+        "baseline_start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "incident_start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "incident_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "recovery_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "name",
+        "labels",
+        "annotations"
+      ],
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "source_entity": {
+      "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+    },
+    "collector_statuses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collector",
+          "status",
+          "attempts",
+          "started_at",
+          "ended_at",
+          "error"
+        ],
+        "properties": {
+          "collector": {
+            "enum": [
+              "prometheus",
+              "logs",
+              "kubernetes",
+              "deployment",
+              "trace",
+              "hubble"
+            ]
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "RUNNING",
+              "SUCCEEDED",
+              "PARTIAL",
+              "FAILED",
+              "TIMED_OUT",
+              "SKIPPED"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

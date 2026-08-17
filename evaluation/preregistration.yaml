@@ -1,0 +1,80 @@
+schema_version: "1.1.0"
+registered_at: "2026-07-27"
+status: frozen-before-implementation
+
+research_questions:
+  - id: rq1
+    question: Does temporal graph localization reduce evidence volume without reducing root-cause recall?
+  - id: rq2
+    question: Does a bounded LATS-RCA path improve ambiguous or multi-factor incident diagnosis enough to justify added latency and cost?
+
+variants:
+  - id: A
+    name: rules-only
+    deterministic: true
+    graph_localization: false
+    single_pass_llm: false
+    tree_search: false
+  - id: B
+    name: namespace-context-single-llm
+    deterministic: true
+    graph_localization: false
+    single_pass_llm: true
+    tree_search: false
+  - id: C
+    name: stategraph-context-single-llm
+    deterministic: true
+    graph_localization: true
+    single_pass_llm: true
+    tree_search: false
+  - id: D
+    name: stategraph-context-bounded-lats
+    deterministic: true
+    graph_localization: true
+    single_pass_llm: true
+    tree_search: true
+
+dataset:
+  minimum_incidents: 15
+  required_families:
+    - deterministic-single-cause
+    - ambiguous-single-cause
+    - multi-factor
+    - partial-collector-failure
+  split_unit: incident-family
+  prompt_example_and_test_overlap_allowed: false
+  ground_truth_path: evaluation/ground-truth/private
+  runtime_mount_allowed: false
+
+primary_metrics:
+  - root_cause_top1_accuracy
+  - root_cause_top3_recall
+  - multi_factor_exact_match
+  - multi_factor_partial_match
+  - evidence_precision
+  - evidence_recall
+  - unsupported_evidence_citation_rate
+  - abstention_correctness
+
+operational_metrics:
+  - clean_environment_restore_seconds
+  - baseline_collection_success_rate
+  - fault_reproduction_success_rate
+  - collector_success_rate
+  - evidence_collection_seconds
+  - time_to_first_hypothesis_seconds
+  - end_to_end_rca_seconds
+  - llm_calls
+  - tool_calls
+  - input_tokens
+  - output_tokens
+  - cost_per_incident
+  - fast_normal_deep_path_ratio
+
+reporting:
+  publish_failures: true
+  publish_cost_regressions: true
+  record_model_and_provider: true
+  record_prompt_version: true
+  stochastic_repetitions: 5
+  confidence_interval: bootstrap_95

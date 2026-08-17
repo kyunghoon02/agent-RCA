@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-infra-lab.local/schemas/graph-record.schema.json",
+  "title": "Temporal StateGraph Record",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/entity"
+    },
+    {
+      "$ref": "#/$defs/snapshot"
+    },
+    {
+      "$ref": "#/$defs/relationInterval"
+    },
+    {
+      "$ref": "#/$defs/eventAggregate"
+    }
+  ],
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "entity_id",
+        "api_version",
+        "kind",
+        "namespace",
+        "name",
+        "uid",
+        "exists",
+        "created_at",
+        "deleted_at"
+      ],
+      "properties": {
+        "record_type": {
+          "const": "entity"
+        },
+        "entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "api_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "uid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "deleted_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "snapshot_id",
+        "entity_id",
+        "observed_at",
+        "valid_from",
+        "valid_to",
+        "resource_version",
+        "state_hash",
+        "spec_fragment",
+        "status_fragment"
+      ],
+      "properties": {
+        "record_type": {
+          "const": "snapshot"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_from": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "resource_version": {
+          "type": "string"
+        },
+        "state_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "spec_fragment": {
+          "type": "object"
+        },
+        "status_fragment": {
+          "type": "object"
+        }
+      }
+    },
+    "relationInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "relation_id",
+        "source_entity_id",
+        "relation_type",
+        "destination_entity_id",
+        "reference_key",
+        "provenance",
+        "valid_from",
+        "valid_to",
+        "last_seen_resource_version"
+      ],
+      "properties": {
+        "record_type": {
+          "const": "relation_interval"
+        },
+        "relation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relation_type": {
+          "enum": [
+            "OWNS",
+            "SELECTS",
+            "TARGETS",
+            "RUNS_ON",
+            "MOUNTS",
+            "BINDS",
+            "REFERENCES",
+            "CALLS",
+            "EMITS",
+            "USES_IMAGE"
+          ]
+        },
+        "destination_entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance": {
+          "type": "string",
+          "minLength": 1
+        },
+        "valid_from": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_seen_resource_version": {
+          "type": "string"
+        }
+      }
+    },
+    "eventAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "event_key",
+        "regarding_entity_id",
+        "reason",
+        "action",
+        "reporting_controller",
+        "normalized_message_hash",
+        "first_seen",
+        "last_seen",
+        "count",
+        "sample_message",
+        "last_source_resource_version"
+      ],
+      "properties": {
+        "record_type": {
+          "const": "event_aggregate"
+        },
+        "event_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "regarding_entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "reporting_controller": {
+          "type": "string"
+        },
+        "normalized_message_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "first_seen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_seen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sample_message": {
+          "type": "string"
+        },
+        "last_source_resource_version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

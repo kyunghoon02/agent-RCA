@@ -1,0 +1,28 @@
+{
+  "incident_id": "inc-fixture-oom-0002",
+  "expected_status": "ABSTAIN",
+  "expected_root_cause_id": null,
+  "evidence_drafts": [
+    {
+      "source": "kubernetes",
+      "kind": "resource-state",
+      "observed_at": "2026-08-12T04:05:00Z",
+      "subject": {
+        "api_version": "v1",
+        "kind": "Pod",
+        "namespace": "online-boutique",
+        "name": "checkoutservice-jkl",
+        "uid": "89653d53-b941-486a-b107-e121fdccbefb",
+        "exists": true
+      },
+      "summary": "checkoutservice last termination reason is OOMKilled.",
+      "facts": {
+        "last_termination_reason": "OOMKilled",
+        "restart_count_delta": 1
+      },
+      "provider": "kubernetes-api",
+      "query": "get pod checkoutservice-jkl -n online-boutique",
+      "locator": "k8s://online-boutique/Pod/checkoutservice-jkl"
+    }
+  ]
+}

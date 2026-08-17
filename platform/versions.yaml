@@ -1,0 +1,33 @@
+schema_version: "1.0.0"
+
+terraform:
+  cli_minimum: "1.14.0"
+  provider_selection: pending-capability-verification
+
+execution_target:
+  cloud: kt-cloud
+  zone: DX-M1
+
+kubernetes:
+  mode: self-managed-on-vm
+  distribution: pending-verification
+  bootstrap_owner: ansible
+  cni: cilium
+  cilium_version: pending-verification
+  network_observability: hubble
+
+automation:
+  ansible_core: "2.20.7"
+  controller_python: "3.12"
+  kubernetes_collection: "6.5.0"
+  kubernetes_python_client: "36.0.3"
+
+helm:
+  minimum_version: "3.13.0"
+
+online_boutique:
+  repository: "https://github.com/GoogleCloudPlatform/microservices-demo.git"
+  release_tag: "v0.10.6"
+  commit_sha: "5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb"
+  image_tag: "v0.10.6"
+  remote_kustomize_base: "https://github.com/GoogleCloudPlatform/microservices-demo//kustomize?ref=5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb"

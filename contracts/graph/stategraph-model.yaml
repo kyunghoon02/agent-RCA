@@ -1,0 +1,228 @@
+schema_version: "1.0.0"
+
+identity:
+  existing_kubernetes_entity: metadata.uid
+  unresolved_entity: apiVersion+kind+namespace+name
+  same_name_different_uid_is_new_entity: true
+  unresolved_to_resolved_transition_preserves_reference_history: true
+
+node_types:
+  Entity:
+    required:
+      - entity_id
+      - kind
+      - namespace
+      - name
+      - uid
+      - exists
+    kinds:
+      - Namespace
+      - Deployment
+      - ReplicaSet
+      - Pod
+      - Service
+      - EndpointSlice
+      - ConfigMap
+      - ResourceQuota
+      - PersistentVolumeClaim
+      - PersistentVolume
+      - Node
+      - Image
+  Snapshot:
+    required:
+      - snapshot_id
+      - entity_id
+      - observed_at
+      - valid_from
+      - valid_to
+      - resource_version
+      - state_hash
+      - spec_fragment
+      - status_fragment
+  EventAggregate:
+    required:
+      - event_key
+      - regarding_entity_id
+      - reason
+      - action
+      - reporting_controller
+      - normalized_message_hash
+      - first_seen
+      - last_seen
+      - count
+
+relation_types:
+  OWNS:
+    examples:
+      - Deployment->ReplicaSet
+      - ReplicaSet->Pod
+  SELECTS:
+    examples:
+      - Service->Pod
+  TARGETS:
+    examples:
+      - EndpointSlice->Pod
+  RUNS_ON:
+    examples:
+      - Pod->Node
+  MOUNTS:
+    examples:
+      - Pod->PersistentVolumeClaim
+  BINDS:
+    examples:
+      - PersistentVolumeClaim->PersistentVolume
+  REFERENCES:
+    examples:
+      - Pod->ConfigMap
+      - Deployment->ConfigMap
+  CALLS:
+    source: pinned-application-dependency-map-or-trace
+    infer_from_kubernetes_owner_or_selector: false
+  EMITS:
+    examples:
+      - Entity->EventAggregate
+  USES_IMAGE:
+    examples:
+      - Pod->Image
+
+temporal_semantics:
+  snapshot:
+    merge_only_consecutive_equal_state: true
+    on_same_state_hash: extend_valid_to
+    on_changed_state_hash:
+      - close_previous_interval
+      - create_new_snapshot
+  relation:
+    identity_fields:
+      - source_entity_id
+      - relation_type
+      - destination_entity_id
+      - reference_key
+      - provenance
+    on_same_relation: extend_valid_to
+    on_disappearance: close_interval
+    on_reappearance: create_new_interval
+  event:
+    identity_fields:
+      - regarding_entity_id
+      - reason
+      - action
+      - reporting_controller
+      - normalized_message_hash
+    increment_from_source_count_delta_only: true
+
+canonicalization:
+  globally_excluded:
+    - metadata.managedFields
+    - metadata.resourceVersion
+    - metadata.generation
+    - metadata.creationTimestamp
+    - metadata.annotations.kubectl.kubernetes.io/last-applied-configuration
+    - observed_at
+  secret_values_allowed: false
+  kind_fragments:
+    Pod:
+      spec:
+        - nodeName
+        - containers[].image
+        - containers[].resources
+        - containers[].envFrom[].configMapRef
+        - containers[].env[].valueFrom.configMapKeyRef
+        - volumes[].configMap
+        - volumes[].persistentVolumeClaim
+      status:
+        - phase
+        - conditions
+        - containerStatuses[].ready
+        - containerStatuses[].restartCount
+        - containerStatuses[].state
+        - containerStatuses[].lastState
+    Deployment:
+      spec:
+        - replicas
+        - selector
+        - template.metadata.labels
+        - template.spec.containers[].image
+        - template.spec.containers[].resources
+        - template.spec.containers[].envFrom[].configMapRef
+      status:
+        - observedGeneration
+        - replicas
+        - readyReplicas
+        - updatedReplicas
+        - unavailableReplicas
+        - conditions
+    Service:
+      spec:
+        - type
+        - selector
+        - ports
+      status:
+        - loadBalancer
+    EndpointSlice:
+      spec:
+        - addressType
+        - endpoints[].addresses
+        - endpoints[].conditions
+        - endpoints[].targetRef
+        - ports
+    ConfigMap:
+      spec:
+        - data_keys_only
+        - binary_data_keys_only
+      status: []
+    ResourceQuota:
+      spec:
+        - hard
+      status:
+        - hard
+        - used
+    PersistentVolumeClaim:
+      spec:
+        - accessModes
+        - resources.requests
+        - storageClassName
+        - volumeName
+      status:
+        - phase
+        - capacity
+        - conditions
+    Node:
+      spec:
+        - unschedulable
+        - taints
+      status:
+        - conditions
+        - allocatable
+        - capacity
+
+constraints:
+  - name: entity_id_unique
+    target: Entity.entity_id
+    type: unique
+  - name: snapshot_id_unique
+    target: Snapshot.snapshot_id
+    type: unique
+  - name: relation_id_unique
+    target: RelationInterval.relation_id
+    type: unique
+  - name: event_key_unique
+    target: EventAggregate.event_key
+    type: unique
+
+indexes:
+  - Entity.uid
+  - Entity.kind+Entity.namespace+Entity.name
+  - Snapshot.entity_id+Snapshot.valid_from+Snapshot.valid_to
+  - RelationInterval.source_entity_id+RelationInterval.valid_from+RelationInterval.valid_to
+  - RelationInterval.destination_entity_id+RelationInterval.valid_from+RelationInterval.valid_to
+  - EventAggregate.regarding_entity_id+EventAggregate.last_seen
+
+retention:
+  ordinary_history_hours: 72
+  incident_pinned_history_days: 30
+  gc_order:
+    - expired_snapshots
+    - expired_relation_intervals
+    - expired_event_aggregates
+    - expired_unreferenced_entities

@@ -1,0 +1,51 @@
+{
+  "incident_id": "inc-fixture-oom-0001",
+  "expected_status": "PROVEN",
+  "expected_root_cause_id": "kubernetes.container-oomkilled",
+  "evidence_drafts": [
+    {
+      "source": "kubernetes",
+      "kind": "resource-state",
+      "observed_at": "2026-08-12T01:05:00Z",
+      "subject": {
+        "api_version": "v1",
+        "kind": "Pod",
+        "namespace": "online-boutique",
+        "name": "checkoutservice-abc",
+        "uid": "7df6d266-40df-4fd6-942d-7ebc864c4061",
+        "exists": true
+      },
+      "summary": "checkoutservice container restarted after OOMKilled.",
+      "facts": {
+        "last_termination_reason": "OOMKilled",
+        "restart_count_delta": 1,
+        "memory_limit_bytes": 268435456
+      },
+      "provider": "kubernetes-api",
+      "query": "get pod checkoutservice-abc -n online-boutique",
+      "locator": "k8s://online-boutique/Pod/checkoutservice-abc"
+    },
+    {
+      "source": "prometheus",
+      "kind": "metric-summary",
+      "observed_at": "2026-08-12T01:04:55Z",
+      "subject": {
+        "api_version": "v1",
+        "kind": "Pod",
+        "namespace": "online-boutique",
+        "name": "checkoutservice-abc",
+        "uid": "7df6d266-40df-4fd6-942d-7ebc864c4061",
+        "exists": true
+      },
+      "summary": "Memory working set reached 99 percent of the configured limit.",
+      "facts": {
+        "metric": "memory_working_set_ratio",
+        "peak_ratio": 0.99,
+        "baseline_ratio": 0.41
+      },
+      "provider": "prometheus-http-api",
+      "query": "memory_working_set_ratio{namespace='online-boutique',pod='checkoutservice-abc'}",
+      "locator": "prometheus://series/checkoutservice-abc/memory-working-set-ratio"
+    }
+  ]
+}

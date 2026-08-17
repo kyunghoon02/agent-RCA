@@ -1,0 +1,49 @@
+{
+  "incident_id": "inc-fixture-image-0001",
+  "expected_status": "PROVEN",
+  "expected_root_cause_id": "kubernetes.image-pull-failure",
+  "evidence_drafts": [
+    {
+      "source": "kubernetes",
+      "kind": "resource-state",
+      "observed_at": "2026-08-12T02:05:00Z",
+      "subject": {
+        "api_version": "v1",
+        "kind": "Pod",
+        "namespace": "online-boutique",
+        "name": "paymentservice-def",
+        "uid": "b5f824eb-4cc8-4125-af0e-275b46f75c78",
+        "exists": true
+      },
+      "summary": "paymentservice is waiting in ImagePullBackOff.",
+      "facts": {
+        "waiting_reason": "ImagePullBackOff",
+        "image": "registry.example/paymentservice:missing"
+      },
+      "provider": "kubernetes-api",
+      "query": "get pod paymentservice-def -n online-boutique",
+      "locator": "k8s://online-boutique/Pod/paymentservice-def"
+    },
+    {
+      "source": "kubernetes",
+      "kind": "kubernetes-event",
+      "observed_at": "2026-08-12T02:04:58Z",
+      "subject": {
+        "api_version": "v1",
+        "kind": "Pod",
+        "namespace": "online-boutique",
+        "name": "paymentservice-def",
+        "uid": "b5f824eb-4cc8-4125-af0e-275b46f75c78",
+        "exists": true
+      },
+      "summary": "Kubelet reported ImagePullBackOff for paymentservice.",
+      "facts": {
+        "reason": "BackOff",
+        "message_code": "ImagePullBackOff"
+      },
+      "provider": "kubernetes-api",
+      "query": "list events for Pod paymentservice-def",
+      "locator": "k8s://online-boutique/Event/paymentservice-image-pull"
+    }
+  ]
+}

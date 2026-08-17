@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "evidence_id": "ev-configmap-0001",
+  "incident_id": "inc-checkout-0001",
+  "source": "kubernetes",
+  "kind": "resource-state",
+  "observed_at": "2026-07-27T01:05:02Z",
+  "window": {
+    "start": "2026-07-27T01:00:00Z",
+    "end": "2026-07-27T01:05:02Z"
+  },
+  "subject": {
+    "api_version": "v1",
+    "kind": "ConfigMap",
+    "namespace": "online-boutique",
+    "name": "checkout-settings",
+    "uid": null,
+    "exists": false
+  },
+  "summary": "checkoutservice Pod references ConfigMap checkout-settings, but the ConfigMap does not exist.",
+  "facts": {
+    "reference_path": "spec.template.spec.containers[0].envFrom[0].configMapRef",
+    "referenced_by": "checkoutservice-7b6c8d9f-example",
+    "required": true
+  },
+  "provenance": {
+    "provider": "kubernetes-api",
+    "query": "get configmap checkout-settings -n online-boutique",
+    "locator": "k8s://online-boutique/ConfigMap/checkout-settings",
+    "collected_at": "2026-07-27T01:05:02Z",
+    "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "quality": {
+    "freshness": "live",
+    "completeness": 1.0,
+    "confidence": 1.0
+  },
+  "redactions": []
+}

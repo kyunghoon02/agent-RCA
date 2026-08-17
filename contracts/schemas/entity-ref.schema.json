@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-infra-lab.local/schemas/entity-ref.schema.json",
+  "title": "Kubernetes Entity Reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "namespace",
+    "name",
+    "uid",
+    "exists"
+  ],
+  "properties": {
+    "api_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "namespace": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "uid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exists": {
+      "type": "boolean"
+    }
+  }
+}

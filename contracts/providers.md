@@ -1,0 +1,182 @@
+# Provider interface와 KT Cloud runtime 경계
+
+> 상태: Phase 0 contract
+>
+> 원칙: Reasoning 계층은 provider 원본 응답을 직접 읽지 않고 정규화된 contract만 사용한다.
+
+## 공통 호출 규칙
+
+모든 provider 호출은 다음 입력을 가진다.
+
+```text
+incident_id
+time_window
+resource_scope
+query_budget
+request_id
+```
+
+공통 결과 envelope:
+
+```json
+{
+  "request_id": "req-...",
+  "status": "SUCCEEDED | PARTIAL | FAILED | TIMED_OUT",
+  "items": [],
+  "next_page_token": null,
+  "started_at": "RFC3339",
+  "ended_at": "RFC3339",
+  "error": null
+}
+```
+
+- timeout, pagination과 최대 결과 수를 호출 전에 지정한다.
+- provider 실패는 빈 성공 결과로 바꾸지 않는다.
+- 모든 원본 위치와 query는 `EvidenceItem.provenance`로 남긴다.
+- Reasoning 계층은 임의 query string을 실행하지 않고 allowlisted provider method만
+  호출한다.
+- KT Cloud infrastructure API와 observability provider를 분리한다. RCA runtime은
+  cloud resource를 생성·변경·삭제하지 않는다.
+
+## interface
+
+### MetricsProvider
+
+```text
+query_range(metric_query, time_window, step, resource_scope, sample_limit)
+summarize_sli(service, baseline_window, incident_window, recovery_window)
+```
+
+반환값은 원본 sample 전체가 아니라 `metric-summary` EvidenceItem과 필요한 원본
+series reference다.
+
+- query에는 namespace와 workload selector를 포함한다.
+- Pod 이름은 교체되므로 workload identity와 Pod UID를 함께 보존한다.
+- 애플리케이션 metric이 없으면 kube-state-metrics/cAdvisor 기반 상태·resource
+  Evidence만 제공하고 누락 source를 명시한다.
+
+목표 runtime adapter는 in-cluster Prometheus HTTP API를 사용한다.
+
+### LogsProvider
+
+```text
+search(query_template_id, time_window, resource_scope, line_limit)
+aggregate_patterns(time_window, resource_scope, group_limit)
+```
+
+query에는 namespace, service/Pod, severity와 time window를 반드시 포함한다.
+credential과 개인정보를 redaction한 `log-pattern` EvidenceItem을 반환한다.
+
+- label 또는 시간 범위가 없는 cluster-wide query는 거부한다.
+- 원본 log는 Loki retention에 남기고 Graph에는 저장하지 않는다.
+- 로그가 없다는 사실과 LogsProvider 실패를 구분한다.
+
+목표 runtime adapter는 Loki query API를 사용한다.
+
+### KubernetesStateProvider
+
+```text
+initial_list(resource_kinds, namespace, page_size)
+watch(resource_kind, namespace, resource_version, timeout)
+get(api_version, kind, namespace, name)
+full_snapshot(resource_kinds, namespace, page_size)
+```
+
+- Kubernetes API verb는 `get/list/watch`뿐이다.
+- Secret resource와 Secret value는 조회 대상이 아니다.
+- Watch 종료나 compaction 발생 시 마지막 `resourceVersion` 이후 재연결하고 Full
+  Snapshot으로 보정한다.
+- Watch checkpoint는 namespace와 resource kind 단위로 저장한다.
+
+목표 runtime adapter는 read-only ServiceAccount를 사용하는 in-cluster
+Kubernetes API client다.
+
+### NetworkFlowProvider
+
+```text
+summarize_flows(time_window, resource_scope, direction, verdict, flow_limit)
+find_drops(time_window, source_scope, destination_scope, reason_limit)
+```
+
+- Cilium/Hubble의 L3/L4/L7 flow는 namespace, workload와 time window로 제한한다.
+- 원본 flow 전체를 StateGraph에 복사하지 않고 집계와 source reference만 저장한다.
+- flow 없음, Hubble retention 만료와 provider 실패를 구분한다.
+- Hubble evidence만으로 application root cause를 단정하지 않는다.
+
+### DeploymentHistoryProvider
+
+```text
+list_revisions(deployment, namespace, time_window)
+diff_revisions(deployment, namespace, from_revision, to_revision)
+```
+
+MVP에서는 Kubernetes Deployment/ReplicaSet 상태만 사용한다. GitHub와 Argo CD
+이력은 2차 provider다.
+
+### GraphRepository
+
+```text
+upsert_entity(entity)
+append_or_extend_snapshot(snapshot)
+append_or_extend_relation(relation_interval)
+upsert_event_aggregate(event_aggregate)
+resolve_source_entity(alert)
+find_metapaths(source_kind, destination_kinds, max_hops)
+find_statepaths(source_entity, incident_time, allowed_metapaths, max_entities)
+pin_incident_history(incident_id, record_ids, expires_at)
+garbage_collect(now, batch_size)
+```
+
+`append_or_extend`는 연속된 동일 상태/관계만 병합한다. Reasoning 계층은 Graph
+query language를 직접 생성하지 않고 repository method만 사용한다.
+
+| 단계 | 구현 |
+|---|---|
+| fixture test | in-memory repository |
+| KT Cloud runtime | capability/topology 확인 뒤 backend 고정 |
+
+### IncidentRepository
+
+```text
+create_or_get_by_deduplication_key(incident)
+transition(incident_id, expected_status, next_status)
+store_evidence(incident_id, evidence_items)
+freeze_context(context_package)
+store_report(rca_report)
+append_audit_event(incident_id, audit_event)
+```
+
+목표 runtime은 cluster 내부 PostgreSQL adapter다. managed database는 MVP 범위가
+아니며, storage class와 backup 경계는 KT Cloud storage capability 확인 뒤
+고정한다.
+
+### LLMProvider
+
+```text
+generate_structured(task_type, context_package, output_schema, budget)
+```
+
+- Context Package에 포함되지 않은 Evidence를 인용할 수 없다.
+- structured output은 저장 전에 JSON Schema와 evidence reference validation을
+  통과해야 한다.
+- Kubernetes/cloud write tool과 shell은 제공하지 않는다.
+- model/provider 선택은 core contract와 분리하며 token, latency와 비용을 기록한다.
+
+## 책임 분리
+
+```text
+Provider
+-> 외부 시스템 조회, timeout, pagination, provenance
+
+Collector
+-> provider 결과 정규화, redaction, EvidenceItem 생성
+
+Graph Localizer
+-> 조사할 entity와 statepath 범위 결정
+
+Reasoning Controller
+-> 동결된 Context Package 안에서 원인 가설 평가
+```
+
+Graph Localizer는 어디를 조사할지 결정하고 Reasoning Controller는 Evidence가
+어떤 원인을 지지하는지 판단한다.

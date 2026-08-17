@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0.0",
+  "context_id": "ctx-checkout-0001",
+  "incident_id": "inc-checkout-0001",
+  "frozen_at": "2026-07-27T01:05:04Z",
+  "source_entity": {
+    "api_version": "v1",
+    "kind": "Pod",
+    "namespace": "online-boutique",
+    "name": "checkoutservice-7b6c8d9f-example",
+    "uid": "2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
+    "exists": true
+  },
+  "scope": {
+    "namespaces": [
+      "online-boutique"
+    ],
+    "entity_uids": [
+      "2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1"
+    ],
+    "metapaths": [
+      [
+        "Pod",
+        "ConfigMap"
+      ],
+      [
+        "Pod",
+        "ReplicaSet",
+        "Deployment"
+      ]
+    ],
+    "time_window": {
+      "start": "2026-07-27T00:35:00Z",
+      "end": "2026-07-27T01:22:00Z"
+    },
+    "max_entities": 100
+  },
+  "state_paths": [
+    {
+      "path_id": "path-pod-configmap",
+      "entities": [
+        {
+          "api_version": "v1",
+          "kind": "Pod",
+          "namespace": "online-boutique",
+          "name": "checkoutservice-7b6c8d9f-example",
+          "uid": "2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
+          "exists": true
+        },
+        {
+          "api_version": "v1",
+          "kind": "ConfigMap",
+          "namespace": "online-boutique",
+          "name": "checkout-settings",
+          "uid": null,
+          "exists": false
+        }
+      ],
+      "relations": [
+        "REFERENCES"
+      ],
+      "evidence_ids": [
+        "ev-configmap-0001"
+      ]
+    }
+  ],
+  "evidence_ids": [
+    "ev-configmap-0001"
+  ],
+  "recent_change_evidence_ids": [],
+  "missing_evidence": [],
+  "collector_failures": [],
+  "localization": {
+    "strategy": "stategraph",
+    "candidate_entities_before": 47,
+    "candidate_entities_after": 6,
+    "context_completeness": 1.0
+  }
+}

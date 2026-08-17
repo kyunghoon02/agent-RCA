@@ -1,0 +1,47 @@
+schema_version: "1.0.0"
+
+preconditions:
+  graph_localization_required: true
+  minimum_context_completeness_to_reason: 0.5
+  below_minimum_action: abstain
+  ground_truth_access_allowed: false
+  write_tools_allowed: false
+
+fast_path:
+  when_all:
+    deterministic_result: proven
+    evidence_requirements_satisfied: true
+    contradiction_count: 0
+  llm_calls: 0
+
+normal_path:
+  when_all:
+    deterministic_result: not_proven
+    minimum_distinct_evidence_sources: 2
+    contradiction_count: 0
+    minimum_context_completeness: 0.7
+  single_pass_llm_calls: 1
+  minimum_accepted_confidence: 0.75
+  low_confidence_action: deep_path
+
+deep_path:
+  when_any:
+    - normal_confidence_below: 0.75
+    - contradiction_count_at_least: 1
+    - competing_hypotheses_at_least: 2
+    - multi_factor_suspected: true
+  eligibility:
+    minimum_context_completeness: 0.5
+    localized_scope_required: true
+    read_only_actions_only: true
+  budget:
+    max_depth: 6
+    max_nodes: 24
+    max_tool_calls: 32
+    max_llm_calls: 20
+    max_wall_time_seconds: 180
+  stop_when_any:
+    - evidence_supported_root_cause: true
+    - budget_exhausted: true
+    - no_new_read_only_action: true
+  on_budget_exhaustion: abstain_with_best_hypotheses

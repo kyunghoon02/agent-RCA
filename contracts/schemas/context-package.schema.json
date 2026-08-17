@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-infra-lab.local/schemas/context-package.schema.json",
+  "title": "Context Package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "context_id",
+    "incident_id",
+    "frozen_at",
+    "source_entity",
+    "scope",
+    "state_paths",
+    "evidence_ids",
+    "recent_change_evidence_ids",
+    "missing_evidence",
+    "collector_failures",
+    "localization"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "context_id": {
+      "type": "string",
+      "pattern": "^ctx-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "frozen_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_entity": {
+      "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespaces",
+        "entity_uids",
+        "metapaths",
+        "time_window",
+        "max_entities"
+      ],
+      "properties": {
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "entity_uids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "metapaths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "time_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "end"
+          ],
+          "properties": {
+            "start": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "end": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "max_entities": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "state_paths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path_id",
+          "entities",
+          "relations",
+          "evidence_ids"
+        ],
+        "properties": {
+          "path_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entities": {
+            "type": "array",
+            "items": {
+              "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+            },
+            "minItems": 1
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^ev-[a-z0-9][a-z0-9-]{7,63}$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "recent_change_evidence_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "missing_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "reason"
+        ],
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "collector_failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collector",
+          "error"
+        ],
+        "properties": {
+          "collector": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "localization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "candidate_entities_before",
+        "candidate_entities_after",
+        "context_completeness"
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "stategraph",
+            "namespace-fallback"
+          ]
+        },
+        "candidate_entities_before": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "candidate_entities_after": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "context_completeness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}

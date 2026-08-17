@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-infra-lab.local/schemas/evidence-item.schema.json",
+  "title": "Evidence Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_id",
+    "incident_id",
+    "source",
+    "kind",
+    "observed_at",
+    "window",
+    "subject",
+    "summary",
+    "facts",
+    "provenance",
+    "quality",
+    "redactions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^ev-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "source": {
+      "enum": [
+        "prometheus",
+        "logs",
+        "loki",
+        "kubernetes",
+        "deployment",
+        "trace",
+        "network",
+        "hubble"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "metric-summary",
+        "log-pattern",
+        "resource-state",
+        "state-diff",
+        "kubernetes-event",
+        "deployment-change",
+        "trace-summary",
+        "network-flow-summary"
+      ]
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "subject": {
+      "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "facts": {
+      "type": "object"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "query",
+        "locator",
+        "collected_at",
+        "content_hash"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "collected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "freshness",
+        "completeness",
+        "confidence"
+      ],
+      "properties": {
+        "freshness": {
+          "enum": [
+            "live",
+            "recent",
+            "stale",
+            "unknown"
+          ]
+        },
+        "completeness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0.0",
+  "incident_id": "inc-checkout-0001",
+  "deduplication_key": "alertmanager:KubePodNotReady:online-boutique:checkoutservice",
+  "status": "REPORTED",
+  "severity": "critical",
+  "source": "alertmanager",
+  "triggered_at": "2026-07-27T01:05:00Z",
+  "window": {
+    "baseline_start": "2026-07-27T00:35:00Z",
+    "incident_start": "2026-07-27T01:00:00Z",
+    "incident_end": "2026-07-27T01:12:00Z",
+    "recovery_end": "2026-07-27T01:22:00Z"
+  },
+  "alert": {
+    "fingerprint": "2d9a2f5c1b42",
+    "name": "KubePodNotReady",
+    "labels": {
+      "alertname": "KubePodNotReady",
+      "namespace": "online-boutique",
+      "service": "checkoutservice",
+      "severity": "critical"
+    },
+    "annotations": {
+      "summary": "checkoutservice Pod is not Ready"
+    }
+  },
+  "source_entity": {
+    "api_version": "v1",
+    "kind": "Pod",
+    "namespace": "online-boutique",
+    "name": "checkoutservice-7b6c8d9f-example",
+    "uid": "2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
+    "exists": true
+  },
+  "collector_statuses": [
+    {
+      "collector": "prometheus",
+      "status": "SUCCEEDED",
+      "attempts": 1,
+      "started_at": "2026-07-27T01:05:01Z",
+      "ended_at": "2026-07-27T01:05:03Z",
+      "error": null
+    },
+    {
+      "collector": "kubernetes",
+      "status": "SUCCEEDED",
+      "attempts": 1,
+      "started_at": "2026-07-27T01:05:01Z",
+      "ended_at": "2026-07-27T01:05:02Z",
+      "error": null
+    }
+  ],
+  "created_at": "2026-07-27T01:05:00Z",
+  "updated_at": "2026-07-27T01:12:05Z"
+}

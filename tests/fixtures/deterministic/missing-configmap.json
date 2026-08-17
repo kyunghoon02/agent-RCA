@@ -1,0 +1,50 @@
+{
+  "incident_id": "inc-fixture-configmap-0001",
+  "expected_status": "PROVEN",
+  "expected_root_cause_id": "kubernetes.missing-configmap",
+  "evidence_drafts": [
+    {
+      "source": "kubernetes",
+      "kind": "resource-state",
+      "observed_at": "2026-08-12T03:05:00Z",
+      "subject": {
+        "api_version": "v1",
+        "kind": "ConfigMap",
+        "namespace": "online-boutique",
+        "name": "checkout-settings",
+        "uid": null,
+        "exists": false
+      },
+      "summary": "Required ConfigMap checkout-settings does not exist.",
+      "facts": {
+        "required": true,
+        "referenced_by": "checkoutservice-ghi"
+      },
+      "provider": "kubernetes-api",
+      "query": "get configmap checkout-settings -n online-boutique",
+      "locator": "k8s://online-boutique/ConfigMap/checkout-settings"
+    },
+    {
+      "source": "kubernetes",
+      "kind": "kubernetes-event",
+      "observed_at": "2026-08-12T03:04:59Z",
+      "subject": {
+        "api_version": "v1",
+        "kind": "Pod",
+        "namespace": "online-boutique",
+        "name": "checkoutservice-ghi",
+        "uid": "73fa7bee-5cdf-4945-83fc-fdfd6bd904c3",
+        "exists": true
+      },
+      "summary": "Pod configuration failed because checkout-settings was not found.",
+      "facts": {
+        "reason": "CreateContainerConfigError",
+        "missing_kind": "ConfigMap",
+        "missing_name": "checkout-settings"
+      },
+      "provider": "kubernetes-api",
+      "query": "list events for Pod checkoutservice-ghi",
+      "locator": "k8s://online-boutique/Event/checkout-config-error"
+    }
+  ]
+}

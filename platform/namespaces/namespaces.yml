@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: online-boutique
+  labels:
+    app.kubernetes.io/part-of: ai-infra-lab
+    ai-infra-lab.io/boundary: target
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: incident-platform
+  labels:
+    app.kubernetes.io/part-of: ai-infra-lab
+    ai-infra-lab.io/boundary: control
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/part-of: ai-infra-lab
+    ai-infra-lab.io/boundary: telemetry
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: graph-rca
+  labels:
+    app.kubernetes.io/part-of: ai-infra-lab
+    ai-infra-lab.io/boundary: data
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: load-test
+  labels:
+    app.kubernetes.io/part-of: ai-infra-lab
+    ai-infra-lab.io/boundary: experiment
