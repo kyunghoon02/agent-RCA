@@ -40,8 +40,8 @@ Evidence를 먼저 제시한다.
 - Provider capability: 계정별 API 및 Terraform provider 호환성 확인 대기
 - Terraform: KT Cloud 구현은 capability gate로 차단; 이전 GCP/GKE HCL은 공개 baseline에서 제거
 - Ansible: 공통 dependency만 유지; self-managed cluster 역할은 미구현
-- Core: Alertmanager 입력, Incident lifecycle, Collector orchestration, Evidence,
-  deterministic RCA, Fast Path JSON/Markdown report 구현
+- Core: 인증·용량 제한 HTTP Receiver, Alertmanager 입력, Incident lifecycle,
+  Collector orchestration, Evidence, deterministic RCA, Fast Path JSON/Markdown report 구현
 - Runtime proof: 아직 KT Cloud VM/Kubernetes에 배포하거나 검증하지 않음
 
 현재 코드와 fixture의 정적 검증 성공은 cloud, Kubernetes, Prometheus, Loki 또는
@@ -101,9 +101,10 @@ make bootstrap-dev
 make validate-core
 ```
 
-이 검증은 contract, Alertmanager 입력 정규화, Incident lifecycle, Collector의
-병렬 실행·timeout·retry·partial failure, Evidence redaction/hash, deterministic
-RCA와 Fast Path report를 fixture로 확인한다.
+이 검증은 contract, 인증·request limit이 적용된 Alertmanager HTTP 경계,
+입력 정규화, Incident lifecycle, Collector의 병렬 실행·timeout·retry·partial
+failure, Evidence redaction/hash, deterministic RCA와 Fast Path report를
+fixture로 확인한다.
 
 KT Cloud capability gate 상태는 다음 파일에서 확인한다.
 

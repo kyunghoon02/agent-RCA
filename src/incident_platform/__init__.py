@@ -17,12 +17,20 @@ from .incidents import (
     AlertmanagerNormalizer,
     IngestionResult,
 )
+from .http_receiver import (
+    AlertmanagerHTTPReceiver,
+    AlertmanagerWebhookWSGI,
+    HTTPResponse,
+    ReceiverConfig,
+)
 from .repository import InMemoryIncidentRepository
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
 
 __all__ = [
     "AlertmanagerIngestionService",
+    "AlertmanagerHTTPReceiver",
     "AlertmanagerNormalizer",
+    "AlertmanagerWebhookWSGI",
     "CollectionRequest",
     "CollectorOrchestrator",
     "CollectorSpec",
@@ -37,10 +45,12 @@ __all__ = [
     "InMemoryIncidentRepository",
     "IncidentCollectionService",
     "IngestionResult",
+    "HTTPResponse",
     "InvalidAlert",
     "InvalidTransition",
     "ProviderBatch",
     "ResourceScope",
+    "ReceiverConfig",
     "render_markdown",
     "verify_evidence_content_hash",
 ]
