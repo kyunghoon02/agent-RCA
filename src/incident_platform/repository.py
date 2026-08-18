@@ -6,7 +6,7 @@ import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Set
 
 from .contracts import validate_contract
 from .errors import InvalidTransition
@@ -101,6 +101,44 @@ class IncidentRepository(Protocol):
     def list_evidence(self, incident_id: str) -> List[Dict[str, Any]]:
         ...
 
+    def store_context(self, context: Mapping[str, Any]) -> None:
+        ...
+
+    def get_context(self, context_id: str) -> Dict[str, Any]:
+        ...
+
+    def store_report(self, report: Mapping[str, Any], markdown: str) -> None:
+        ...
+
+    def get_report(self, report_id: str) -> Dict[str, Any]:
+        ...
+
+    def get_report_markdown(self, report_id: str) -> str:
+        ...
+
+
+def context_evidence_ids(context: Mapping[str, Any]) -> Set[str]:
+    """Return every Evidence reference carried by one Context Package."""
+
+    referenced = set(context["evidence_ids"])
+    referenced.update(context["recent_change_evidence_ids"])
+    for path in context["state_paths"]:
+        referenced.update(path["evidence_ids"])
+    return referenced
+
+
+def report_evidence_ids(report: Mapping[str, Any]) -> Set[str]:
+    """Return every Evidence reference cited by one RCA Report."""
+
+    referenced: Set[str] = set()
+    root_cause = report["root_cause"]
+    if root_cause is not None:
+        referenced.update(root_cause["supporting_evidence_ids"])
+    for hypothesis in report["hypotheses"]:
+        referenced.update(hypothesis["supporting_evidence_ids"])
+        referenced.update(hypothesis["contradicting_evidence_ids"])
+    return referenced
+
 
 class InMemoryIncidentRepository:
     """Thread-safe test implementation of the IncidentRepository contract.
@@ -114,6 +152,9 @@ class InMemoryIncidentRepository:
         self._incident_id_by_deduplication_key: Dict[str, str] = {}
         self._audit_events: Dict[str, List[AuditEvent]] = {}
         self._evidence_by_incident: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._contexts: Dict[str, Dict[str, Any]] = {}
+        self._reports: Dict[str, Dict[str, Any]] = {}
+        self._report_markdown: Dict[str, str] = {}
         self._lock = RLock()
 
     def create_or_get_by_deduplication_key(
@@ -258,6 +299,84 @@ class InMemoryIncidentRepository:
             return copy.deepcopy(
                 list(self._evidence_by_incident[incident_id].values())
             )
+
+    def store_context(self, context: Mapping[str, Any]) -> None:
+        candidate = copy.deepcopy(dict(context))
+        validate_contract("context-package.schema.json", candidate)
+        incident_id = candidate["incident_id"]
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            available = set(self._evidence_by_incident[incident_id])
+            unknown = sorted(context_evidence_ids(candidate) - available)
+            if unknown:
+                raise InvalidTransition(
+                    f"Context Package references unstored Evidence: {unknown}"
+                )
+            context_id = candidate["context_id"]
+            previous = self._contexts.get(context_id)
+            if previous is not None and previous != candidate:
+                raise InvalidTransition(
+                    f"context_id collision with different content: {context_id}"
+                )
+            self._contexts[context_id] = candidate
+
+    def get_context(self, context_id: str) -> Dict[str, Any]:
+        with self._lock:
+            try:
+                return copy.deepcopy(self._contexts[context_id])
+            except KeyError as error:
+                raise KeyError(f"unknown context: {context_id}") from error
+
+    def store_report(self, report: Mapping[str, Any], markdown: str) -> None:
+        candidate = copy.deepcopy(dict(report))
+        validate_contract("rca-report.schema.json", candidate)
+        if not isinstance(markdown, str) or not markdown.strip():
+            raise InvalidTransition("RCA Report markdown must be non-empty")
+        incident_id = candidate["incident_id"]
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            try:
+                context = self._contexts[candidate["context_id"]]
+            except KeyError as error:
+                raise InvalidTransition(
+                    f"RCA Report references unknown Context Package: {candidate['context_id']}"
+                ) from error
+            if context["incident_id"] != incident_id:
+                raise InvalidTransition(
+                    "RCA Report and Context Package belong to different Incidents"
+                )
+            unknown = sorted(
+                report_evidence_ids(candidate) - set(context["evidence_ids"])
+            )
+            if unknown:
+                raise InvalidTransition(
+                    f"RCA Report references Evidence outside Context Package: {unknown}"
+                )
+            report_id = candidate["report_id"]
+            previous = self._reports.get(report_id)
+            previous_markdown = self._report_markdown.get(report_id)
+            if previous is not None and (
+                previous != candidate or previous_markdown != markdown
+            ):
+                raise InvalidTransition(
+                    f"report_id collision with different content: {report_id}"
+                )
+            self._reports[report_id] = candidate
+            self._report_markdown[report_id] = markdown
+
+    def get_report(self, report_id: str) -> Dict[str, Any]:
+        with self._lock:
+            try:
+                return copy.deepcopy(self._reports[report_id])
+            except KeyError as error:
+                raise KeyError(f"unknown report: {report_id}") from error
+
+    def get_report_markdown(self, report_id: str) -> str:
+        with self._lock:
+            try:
+                return self._report_markdown[report_id]
+            except KeyError as error:
+                raise KeyError(f"unknown report: {report_id}") from error
 
     def record_alert_resolution(
         self,

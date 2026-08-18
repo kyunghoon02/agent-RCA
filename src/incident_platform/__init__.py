@@ -24,6 +24,7 @@ from .http_receiver import (
     ReceiverConfig,
 )
 from .repository import InMemoryIncidentRepository
+from .postgresql import PostgreSQLIncidentRepository, apply_migrations
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
 
 __all__ = [
@@ -49,8 +50,10 @@ __all__ = [
     "InvalidAlert",
     "InvalidTransition",
     "ProviderBatch",
+    "PostgreSQLIncidentRepository",
     "ResourceScope",
     "ReceiverConfig",
+    "apply_migrations",
     "render_markdown",
     "verify_evidence_content_hash",
 ]

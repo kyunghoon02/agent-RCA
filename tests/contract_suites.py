@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable
 
+from incident_platform.deterministic import DeterministicDecision
 from incident_platform.evidence import (
     CollectionRequest,
     EvidenceBuilder,
@@ -14,6 +15,8 @@ from incident_platform.evidence import (
     ResourceScope,
     validate_provider_batch,
 )
+from incident_platform.errors import InvalidTransition
+from incident_platform.reporting import FastPathReportBuilder
 
 
 FIXED_TIME = datetime(2026, 8, 12, 1, 5, tzinfo=timezone.utc)
@@ -62,6 +65,61 @@ class IncidentRepositoryContract:
         repository.store_evidence(incident_id, [evidence])
         repository.store_evidence(incident_id, [evidence])
         test_case.assertEqual(repository.list_evidence(incident_id), [evidence])
+
+        artifacts = FastPathReportBuilder().build(
+            incident=repository.get(incident_id),
+            evidence=[evidence],
+            decision=DeterministicDecision(
+                status="ABSTAIN",
+                root_cause_id=None,
+                statement=None,
+                supporting_evidence_ids=tuple(),
+                missing_requirements=("fixture has no complete deterministic signature",),
+                evaluations=tuple(),
+            ),
+            generated_at=FIXED_TIME,
+        )
+        repository.store_context(artifacts.context)
+        repository.store_context(artifacts.context)
+        repository.store_report(artifacts.report, artifacts.markdown)
+        repository.store_report(artifacts.report, artifacts.markdown)
+        test_case.assertEqual(
+            repository.get_context(artifacts.context["context_id"]),
+            artifacts.context,
+        )
+        test_case.assertEqual(
+            repository.get_report(artifacts.report["report_id"]),
+            artifacts.report,
+        )
+        test_case.assertEqual(
+            repository.get_report_markdown(artifacts.report["report_id"]),
+            artifacts.markdown,
+        )
+
+        resolved = repository.record_alert_resolution(
+            incident_id,
+            incident_end="2026-08-12T01:10:00Z",
+            occurred_at=FIXED_TIME,
+        )
+        test_case.assertEqual(
+            resolved["window"]["incident_end"], "2026-08-12T01:10:00Z"
+        )
+        repository.record_alert_resolution(
+            incident_id,
+            incident_end="2026-08-12T01:10:00Z",
+            occurred_at=FIXED_TIME,
+        )
+        with test_case.assertRaisesRegex(InvalidTransition, "different incident_end"):
+            repository.record_alert_resolution(
+                incident_id,
+                incident_end="2026-08-12T01:11:00Z",
+                occurred_at=FIXED_TIME,
+            )
+
+        conflicting = copy.deepcopy(artifacts.report)
+        conflicting["limitations"].append("different content for the same report ID")
+        with test_case.assertRaisesRegex(InvalidTransition, "report_id collision"):
+            repository.store_report(conflicting, artifacts.markdown)
 
 
 class ProviderAdapterContract:

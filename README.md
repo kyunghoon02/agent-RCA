@@ -42,6 +42,8 @@ Evidence를 먼저 제시한다.
 - Ansible: 공통 dependency만 유지; self-managed cluster 역할은 미구현
 - Core: 인증·용량 제한 HTTP Receiver, Alertmanager 입력, Incident lifecycle,
   Collector orchestration, Evidence, deterministic RCA, Fast Path JSON/Markdown report 구현
+- Persistence: PostgreSQL migration과 Incident/Evidence/Context/Report adapter 구현,
+  일회용 로컬 PostgreSQL에서 공통 repository contract 통과
 - Runtime proof: 아직 KT Cloud VM/Kubernetes에 배포하거나 검증하지 않음
 
 현재 코드와 fixture의 정적 검증 성공은 cloud, Kubernetes, Prometheus, Loki 또는
@@ -75,6 +77,7 @@ Alertmanager의 실제 연결 성공을 의미하지 않는다.
 automation/ansible/  self-managed cluster 자동화 경계와 공통 dependency
 config/              프로젝트 범위, KT capability, RCA routing 정책
 contracts/           Incident, Evidence, Graph, RCA 및 provider 계약
+db/migrations/       PostgreSQL schema migration
 docs/                아키텍처, ADR, runbook, 진행 기록
 evaluation/          평가 사전등록과 Ground Truth 격리 정책
 infra/terraform/     KT Cloud capability 확인 후 구현할 provisioning 경계
@@ -94,6 +97,7 @@ make bootstrap-dev
 
 `requirements.txt`는 Core가 직접 import하는 런타임 라이브러리,
 `requirements-dev.txt`는 위 의존성과 YAML 기반 로컬 검증 도구를 설치한다.
+개발 환경은 `platform/versions.yaml`과 동일하게 Python 3.12를 사용한다.
 
 그다음 Core 검증을 실행한다.
 
@@ -105,6 +109,11 @@ make validate-core
 입력 정규화, Incident lifecycle, Collector의 병렬 실행·timeout·retry·partial
 failure, Evidence redaction/hash, deterministic RCA와 Fast Path report를
 fixture로 확인한다.
+
+`POSTGRES_TEST_DSN`이 없는 기본 검증에서는 실제 DB 테스트 한 건을 건너뛴다.
+승인된 테스트 전용 PostgreSQL DSN을 환경 변수로 제공하면 random schema를
+만들어 동일 repository contract를 실행하고 그 schema만 제거한다. 공유 DB를
+truncate하지 않으며 DSN을 저장소나 명령 출력에 기록하지 않는다.
 
 KT Cloud capability gate 상태는 다음 파일에서 확인한다.
 

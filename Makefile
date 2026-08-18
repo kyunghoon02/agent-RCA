@@ -2,13 +2,14 @@ ANSIBLE_DIR := automation/ansible
 ANSIBLE_VENV := .venv-ansible
 ANSIBLE_PYTHON ?= python3.12
 ANSIBLE_BIN := ../../$(ANSIBLE_VENV)/bin
+DEV_PYTHON ?= python3.12
 
 .PHONY: bootstrap-dev bootstrap-ansible validate-phase0 test-core validate-core \
 	ktcloud-readiness validate-ansible render-online-boutique terraform-fmt \
 	terraform-validate
 
 bootstrap-dev:
-	python3 -m venv .venv
+	$(DEV_PYTHON) -m venv .venv
 	.venv/bin/python -m pip install --requirement requirements-dev.txt
 
 bootstrap-ansible:
