@@ -1,12 +1,15 @@
-# Cloud-Native Operations & RCA Lab
+# Agent RCA
 
 KT Cloud의 VM 위에 재현 가능한 self-managed Kubernetes 운영환경을 만들고,
 Prometheus·Loki·Alertmanager·Kubernetes API·Cilium/Hubble에서 수집한 Evidence로
-Google Online Boutique 장애를 분석하는 인프라/SRE 포트폴리오다.
+Google Online Boutique 장애를 재현·분석하는 evidence-grounded Agent RCA 및
+인프라/SRE 포트폴리오다.
 
-Temporal StateGraph와 budget-bounded Agent RCA는 플랫폼의 목적 자체가 아니라,
-운영자가 조사할 범위를 줄이고 모든 결론을 실제 Evidence로 추적하기 위한
-자동화 계층이다.
+이 프로젝트의 Agent RCA는 LLM이 근거 없이 원인을 추측하는 기능이 아니다.
+Agent RCA Orchestrator가 bounded Evidence, Temporal StateGraph와 read-only 조사
+도구를 사용해 Incident 분석을 주도하고, 모든 결론을 실제 Evidence로 추적한다.
+Deterministic rule은 별도의 주 경로가 아니라 Agent 내부 Evidence Gate에서 명확한
+장애 신호를 검증하고 조사를 조기 종료하거나 `ABSTAIN`시키는 안전장치다.
 
 ## 확정된 실행 경계
 
@@ -64,20 +67,29 @@ flowchart TB
 
             EV --> PG[("PostgreSQL")]
             EV --> SG[("Temporal StateGraph")]
-            PG --> RCA["Deterministic Fast Path<br/>Budget-bounded Agent Deep Path"]
+            PG --> RCA["Agent RCA Orchestrator<br/>bounded reasoning · read-only investigation"]
             SG --> RCA
-            RCA --> REPORT["Evidence-grounded<br/>JSON / Markdown Report"]
+            RCA --> GATE["Evidence Gate<br/>deterministic checks · citation guard"]
+            GATE --> REPORT["Evidence-grounded<br/>JSON / Markdown Report"]
             REPORT --> PG
             PG --> VIEW["Read-only RCA Viewer"]
         end
 
         VM --> KAPI
     end
+
+    RCA -.->|"redacted bounded context"| LLM["External LLM Provider<br/>optional"]
 ```
 
 Alertmanager는 장애 신호를 전달하고, RCA 플랫폼은 Incident 범위 안에서 각
 provider를 read-only로 조회한다. 수집 결과는 provenance와 hash를 가진 Evidence로
-정규화되며, 모든 원인 판단과 보고서는 실제 `evidence_id`를 통해 역추적할 수 있다.
+정규화된다. Agent RCA Orchestrator는 저장된 Evidence와 StateGraph를 바탕으로
+조사를 수행하고, deterministic check와 citation guard를 통과한 판단만 보고서로
+만든다. 모든 원인 판단과 보고서는 실제 `evidence_id`를 통해 역추적할 수 있다.
+
+현재 구현된 범위는 Incident/Evidence pipeline과 deterministic Fast Path
+reporting까지다. 위 Agent RCA orchestration, optional LLM 연동과 runtime 통합은
+목표 아키텍처이며 아직 구현·검증됐다는 뜻이 아니다.
 
 ## 데이터 수집 경계
 
@@ -87,19 +99,6 @@ provider를 read-only로 조회한다. 수집 결과는 provenance와 hash를 �
   StateGraph에는 요약, provenance, content hash와 필요한 state만 저장한다.
 - 검색 결과 없음, retention 만료, timeout과 provider 실패를 구분한다.
 - eBPF/Hubble은 보조 evidence이며 모든 장애의 기본 원인을 대신 판정하지 않는다.
-
-## 문서
-
-- [KT Cloud 전환 로드맵](docs/roadmap/kt-cloud-plan.md)
-- [KT Cloud 목표 아키텍처](docs/architecture/kt-cloud-overview.md)
-- [KT Cloud capability matrix](docs/provider/kt-cloud-capability-matrix.md)
-- [Phase 0 범위](docs/scope/project-scope.md)
-- [현재 구현된 Core 아키텍처와 Flow](docs/architecture/implemented-core-flow.md)
-- [Provider contract](contracts/providers.md)
-- [AI-assisted 개발 원칙](docs/development/ai-assisted-workflow.md)
-
-이전 GCP/GKE 실행물, 로컬 작업 계획과 개인 면접 메모는 공개 저장소에서
-제외한다.
 
 ## Provider 확장 계획
 

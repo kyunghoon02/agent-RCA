@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-infra-lab.local/schemas/rca-report.schema.json",
+  "$id": "urn:agent-rca:schema:rca-report",
   "title": "RCA Report",
   "type": "object",
   "additionalProperties": false,
@@ -72,7 +72,7 @@
               "minLength": 1
             },
             "entity": {
-              "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+              "$ref": "urn:agent-rca:schema:entity-ref"
             },
             "supporting_evidence_ids": {
               "type": "array",
@@ -112,7 +112,7 @@
             "minLength": 1
           },
           "entity": {
-            "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+            "$ref": "urn:agent-rca:schema:entity-ref"
           },
           "confidence": {
             "type": "number",

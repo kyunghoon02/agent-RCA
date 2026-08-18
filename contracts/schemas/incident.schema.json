@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-infra-lab.local/schemas/incident.schema.json",
+  "$id": "urn:agent-rca:schema:incident",
   "title": "Incident",
   "type": "object",
   "additionalProperties": false,
@@ -127,7 +127,7 @@
       }
     },
     "source_entity": {
-      "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+      "$ref": "urn:agent-rca:schema:entity-ref"
     },
     "collector_statuses": {
       "type": "array",

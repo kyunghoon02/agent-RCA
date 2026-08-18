@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-infra-lab.local/schemas/context-package.schema.json",
+  "$id": "urn:agent-rca:schema:context-package",
   "title": "Context Package",
   "type": "object",
   "additionalProperties": false,
@@ -35,12 +35,12 @@
       "format": "date-time"
     },
     "source_entity": {
-      "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+      "$ref": "urn:agent-rca:schema:entity-ref"
     },
     "scope": {
       "oneOf": [
         {
-          "$ref": "https://ai-infra-lab.local/schemas/investigation-scope.schema.json"
+          "$ref": "urn:agent-rca:schema:investigation-scope"
         },
         {
           "$ref": "#/$defs/legacyKubernetesScope"
@@ -66,7 +66,7 @@
           "entities": {
             "type": "array",
             "items": {
-              "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+              "$ref": "urn:agent-rca:schema:entity-ref"
             },
             "minItems": 1
           },

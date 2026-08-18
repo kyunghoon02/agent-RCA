@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-infra-lab.local/schemas/investigation-scope.schema.json",
+  "$id": "urn:agent-rca:schema:investigation-scope",
   "title": "Domain-neutral Investigation Scope",
   "type": "object",
   "additionalProperties": false,

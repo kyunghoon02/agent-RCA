@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-infra-lab.local/schemas/graph-record.schema.json",
+  "$id": "urn:agent-rca:schema:graph-record",
   "title": "Domain-neutral Temporal StateGraph Record",
   "oneOf": [
     {

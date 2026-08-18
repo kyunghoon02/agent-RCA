@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-infra-lab.local/schemas/evidence-item.schema.json",
+  "$id": "urn:agent-rca:schema:evidence-item",
   "title": "Evidence Item",
   "type": "object",
   "additionalProperties": false,
@@ -78,7 +78,7 @@
       }
     },
     "subject": {
-      "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
+      "$ref": "urn:agent-rca:schema:entity-ref"
     },
     "summary": {
       "type": "string",

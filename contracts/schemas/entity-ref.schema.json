@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-infra-lab.local/schemas/entity-ref.schema.json",
+  "$id": "urn:agent-rca:schema:entity-ref",
   "title": "Operational Entity Reference",
   "oneOf": [
     {

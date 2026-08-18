@@ -9,7 +9,7 @@ resources:
 labels:
   - pairs:
       app.kubernetes.io/part-of: online-boutique
-      ai-infra-lab.io/target-version: v0.10.6
+      kyunghoon02.github.io/target-version: v0.10.6
     includeSelectors: false
 
 patches:
