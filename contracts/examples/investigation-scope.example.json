@@ -1,0 +1,23 @@
+{
+  "incident_id": "inc-checkout-0001",
+  "seed_entity_ids": [
+    "ent-kubernetes-pod-checkout-0001"
+  ],
+  "domains": [
+    "kubernetes"
+  ],
+  "correlation_keys": {
+    "namespace": "online-boutique",
+    "workload": "checkoutservice"
+  },
+  "relation_types": [
+    "REFERENCES",
+    "DEPENDS_ON"
+  ],
+  "time_window": {
+    "start": "2026-07-27T00:35:00Z",
+    "end": "2026-07-27T01:22:00Z"
+  },
+  "max_entities": 100,
+  "max_depth": 4
+}

@@ -1,4 +1,4 @@
-"""Cloud-neutral core for the Kubernetes Incident Response Platform."""
+"""Cloud-neutral core for the Incident Response and Agent RCA Platform."""
 
 from .errors import ContractViolation, InvalidAlert, InvalidTransition
 from .collectors import CollectorOrchestrator, CollectorSpec, IncidentCollectionService
@@ -35,6 +35,16 @@ from .providers import (
     PrometheusQuerySpec,
 )
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
+from .stategraph import (
+    GraphLocalizer,
+    GraphProjection,
+    InMemoryStateGraphRepository,
+    InvestigationScope,
+    stable_graph_id,
+    state_content_hash,
+    validate_graph_record,
+)
+from .projectors import KubernetesEvidenceProjector
 
 __all__ = [
     "AlertmanagerIngestionService",
@@ -53,6 +63,9 @@ __all__ = [
     "FastPathArtifacts",
     "FastPathReportBuilder",
     "FastPathRun",
+    "GraphLocalizer",
+    "GraphProjection",
+    "InMemoryStateGraphRepository",
     "InMemoryIncidentRepository",
     "IncidentCollectionService",
     "IncidentFastPathService",
@@ -60,7 +73,9 @@ __all__ = [
     "HTTPResponse",
     "InvalidAlert",
     "InvalidTransition",
+    "InvestigationScope",
     "KubernetesHTTPAPI",
+    "KubernetesEvidenceProjector",
     "KubernetesResourceSpec",
     "KubernetesStateProvider",
     "ProviderBatch",
@@ -72,5 +87,8 @@ __all__ = [
     "ReceiverConfig",
     "apply_migrations",
     "render_markdown",
+    "stable_graph_id",
+    "state_content_hash",
+    "validate_graph_record",
     "verify_evidence_content_hash",
 ]

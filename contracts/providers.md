@@ -130,15 +130,15 @@ upsert_entity(entity)
 append_or_extend_snapshot(snapshot)
 append_or_extend_relation(relation_interval)
 upsert_event_aggregate(event_aggregate)
-resolve_source_entity(alert)
-find_metapaths(source_kind, destination_kinds, max_hops)
-find_statepaths(source_entity, incident_time, allowed_metapaths, max_entities)
+resolve_seed_entities(correlation_keys, domain, limit)
+find_statepaths(investigation_scope)
 pin_incident_history(incident_id, record_ids, expires_at)
 garbage_collect(now, batch_size)
 ```
 
 `append_or_extend`는 연속된 동일 상태/관계만 병합한다. Reasoning 계층은 Graph
-query language를 직접 생성하지 않고 repository method만 사용한다.
+query language를 직접 생성하지 않고 repository method만 사용한다. Core record는
+domain-neutral하며 Kubernetes와 다른 서비스 의미는 Evidence projector가 변환한다.
 
 | 단계 | 구현 |
 |---|---|

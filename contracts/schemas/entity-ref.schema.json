@@ -1,45 +1,100 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-infra-lab.local/schemas/entity-ref.schema.json",
-  "title": "Kubernetes Entity Reference",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "kind",
-    "namespace",
-    "name",
-    "uid",
-    "exists"
+  "title": "Operational Entity Reference",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/kubernetesEntityRef"
+    },
+    {
+      "$ref": "#/$defs/graphEntityRef"
+    }
   ],
-  "properties": {
-    "api_version": {
-      "type": [
-        "string",
-        "null"
-      ]
+  "$defs": {
+    "kubernetesEntityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "namespace",
+        "name",
+        "uid",
+        "exists"
+      ],
+      "properties": {
+        "api_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exists": {
+          "type": "boolean"
+        }
+      }
     },
-    "kind": {
-      "type": "string",
-      "minLength": 1
-    },
-    "namespace": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "name": {
-      "type": "string",
-      "minLength": 1
-    },
-    "uid": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "exists": {
-      "type": "boolean"
+    "graphEntityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity_id",
+        "entity_type",
+        "domain",
+        "name",
+        "scope",
+        "external_ref",
+        "exists"
+      ],
+      "properties": {
+        "entity_id": {
+          "type": "string",
+          "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "entity_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "domain": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,63}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "object"
+        },
+        "external_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exists": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

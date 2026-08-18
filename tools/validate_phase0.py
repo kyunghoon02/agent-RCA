@@ -108,6 +108,9 @@ def validate_contracts() -> dict[str, Any]:
         "context": load_json(EXAMPLE_DIR / "context-package.example.json"),
         "report": load_json(EXAMPLE_DIR / "rca-report.example.json"),
         "graph_records": load_json(EXAMPLE_DIR / "graph-records.example.json"),
+        "investigation_scope": load_json(
+            EXAMPLE_DIR / "investigation-scope.example.json"
+        ),
     }
 
     validate_instance(
@@ -133,6 +136,12 @@ def validate_contracts() -> dict[str, Any]:
         examples["report"],
         registry,
         "rca-report.example.json",
+    )
+    validate_instance(
+        schemas["investigation-scope.schema.json"],
+        examples["investigation_scope"],
+        registry,
+        "investigation-scope.example.json",
     )
 
     if not isinstance(examples["graph_records"], list) or not examples["graph_records"]:
@@ -191,6 +200,37 @@ def validate_cross_contract_references(examples: dict[str, Any]) -> None:
         if unknown_path_evidence:
             raise ValidationFailure(
                 f"State path cites evidence outside Context Package: {sorted(unknown_path_evidence)}"
+            )
+
+    graph_records = examples["graph_records"]
+    graph_evidence = {
+        evidence_id
+        for record in graph_records
+        for evidence_id in record["evidence_ids"]
+    }
+    unknown_graph_evidence = graph_evidence - context_evidence
+    if unknown_graph_evidence:
+        raise ValidationFailure(
+            "StateGraph cites evidence outside Context Package: "
+            f"{sorted(unknown_graph_evidence)}"
+        )
+    entity_ids = {
+        record["entity_id"]
+        for record in graph_records
+        if record["record_type"] == "entity"
+    }
+    for record in graph_records:
+        references = []
+        if record["record_type"] in {"snapshot_interval", "event_aggregate"}:
+            references.append(record["entity_id"])
+        elif record["record_type"] == "relation_interval":
+            references.extend(
+                [record["source_entity_id"], record["destination_entity_id"]]
+            )
+        unknown_entities = set(references) - entity_ids
+        if unknown_entities:
+            raise ValidationFailure(
+                f"StateGraph record references unknown Entity: {sorted(unknown_entities)}"
             )
 
     window = incident["window"]
@@ -509,8 +549,8 @@ def main() -> None:
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
     print("Phase 0 validation passed:")
-    print("- 6 JSON Schemas are structurally valid")
-    print("- 5 contract fixture groups are valid")
+    print(f"- {len(schema_registry()[0])} JSON Schemas are structurally valid")
+    print("- 6 contract fixture groups are valid")
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
     print("- KT Cloud target/capability gate, automation dependencies, and Kustomize pins are consistent")

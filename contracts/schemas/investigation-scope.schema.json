@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-infra-lab.local/schemas/investigation-scope.schema.json",
+  "title": "Domain-neutral Investigation Scope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "incident_id",
+    "seed_entity_ids",
+    "domains",
+    "correlation_keys",
+    "relation_types",
+    "time_window",
+    "max_entities",
+    "max_depth"
+  ],
+  "properties": {
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "seed_entity_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{1,63}$"
+      },
+      "uniqueItems": true
+    },
+    "correlation_keys": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "relation_types": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+      },
+      "uniqueItems": true
+    },
+    "time_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "max_entities": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "max_depth": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16
+    }
+  }
+}

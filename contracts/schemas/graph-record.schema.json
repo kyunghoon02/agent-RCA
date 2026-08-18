@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-infra-lab.local/schemas/graph-record.schema.json",
-  "title": "Temporal StateGraph Record",
+  "title": "Domain-neutral Temporal StateGraph Record",
   "oneOf": [
     {
       "$ref": "#/$defs/entity"
     },
     {
-      "$ref": "#/$defs/snapshot"
+      "$ref": "#/$defs/snapshotInterval"
     },
     {
       "$ref": "#/$defs/relationInterval"
@@ -17,20 +17,30 @@
     }
   ],
   "$defs": {
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^ev-[a-z0-9][a-z0-9-]{7,63}$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
     "entity": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "record_type",
         "entity_id",
-        "api_version",
-        "kind",
-        "namespace",
+        "entity_type",
+        "domain",
         "name",
-        "uid",
+        "scope",
+        "external_ref",
         "exists",
-        "created_at",
-        "deleted_at"
+        "first_seen_at",
+        "last_seen_at",
+        "evidence_ids"
       ],
       "properties": {
         "record_type": {
@@ -38,27 +48,24 @@
         },
         "entity_id": {
           "type": "string",
+          "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "entity_type": {
+          "type": "string",
           "minLength": 1
         },
-        "api_version": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kind": {
-          "type": "string"
-        },
-        "namespace": {
-          "type": [
-            "string",
-            "null"
-          ]
+        "domain": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,63}$"
         },
         "name": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
-        "uid": {
+        "scope": {
+          "type": "object"
+        },
+        "external_ref": {
           "type": [
             "string",
             "null"
@@ -67,23 +74,20 @@
         "exists": {
           "type": "boolean"
         },
-        "created_at": {
-          "type": [
-            "string",
-            "null"
-          ],
+        "first_seen_at": {
+          "type": "string",
           "format": "date-time"
         },
-        "deleted_at": {
-          "type": [
-            "string",
-            "null"
-          ],
+        "last_seen_at": {
+          "type": "string",
           "format": "date-time"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
         }
       }
     },
-    "snapshot": {
+    "snapshotInterval": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -93,20 +97,95 @@
         "observed_at",
         "valid_from",
         "valid_to",
-        "resource_version",
         "state_hash",
-        "spec_fragment",
-        "status_fragment"
+        "state",
+        "evidence_ids"
       ],
       "properties": {
         "record_type": {
-          "const": "snapshot"
+          "const": "snapshot_interval"
         },
         "snapshot_id": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^snap-[a-z0-9][a-z0-9-]{7,127}$"
         },
         "entity_id": {
+          "type": "string",
+          "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_from": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "state_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "state": {
+          "type": "object"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      }
+    },
+    "relationInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "relation_id",
+        "relation_key",
+        "source_entity_id",
+        "relation_type",
+        "destination_entity_id",
+        "reference_key",
+        "projector",
+        "observed_at",
+        "valid_from",
+        "valid_to",
+        "evidence_ids"
+      ],
+      "properties": {
+        "record_type": {
+          "const": "relation_interval"
+        },
+        "relation_id": {
+          "type": "string",
+          "pattern": "^rel-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "relation_key": {
+          "type": "string",
+          "pattern": "^relkey-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "source_entity_id": {
+          "type": "string",
+          "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "relation_type": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+        },
+        "destination_entity_id": {
+          "type": "string",
+          "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "reference_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projector": {
           "type": "string",
           "minLength": 1
         },
@@ -125,87 +204,8 @@
           ],
           "format": "date-time"
         },
-        "resource_version": {
-          "type": "string"
-        },
-        "state_hash": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "spec_fragment": {
-          "type": "object"
-        },
-        "status_fragment": {
-          "type": "object"
-        }
-      }
-    },
-    "relationInterval": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "record_type",
-        "relation_id",
-        "source_entity_id",
-        "relation_type",
-        "destination_entity_id",
-        "reference_key",
-        "provenance",
-        "valid_from",
-        "valid_to",
-        "last_seen_resource_version"
-      ],
-      "properties": {
-        "record_type": {
-          "const": "relation_interval"
-        },
-        "relation_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "source_entity_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "relation_type": {
-          "enum": [
-            "OWNS",
-            "SELECTS",
-            "TARGETS",
-            "RUNS_ON",
-            "MOUNTS",
-            "BINDS",
-            "REFERENCES",
-            "CALLS",
-            "EMITS",
-            "USES_IMAGE"
-          ]
-        },
-        "destination_entity_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "reference_key": {
-          "type": "string",
-          "minLength": 1
-        },
-        "provenance": {
-          "type": "string",
-          "minLength": 1
-        },
-        "valid_from": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "valid_to": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
-        },
-        "last_seen_resource_version": {
-          "type": "string"
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
         }
       }
     },
@@ -214,48 +214,36 @@
       "additionalProperties": false,
       "required": [
         "record_type",
-        "event_key",
-        "regarding_entity_id",
-        "reason",
-        "action",
-        "reporting_controller",
-        "normalized_message_hash",
-        "first_seen",
-        "last_seen",
+        "event_id",
+        "entity_id",
+        "event_type",
+        "first_seen_at",
+        "last_seen_at",
         "count",
-        "sample_message",
-        "last_source_resource_version"
+        "attributes",
+        "evidence_ids"
       ],
       "properties": {
         "record_type": {
           "const": "event_aggregate"
         },
-        "event_key": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^evt-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "entity_id": {
+          "type": "string",
+          "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "event_type": {
           "type": "string",
           "minLength": 1
         },
-        "regarding_entity_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "reason": {
-          "type": "string"
-        },
-        "action": {
-          "type": "string"
-        },
-        "reporting_controller": {
-          "type": "string"
-        },
-        "normalized_message_hash": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "first_seen": {
+        "first_seen_at": {
           "type": "string",
           "format": "date-time"
         },
-        "last_seen": {
+        "last_seen_at": {
           "type": "string",
           "format": "date-time"
         },
@@ -263,11 +251,11 @@
           "type": "integer",
           "minimum": 1
         },
-        "sample_message": {
-          "type": "string"
+        "attributes": {
+          "type": "object"
         },
-        "last_source_resource_version": {
-          "type": "string"
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
         }
       }
     }

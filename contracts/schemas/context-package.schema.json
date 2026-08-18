@@ -38,64 +38,14 @@
       "$ref": "https://ai-infra-lab.local/schemas/entity-ref.schema.json"
     },
     "scope": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "namespaces",
-        "entity_uids",
-        "metapaths",
-        "time_window",
-        "max_entities"
-      ],
-      "properties": {
-        "namespaces": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "uniqueItems": true
+      "oneOf": [
+        {
+          "$ref": "https://ai-infra-lab.local/schemas/investigation-scope.schema.json"
         },
-        "entity_uids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true
-        },
-        "metapaths": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "minItems": 1
-          }
-        },
-        "time_window": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "start",
-            "end"
-          ],
-          "properties": {
-            "start": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "end": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        },
-        "max_entities": {
-          "type": "integer",
-          "minimum": 1
+        {
+          "$ref": "#/$defs/legacyKubernetesScope"
         }
-      }
+      ]
     },
     "state_paths": {
       "type": "array",
@@ -218,6 +168,68 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "legacyKubernetesScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespaces",
+        "entity_uids",
+        "metapaths",
+        "time_window",
+        "max_entities"
+      ],
+      "properties": {
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "entity_uids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "metapaths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "time_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "end"
+          ],
+          "properties": {
+            "start": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "end": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "max_entities": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     }

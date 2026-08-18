@@ -1,60 +1,87 @@
 [
   {
     "record_type": "entity",
-    "entity_id": "entity:pod:2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
-    "api_version": "v1",
-    "kind": "Pod",
-    "namespace": "online-boutique",
+    "entity_id": "ent-kubernetes-pod-checkout-0001",
+    "entity_type": "Pod",
+    "domain": "kubernetes",
     "name": "checkoutservice-7b6c8d9f-example",
-    "uid": "2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
+    "scope": {
+      "namespace": "online-boutique",
+      "api_version": "v1"
+    },
+    "external_ref": "2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
     "exists": true,
-    "created_at": "2026-07-27T00:45:00Z",
-    "deleted_at": null
+    "first_seen_at": "2026-07-27T00:45:00Z",
+    "last_seen_at": "2026-07-27T01:05:02Z",
+    "evidence_ids": [
+      "ev-configmap-0001"
+    ]
   },
   {
-    "record_type": "snapshot",
-    "snapshot_id": "snapshot:pod:2d0f9ab3:20260727T010000Z",
-    "entity_id": "entity:pod:2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
-    "observed_at": "2026-07-27T01:05:02Z",
-    "valid_from": "2026-07-27T01:00:00Z",
-    "valid_to": null,
-    "resource_version": "18422",
-    "state_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "spec_fragment": {
-      "nodeName": "ai-infra-lab-worker",
-      "configMapRefs": [
-        "checkout-settings"
-      ]
+    "record_type": "entity",
+    "entity_id": "ent-kubernetes-configmap-checkout-0001",
+    "entity_type": "ConfigMap",
+    "domain": "kubernetes",
+    "name": "checkout-settings",
+    "scope": {
+      "namespace": "online-boutique",
+      "api_version": "v1"
     },
-    "status_fragment": {
-      "phase": "Pending",
-      "ready": false
-    }
+    "external_ref": null,
+    "exists": false,
+    "first_seen_at": "2026-07-27T01:05:02Z",
+    "last_seen_at": "2026-07-27T01:05:02Z",
+    "evidence_ids": [
+      "ev-configmap-0001"
+    ]
+  },
+  {
+    "record_type": "snapshot_interval",
+    "snapshot_id": "snap-kubernetes-configmap-checkout-0001",
+    "entity_id": "ent-kubernetes-configmap-checkout-0001",
+    "observed_at": "2026-07-27T01:05:02Z",
+    "valid_from": "2026-07-27T01:05:02Z",
+    "valid_to": null,
+    "state_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "state": {
+      "exists": false,
+      "result_status": "NOT_FOUND",
+      "required": true
+    },
+    "evidence_ids": [
+      "ev-configmap-0001"
+    ]
   },
   {
     "record_type": "relation_interval",
-    "relation_id": "relation:pod-configmap:checkout-settings:1",
-    "source_entity_id": "entity:pod:2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
+    "relation_id": "rel-pod-configmap-checkout-0001",
+    "relation_key": "relkey-pod-configmap-checkout-0001",
+    "source_entity_id": "ent-kubernetes-pod-checkout-0001",
     "relation_type": "REFERENCES",
-    "destination_entity_id": "unresolved:v1:ConfigMap:online-boutique:checkout-settings",
-    "reference_key": "spec.containers[0].envFrom[0].configMapRef",
-    "provenance": "kubernetes-api:Pod/spec",
-    "valid_from": "2026-07-27T00:45:00Z",
+    "destination_entity_id": "ent-kubernetes-configmap-checkout-0001",
+    "reference_key": "event-reported-reference",
+    "projector": "kubernetes-evidence-projector",
+    "observed_at": "2026-07-27T01:05:02Z",
+    "valid_from": "2026-07-27T01:05:02Z",
     "valid_to": null,
-    "last_seen_resource_version": "18422"
+    "evidence_ids": [
+      "ev-configmap-0001"
+    ]
   },
   {
     "record_type": "event_aggregate",
-    "event_key": "checkout-pod:FailedMount:kubelet:example",
-    "regarding_entity_id": "entity:pod:2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1",
-    "reason": "FailedMount",
-    "action": "MountVolume",
-    "reporting_controller": "kubelet",
-    "normalized_message_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "first_seen": "2026-07-27T01:00:00Z",
-    "last_seen": "2026-07-27T01:05:00Z",
+    "event_id": "evt-checkout-pod-failedmount-0001",
+    "entity_id": "ent-kubernetes-pod-checkout-0001",
+    "event_type": "FailedMount",
+    "first_seen_at": "2026-07-27T01:00:00Z",
+    "last_seen_at": "2026-07-27T01:05:00Z",
     "count": 6,
-    "sample_message": "configmap checkout-settings not found",
-    "last_source_resource_version": "18430"
+    "attributes": {
+      "reason": "FailedMount",
+      "source_component": "kubelet"
+    },
+    "evidence_ids": [
+      "ev-configmap-0001"
+    ]
   }
 ]
