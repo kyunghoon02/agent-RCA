@@ -34,23 +34,50 @@ Terraform 리소스를 추측해서 구현하지 않고 capability gate 뒤에 �
 AI/LLM 기능보다 인프라 생성, 관측, 장애 재현, troubleshooting과 운영 검증
 Evidence를 먼저 제시한다.
 
-## 현재 상태
+## 목표 아키텍처
 
-- Cloud target: KT Cloud/DX-M1로 확정
-- Provider capability: 계정별 API 및 Terraform provider 호환성 확인 대기
-- Terraform: KT Cloud 구현은 capability gate로 차단; 이전 GCP/GKE HCL은 공개 baseline에서 제거
-- Ansible: 공통 dependency만 유지; self-managed cluster 역할은 미구현
-- Core: 인증·용량 제한 HTTP Receiver, Alertmanager 입력, Incident lifecycle,
-  Collector orchestration, Evidence, deterministic RCA, Fast Path JSON/Markdown report와
-  `LOCALIZING → ANALYZING → REPORTED` orchestration 구현
-- Persistence: PostgreSQL migration과 Incident/Evidence/Context/Report adapter 구현,
-  일회용 로컬 PostgreSQL에서 공통 repository contract 통과
-- Providers: bounded HTTP transport, allowlisted/scoped Prometheus range-query adapter,
-  GET-only Kubernetes resource/Event adapter 구현 및 fixture contract 통과
-- Runtime proof: 아직 KT Cloud VM/Kubernetes에 배포하거나 검증하지 않음
+```mermaid
+flowchart TB
+    USER["k6 / 사용자 트래픽"] --> APP
 
-현재 코드와 fixture의 정적 검증 성공은 cloud, Kubernetes, Prometheus, Loki 또는
-Alertmanager의 실제 연결 성공을 의미하지 않는다.
+    subgraph KT["KT Cloud · DX-M1"]
+        TF["Terraform<br/>Network · VM · Volume"] --> VM["KT Cloud VM"]
+        AN["Ansible<br/>Kubernetes · Cilium/Hubble"] --> KAPI
+
+        subgraph K8S["Self-managed Kubernetes"]
+            KAPI["Kubernetes API / Nodes"] --> APP["Online Boutique"]
+
+            APP --> P["Prometheus"]
+            APP --> L["Loki"]
+            APP --> H["Cilium / Hubble"]
+            P -->|"alert rule"| AM["Alertmanager"]
+
+            AM -->|"webhook"| RX["Authenticated HTTP Receiver"]
+            RX --> INC["Incident lifecycle"]
+            INC --> COL["Bounded Collector Orchestrator"]
+
+            COL -->|"range query"| P
+            COL -->|"log query"| L
+            COL -->|"network flow query"| H
+            COL -->|"GET-only resource / Event"| KAPI
+            COL --> EV["Evidence<br/>provenance · redaction · hash"]
+
+            EV --> PG[("PostgreSQL")]
+            EV --> SG[("Temporal StateGraph")]
+            PG --> RCA["Deterministic Fast Path<br/>Budget-bounded Agent Deep Path"]
+            SG --> RCA
+            RCA --> REPORT["Evidence-grounded<br/>JSON / Markdown Report"]
+            REPORT --> PG
+            PG --> VIEW["Read-only RCA Viewer"]
+        end
+
+        VM --> KAPI
+    end
+```
+
+Alertmanager는 장애 신호를 전달하고, RCA 플랫폼은 Incident 범위 안에서 각
+provider를 read-only로 조회한다. 수집 결과는 provenance와 hash를 가진 Evidence로
+정규화되며, 모든 원인 판단과 보고서는 실제 `evidence_id`를 통해 역추적할 수 있다.
 
 ## 데이터 수집 경계
 
