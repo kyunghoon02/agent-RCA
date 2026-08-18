@@ -4,6 +4,7 @@ import copy
 import threading
 import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from incident_platform.collectors import (
@@ -272,6 +273,15 @@ class EvidenceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ContractViolation, "outside namespace"):
             validate_provider_batch(batch, request)
+
+    def test_evidence_outside_time_window_is_rejected(self) -> None:
+        request = contract_request(INCIDENT_ID, "checkoutservice")
+        draft = replace(
+            evidence_draft(), observed_at="2026-08-12T02:00:00Z"
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "outside the requested"):
+            EvidenceBuilder().build(draft, request, collected_at=FIXED_TIME)
 
 
 class IncidentCollectionServiceTests(unittest.TestCase):

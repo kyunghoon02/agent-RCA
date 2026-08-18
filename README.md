@@ -41,7 +41,8 @@ Evidence를 먼저 제시한다.
 - Terraform: KT Cloud 구현은 capability gate로 차단; 이전 GCP/GKE HCL은 공개 baseline에서 제거
 - Ansible: 공통 dependency만 유지; self-managed cluster 역할은 미구현
 - Core: 인증·용량 제한 HTTP Receiver, Alertmanager 입력, Incident lifecycle,
-  Collector orchestration, Evidence, deterministic RCA, Fast Path JSON/Markdown report 구현
+  Collector orchestration, Evidence, deterministic RCA, Fast Path JSON/Markdown report와
+  `LOCALIZING → ANALYZING → REPORTED` orchestration 구현
 - Persistence: PostgreSQL migration과 Incident/Evidence/Context/Report adapter 구현,
   일회용 로컬 PostgreSQL에서 공통 repository contract 통과
 - Providers: bounded HTTP transport, allowlisted/scoped Prometheus range-query adapter,

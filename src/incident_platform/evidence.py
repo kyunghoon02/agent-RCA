@@ -41,6 +41,16 @@ def format_time(value: datetime) -> str:
     )
 
 
+def parse_time(value: str, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as error:
+        raise ContractViolation(f"{field} must be an RFC3339 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ContractViolation(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class EvidenceWindow:
     start: str
@@ -84,6 +94,10 @@ class CollectionRequest:
             raise ContractViolation("CollectionRequest.timeout_seconds must be positive")
         if self.attempt <= 0:
             raise ContractViolation("CollectionRequest.attempt must be positive")
+        start = parse_time(self.window.start, "EvidenceWindow.start")
+        end = parse_time(self.window.end, "EvidenceWindow.end")
+        if start > end:
+            raise ContractViolation("EvidenceWindow.start must not follow end")
 
 
 @dataclass(frozen=True)
@@ -175,6 +189,13 @@ class EvidenceBuilder:
         *,
         collected_at: datetime,
     ) -> Dict[str, Any]:
+        observed_at = parse_time(draft.observed_at, "EvidenceDraft.observed_at")
+        window_start = parse_time(request.window.start, "EvidenceWindow.start")
+        window_end = parse_time(request.window.end, "EvidenceWindow.end")
+        if observed_at < window_start or observed_at > window_end:
+            raise ContractViolation(
+                "EvidenceDraft.observed_at is outside the requested time window"
+            )
         subject = copy.deepcopy(dict(draft.subject))
         subject_namespace = subject.get("namespace")
         if subject_namespace != request.scope.namespace:

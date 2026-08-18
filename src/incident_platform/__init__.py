@@ -23,6 +23,7 @@ from .http_receiver import (
     HTTPResponse,
     ReceiverConfig,
 )
+from .fast_path import FastPathRun, IncidentFastPathService
 from .repository import InMemoryIncidentRepository
 from .postgresql import PostgreSQLIncidentRepository, apply_migrations
 from .providers import (
@@ -51,8 +52,10 @@ __all__ = [
     "EvidenceWindow",
     "FastPathArtifacts",
     "FastPathReportBuilder",
+    "FastPathRun",
     "InMemoryIncidentRepository",
     "IncidentCollectionService",
+    "IncidentFastPathService",
     "IngestionResult",
     "HTTPResponse",
     "InvalidAlert",
