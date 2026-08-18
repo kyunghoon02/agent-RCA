@@ -25,6 +25,14 @@ from .http_receiver import (
 )
 from .repository import InMemoryIncidentRepository
 from .postgresql import PostgreSQLIncidentRepository, apply_migrations
+from .providers import (
+    KubernetesHTTPAPI,
+    KubernetesResourceSpec,
+    KubernetesStateProvider,
+    PrometheusHTTPAPI,
+    PrometheusMetricProvider,
+    PrometheusQuerySpec,
+)
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
 
 __all__ = [
@@ -49,8 +57,14 @@ __all__ = [
     "HTTPResponse",
     "InvalidAlert",
     "InvalidTransition",
+    "KubernetesHTTPAPI",
+    "KubernetesResourceSpec",
+    "KubernetesStateProvider",
     "ProviderBatch",
     "PostgreSQLIncidentRepository",
+    "PrometheusHTTPAPI",
+    "PrometheusMetricProvider",
+    "PrometheusQuerySpec",
     "ResourceScope",
     "ReceiverConfig",
     "apply_migrations",

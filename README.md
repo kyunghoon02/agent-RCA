@@ -44,6 +44,8 @@ Evidence를 먼저 제시한다.
   Collector orchestration, Evidence, deterministic RCA, Fast Path JSON/Markdown report 구현
 - Persistence: PostgreSQL migration과 Incident/Evidence/Context/Report adapter 구현,
   일회용 로컬 PostgreSQL에서 공통 repository contract 통과
+- Providers: bounded HTTP transport, allowlisted/scoped Prometheus range-query adapter,
+  GET-only Kubernetes resource/Event adapter 구현 및 fixture contract 통과
 - Runtime proof: 아직 KT Cloud VM/Kubernetes에 배포하거나 검증하지 않음
 
 현재 코드와 fixture의 정적 검증 성공은 cloud, Kubernetes, Prometheus, Loki 또는

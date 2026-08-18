@@ -1,6 +1,6 @@
 # Provider interface와 KT Cloud runtime 경계
 
-> 상태: Phase 0 contract
+> 상태: Phase 0 contract + Prometheus/Kubernetes adapter code
 >
 > 원칙: Reasoning 계층은 provider 원본 응답을 직접 읽지 않고 정규화된 contract만 사용한다.
 
@@ -57,6 +57,10 @@ series reference다.
 
 목표 runtime adapter는 in-cluster Prometheus HTTP API를 사용한다.
 
+현재 `PrometheusMetricProvider`는 allowlisted PromQL template, namespace/resource
+selector, time window, sample/response byte limit을 강제하고 resource별 summary를
+반환한다. 실제 Prometheus endpoint와 배포 query spec은 아직 연결하지 않았다.
+
 ### LogsProvider
 
 ```text
@@ -90,6 +94,12 @@ full_snapshot(resource_kinds, namespace, page_size)
 
 목표 runtime adapter는 read-only ServiceAccount를 사용하는 in-cluster
 Kubernetes API client다.
+
+현재 `KubernetesStateProvider`는 allowlisted resource GET과 field-selected,
+paged core/v1 Event list를 구현하고 만료된 pagination snapshot은 한 번 재시작한다.
+Secret 조회와 write method는 제공하지 않으며
+ConfigMap value와 Pod spec 원문을 Evidence로 복사하지 않는다. Watch/checkpoint와
+실제 cluster ServiceAccount/CA 연결은 후속 runtime 작업이다.
 
 ### NetworkFlowProvider
 

@@ -60,6 +60,8 @@ class ResourceScope:
             raise ContractViolation("ResourceScope requires at least one resource name")
         if any(not name.strip() for name in self.resource_names):
             raise ContractViolation("ResourceScope resource names must not be empty")
+        if len(self.resource_names) != len(set(self.resource_names)):
+            raise ContractViolation("ResourceScope resource names must be unique")
         if self.max_items <= 0:
             raise ContractViolation("ResourceScope.max_items must be positive")
 
