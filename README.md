@@ -67,8 +67,10 @@ flowchart TB
 
             EV --> PG[("PostgreSQL")]
             EV --> SG[("Temporal StateGraph")]
-            PG --> RCA["Agent RCA Orchestrator<br/>bounded reasoning · read-only investigation"]
-            SG --> RCA
+            PG --> KRCA["KRCA-style API Drilldown<br/>failure rate · latency · Top-N"]
+            SG --> LOC["StateGraph Localizer<br/>adaptive bounded fallback"]
+            KRCA --> LOC
+            LOC --> RCA["Agent RCA Orchestrator<br/>bounded reasoning · read-only investigation"]
             RCA --> GATE["Evidence Gate<br/>deterministic checks · citation guard"]
             GATE --> REPORT["Evidence-grounded<br/>JSON / Markdown Report"]
             REPORT --> PG
@@ -87,9 +89,10 @@ provider를 read-only로 조회한다. 수집 결과는 provenance와 hash를 �
 조사를 수행하고, deterministic check와 citation guard를 통과한 판단만 보고서로
 만든다. 모든 원인 판단과 보고서는 실제 `evidence_id`를 통해 역추적할 수 있다.
 
-현재 구현된 범위는 Incident/Evidence pipeline과 deterministic Fast Path
-reporting까지다. 위 Agent RCA orchestration, optional LLM 연동과 runtime 통합은
-목표 아키텍처이며 아직 구현·검증됐다는 뜻이 아니다.
+현재 fixture 구현 범위에는 Incident/Evidence pipeline, deterministic Fast Path,
+StateGraph core, KRCA-style drilldown scorer와 adaptive fallback contract가 포함된다.
+API별 시계열 feature 추출, 실제 dependency graph, Agent RCA orchestration,
+optional LLM 연동과 runtime 통합은 아직 구현·검증됐다는 뜻이 아니다.
 
 ## 데이터 수집 경계
 
@@ -132,18 +135,19 @@ StateGraph core는 Kubernetes, 특정 fintech 업무 또는 ChainOps ontology에
 ```text
 Prometheus / Kubernetes API·Event / Loki / Hubble / 기타 관측 소스
     ↓ read-only 수집
-Provider
-    ↓ ProviderBatch(EvidenceDraft)
-Collector / EvidenceBuilder
-    ↓ contract-valid EvidenceItem
-Domain Projector
-    ↓ Entity / SnapshotInterval / RelationInterval / EventAggregate
-GraphRepository
-    ↓ persistent adapter
-Graph DB                         현재 fixture는 in-memory repository
-    ↓ InvestigationScope로 제한된 탐색
-GraphLocalizer
-    ↓ frozen Context Package
+Provider → Collector / EvidenceBuilder → contract-valid EvidenceItem
+    ├─ API metric/dependency feature → KRCA-style drilldown → Top-N service seeds
+    └─ Domain Projector → GraphRepository → Graph DB
+
+Top-N seeds + Graph DB
+    ↓
+GraphLocalizer → initial bounded Context
+    ↓
+AdaptiveScopeController          KRCA next-ranked 또는 현재 경계 Entity만 승인
+    ↺ 충돌·복수 가설·복합 원인일 때 hard cap 안에서 재실행
+    ↓
+Frozen Context Package 또는 budget exhaustion/ABSTAIN
+    ↓
 RCA Agent                       후속 구현
 ```
 
@@ -179,10 +183,23 @@ Fintech projector     Request, Transaction, Ledger/Settlement state, Gateway
 Context Package로 변환한다.
 
 현재 domain-neutral Graph record와 `InvestigationScope`, 연속 동일 상태/관계를
-병합하는 in-memory interval repository, Kubernetes Evidence projector와 bounded
-localizer까지 fixture로 구현했다. Persistent Graph backend, Kubernetes watch 기반
-연속 projection과 Agent runtime 연결은 아직 구현하지 않았다. 특정 ChainOps
-모델은 현재 활성 범위에 포함하지 않는다.
+병합하는 in-memory interval repository, Kubernetes Evidence projector, KRCA-style
+API drilldown, bounded localizer와 adaptive fallback까지 fixture로 구현했다. Adaptive
+controller는 현재 Context Entity 또는 KRCA가 승인한 다음 순위 seed만 열고
+시간·도메인·관계 경계는 유지한다. Persistent Graph backend, API metric feature
+provider, Kubernetes watch와 실제 Agent assessment 연결은 아직 구현하지 않았다.
+
+KRCA-style drilldown은 장애율 상관관계와 latency anomaly, fluctuation contribution,
+correlation을 이용해 호출 edge를 점수화한다. 핵심은 다음처럼 장애율과 latency 중
+더 강한 전파 신호를 선택하는 것이다.
+
+```text
+Score(P, C) = max(FailureRateScore(P, C), LatencyScore(P, C))
+```
+
+threshold를 통과한 API만 재귀 탐색하고 service Top-N을 StateGraph localization의
+초기 후보로 전달한다. 식의 정의, paper-aligned 기본값, feature 계산 책임과 한계는
+[KRCA-style API Drilldown Contract](contracts/krca-drilldown.md)에 분리했다.
 
 ## 저장소 구조
 

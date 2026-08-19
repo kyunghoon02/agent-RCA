@@ -44,6 +44,24 @@ from .stategraph import (
     state_content_hash,
     validate_graph_record,
 )
+from .localization import (
+    AdaptiveLocalizationRound,
+    AdaptiveLocalizationRun,
+    AdaptiveScopeController,
+    AdaptiveScopePolicy,
+    LocalizationAssessment,
+    LocalizationAssessor,
+)
+from .krca import (
+    APIEdgeSignal,
+    APIRef,
+    KRCACandidate,
+    KRCADrilldownLocalizer,
+    KRCADrilldownPolicy,
+    KRCADrilldownRun,
+    KRCADrilldownScorer,
+    KRCAScoredEdge,
+)
 from .projectors import KubernetesEvidenceProjector
 
 __all__ = [
@@ -51,6 +69,12 @@ __all__ = [
     "AlertmanagerHTTPReceiver",
     "AlertmanagerNormalizer",
     "AlertmanagerWebhookWSGI",
+    "APIEdgeSignal",
+    "APIRef",
+    "AdaptiveLocalizationRound",
+    "AdaptiveLocalizationRun",
+    "AdaptiveScopeController",
+    "AdaptiveScopePolicy",
     "CollectionRequest",
     "CollectorOrchestrator",
     "CollectorSpec",
@@ -78,6 +102,14 @@ __all__ = [
     "KubernetesEvidenceProjector",
     "KubernetesResourceSpec",
     "KubernetesStateProvider",
+    "KRCACandidate",
+    "KRCADrilldownLocalizer",
+    "KRCADrilldownPolicy",
+    "KRCADrilldownRun",
+    "KRCADrilldownScorer",
+    "KRCAScoredEdge",
+    "LocalizationAssessment",
+    "LocalizationAssessor",
     "ProviderBatch",
     "PostgreSQLIncidentRepository",
     "PrometheusHTTPAPI",

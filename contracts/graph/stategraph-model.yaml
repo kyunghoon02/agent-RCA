@@ -147,6 +147,31 @@ localization:
     - relation_types
     - correlation_keys
   output: frozen-context-package
+  adaptive_expansion:
+    assessor_input: current-frozen-context-only
+    expand_when_any:
+      - insufficient_evidence
+      - contradictory_evidence
+      - competing_hypotheses
+      - multi_factor_suspected
+      - low_context_completeness
+    allowed_changes:
+      - promote_current_context_entity_to_seed
+      - promote_upstream-drilldown-approved-entity-to-seed
+      - increase_max_entities_within_hard_cap
+      - increase_max_depth_within_hard_cap
+    immutable_bounds:
+      - time_window
+      - domains
+      - relation_types
+      - correlation_keys
+    audit:
+      - expansion_trigger
+      - scope_per_round
+      - new_evidence_ids
+      - stop_reason
+      - budget_exhausted
+    on_budget_exhaustion: abstain
 
 retention:
   ordinary_history_hours: 72

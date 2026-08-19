@@ -7,6 +7,62 @@ preconditions:
   ground_truth_access_allowed: false
   write_tools_allowed: false
 
+krca_api_drilldown:
+  methodology: krca-api-level-drilldown-adaptation
+  tuning_status: paper-aligned-fixture-defaults-runtime-validation-required
+  propagation_threshold: 0.8
+  significance_alpha: 0.05
+  maximum_time_lag: 5
+  latency_weights:
+    anomaly: 0.2
+    fluctuation_contribution: 0.5
+    correlation: 0.3
+  top_n_services: 3
+  safety_cap:
+    max_depth: 8
+    max_evaluated_edges: 500
+  feature_requirements:
+    - api_dependency_identity
+    - statistically_tested_failure_rate_correlation
+    - latency_anomaly
+    - latency_fluctuation_contribution
+    - latency_correlation
+    - evidence_ids
+  on_missing_observability: adaptive_fallback_or_abstain
+  on_budget_exhaustion: adaptive_fallback_or_abstain
+
+adaptive_localization:
+  tuning_status: fixture-defaults-runtime-validation-required
+  initial_scope:
+    max_entities: 20
+    max_depth: 1
+  expansion:
+    entity_step: 20
+    depth_step: 1
+    max_rounds: 4
+    minimum_context_completeness: 0.7
+  hard_cap:
+    max_entities: 100
+    max_depth: 4
+  expand_when_any:
+    - insufficient_evidence
+    - contradictory_evidence
+    - competing_hypotheses_at_least_two
+    - multi_factor_suspected
+    - context_completeness_below_threshold
+  immutable_bounds:
+    - time_window
+    - domains
+    - relation_types
+    - correlation_keys
+  approved_external_seed_source: krca_next_ranked_candidates_only
+  stop_when_any:
+    - evidence_sufficient
+    - no_new_context
+    - scope_budget_exhausted
+    - round_budget_exhausted
+  on_budget_exhaustion: abstain_with_best_hypotheses
+
 fast_path:
   when_all:
     deterministic_result: proven
