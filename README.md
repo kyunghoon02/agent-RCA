@@ -1,7 +1,7 @@
 # Agent RCA
 
-KT Cloud의 VM 위에 재현 가능한 self-managed Kubernetes 운영환경을 만들고,
-Prometheus·Loki·Alertmanager·Kubernetes API·Cilium/Hubble에서 수집한 Evidence로
+GCP에 재현 가능한 GKE Standard 운영환경을 만들고,
+Prometheus·Loki·Alertmanager·Kubernetes API·GKE Dataplane V2에서 수집한 Evidence로
 Google Online Boutique 장애를 재현·분석하는 evidence-grounded Agent RCA 및
 인프라/SRE 포트폴리오다.
 
@@ -13,22 +13,24 @@ Deterministic rule은 별도의 주 경로가 아니라 Agent 내부 Evidence Ga
 
 ## 확정된 실행 경계
 
-- cloud target: KT Cloud
-- 우선 대상 zone: `DX-M1`
-- Kubernetes: VM 기반 self-managed cluster
-- cluster bootstrap/configuration: Ansible
-- CNI 및 network evidence: Cilium + Hubble
+- cloud target: Google Cloud
+- Kubernetes: GKE Standard
+- dev availability: zonal cluster; 실제 region/zone은 Terraform 입력으로 확정
+- network dataplane/evidence: GKE Dataplane V2와 관리형 flow observability
+- workload identity: Workload Identity Federation for GKE
+- Terraform remote state: versioning을 활성화한 사전 생성 GCS bucket
 - target application: Google Online Boutique `v0.10.6`
 - RCA 권한: read-only, bounded query, 근거 부족 시 `ABSTAIN`
 
-KT Cloud 계정에서 사용할 인증·Compute·Network·Block Storage API와 표준
-OpenStack provider 호환성은 아직 확인되지 않았다. 따라서 provider 이름과
-Terraform 리소스를 추측해서 구현하지 않고 capability gate 뒤에 둔다.
+GCP/GKE 설계 경계는 확정했지만 target project, billing, region/zone, quota,
+Application Default Credentials와 state bucket은 아직 runtime 확인 전이다.
+따라서 Terraform contract 구현은 시작할 수 있지만 실제 `plan/apply` 성공이나
+GKE runtime은 검증됐다고 표현하지 않는다.
 
 ## 포트폴리오에서 보여줄 역량
 
-1. capability가 확인된 KT Cloud API를 Terraform으로 재현한다.
-2. Ansible로 Kubernetes control plane/worker, Cilium과 Hubble을 구성하고 검증한다.
+1. GCP project bootstrap과 GKE 기반을 Terraform으로 재현한다.
+2. VPC-native GKE Standard, Dataplane V2와 Workload Identity 경계를 검증한다.
 3. metric, log, event, resource state와 network flow를 Incident time window로 묶는다.
 4. 반복 가능한 fault fixture와 수동 troubleshooting 결과를 자동 RCA와 비교한다.
 5. 최소 권한, redaction, timeout, partial failure, 비용과 destroy 경계를 검증한다.
@@ -43,16 +45,15 @@ Evidence를 먼저 제시한다.
 flowchart TB
     USER["k6 / 사용자 트래픽"] --> APP
 
-    subgraph KT["KT Cloud · DX-M1"]
-        TF["Terraform<br/>Network · VM · Volume"] --> VM["KT Cloud VM"]
-        AN["Ansible<br/>Kubernetes · Cilium/Hubble"] --> KAPI
+    subgraph GCP["Google Cloud"]
+        TF["Terraform<br/>VPC · GKE · IAM · GCS state"] --> KAPI
 
-        subgraph K8S["Self-managed Kubernetes"]
-            KAPI["Kubernetes API / Nodes"] --> APP["Online Boutique"]
+        subgraph K8S["GKE Standard · zonal dev"]
+            KAPI["GKE control plane / Nodes"] --> APP["Online Boutique"]
 
             APP --> P["Prometheus"]
             APP --> L["Loki"]
-            APP --> H["Cilium / Hubble"]
+            APP --> H["GKE Dataplane V2<br/>flow observability"]
             P -->|"alert rule"| AM["Alertmanager"]
 
             AM -->|"webhook"| RX["Authenticated HTTP Receiver"]
@@ -77,7 +78,6 @@ flowchart TB
             PG --> VIEW["Read-only RCA Viewer"]
         end
 
-        VM --> KAPI
     end
 
     RCA -.->|"redacted bounded context"| LLM["External LLM Provider<br/>optional"]
@@ -101,7 +101,7 @@ optional LLM 연동과 runtime 통합은 아직 구현·검증됐다는 뜻이 �
 - 원본 metric/log/network flow는 각 관측 시스템의 retention에 두고, Evidence와
   StateGraph에는 요약, provenance, content hash와 필요한 state만 저장한다.
 - 검색 결과 없음, retention 만료, timeout과 provider 실패를 구분한다.
-- eBPF/Hubble은 보조 evidence이며 모든 장애의 기본 원인을 대신 판정하지 않는다.
+- Dataplane V2 flow는 보조 evidence이며 모든 장애의 기본 원인을 대신 판정하지 않는다.
 
 ## Provider 확장 계획
 
@@ -111,7 +111,7 @@ resource/Event read-only provider다. 아래 provider는 장애 원인 범위를
 
 - Loki application/container log
 - OpenTelemetry trace
-- Cilium/Hubble network flow
+- GKE Dataplane V2 network flow
 - Git·Argo CD·Kubernetes rollout 기반 deployment/change history
 - database connection, lock, replication과 slow-query 상태
 - queue/worker backlog, consumer와 retry 상태
@@ -124,6 +124,12 @@ provider는 원인을 직접 선언하지 않고 관측 사실을 공통 `Eviden
 정규화하며, read-only scope, time window, item/response limit, provenance,
 redaction과 partial failure 계약을 따라야 한다.
 
+KRCA의 API dependency/metric feature provider는 위의 일반 관측 범위 확장
+provider와 구분한다. 이 provider는 primary localization 입력을 만드는 core
+dependency이므로 StateGraph 연결형 vertical slice와 service-to-Entity resolver
+계약을 먼저 고정한 직후 구현하고, Persistent Graph backend와 Agent runtime보다
+앞서 실제 Top-N seed 흐름에 연결한다.
+
 ## 범용 Temporal StateGraph 방향
 
 StateGraph core는 Kubernetes, 특정 fintech 업무 또는 ChainOps ontology에
@@ -133,7 +139,7 @@ StateGraph core는 Kubernetes, 특정 fintech 업무 또는 ChainOps ontology에
 전체 Evidence-to-Graph 흐름과 계층별 책임은 다음과 같다.
 
 ```text
-Prometheus / Kubernetes API·Event / Loki / Hubble / 기타 관측 소스
+Prometheus / Kubernetes API·Event / Loki / Dataplane V2 / 기타 관측 소스
     ↓ read-only 수집
 Provider → Collector / EvidenceBuilder → contract-valid EvidenceItem
     ├─ API metric/dependency feature → KRCA-style drilldown → Top-N service seeds
@@ -201,16 +207,28 @@ threshold를 통과한 API만 재귀 탐색하고 service Top-N을 StateGraph lo
 초기 후보로 전달한다. 식의 정의, paper-aligned 기본값, feature 계산 책임과 한계는
 [KRCA-style API Drilldown Contract](contracts/krca-drilldown.md)에 분리했다.
 
+다음 구현 순서는 다음과 같이 고정한다.
+
+1. `StateGraphRepository` port와 `IncidentLocalizationService`를 정의한다.
+2. service-to-Entity resolver 계약을 만들고 기존 Kubernetes Evidence로
+   `Projector → StateGraph → Frozen Context` 연결형 vertical slice를 검증한다.
+3. API dependency/metric feature provider를 구현한다.
+4. KRCA Top-N service를 StateGraph seed로 해석하는 runtime 흐름을 연결한다.
+5. 같은 repository contract를 만족하는 Persistent Graph backend를 구현한다.
+6. Graph-localized Context만 조회하는 bounded read-only RCA Agent를 연결한다.
+
+Loki, Dataplane V2 flow, OpenTelemetry와 DB/Queue 등 일반 확장 provider는 이 core 흐름을
+검증한 뒤 실제 fault scenario가 요구할 때 추가한다.
+
 ## 저장소 구조
 
 ```text
-automation/ansible/  self-managed cluster 자동화 경계와 공통 dependency
-config/              프로젝트 범위, KT capability, RCA routing 정책
+config/              프로젝트 범위, GCP readiness, RCA routing 정책
 contracts/           Incident, Evidence, Graph, RCA 및 provider 계약
 db/migrations/       PostgreSQL schema migration
 docs/                아키텍처, ADR, runbook, 진행 기록
 evaluation/          평가 사전등록과 Ground Truth 격리 정책
-infra/terraform/     KT Cloud capability 확인 후 구현할 provisioning 경계
+infra/terraform/     GCP bootstrap과 GKE provisioning 경계
 platform/            cloud-neutral Kubernetes manifest와 Kustomize base
 src/                 Incident/Evidence/RCA core
 tests/               deterministic fixture와 core unit test
@@ -245,13 +263,21 @@ fixture로 확인한다.
 만들어 동일 repository contract를 실행하고 그 schema만 제거한다. 공유 DB를
 truncate하지 않으며 DSN을 저장소나 명령 출력에 기록하지 않는다.
 
-KT Cloud capability gate 상태는 다음 파일에서 확인한다.
+GCP 설계와 실제 `plan/apply` 준비 상태는 다음 명령으로 분리해 확인한다.
 
 ```bash
-make ktcloud-readiness
+make gcp-readiness
 ```
 
-필수 API가 확인되기 전에는 이 명령이 의도적으로 준비 미완료 상태를 반환한다.
+현재 설계 gate는 준비됐지만 project, billing, location, 인증, API와 GCS backend가
+실제 확인되기 전에는 `plan/apply` 준비 미완료 상태를 의도적으로 반환한다.
+
+## 상세 문서
+
+- [GCP/GKE 실행 환경 ADR](docs/adr/0007-gcp-gke-runtime-boundary.md)
+- [GCP/GKE 목표 아키텍처](docs/architecture/gcp-overview.md)
+- [GCP/GKE Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
+- [GCP/GKE 구현 로드맵](docs/roadmap/gcp-plan.md)
 
 Online Boutique remote base render에는 GitHub 접근이 필요하다.
 

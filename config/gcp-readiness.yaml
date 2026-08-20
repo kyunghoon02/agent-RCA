@@ -1,0 +1,94 @@
+schema_version: "1.0.0"
+
+decision:
+  cloud: gcp
+  status: architecture-confirmed
+  confirmed_at: "2026-08-19"
+  location: input-required
+  kubernetes_service: gke
+  kubernetes_mode: standard
+  cluster_availability: zonal-dev
+  dataplane: gke-dataplane-v2
+  network_observability: gke-dataplane-v2-observability
+  workload_identity: workload-identity-federation
+  remote_state_backend: gcs
+
+design_capabilities:
+  terraform_google_provider:
+    status: verified
+    evidence_url: https://registry.terraform.io/providers/hashicorp/google/latest/docs
+
+  gke_standard_mode:
+    status: verified
+    evidence_url: https://cloud.google.com/kubernetes-engine/docs/concepts/configuration-overview
+
+  gke_dataplane_v2_observability:
+    status: verified
+    evidence_url: https://cloud.google.com/kubernetes-engine/docs/concepts/about-dpv2-observability
+
+  workload_identity_federation:
+    status: verified
+    evidence_url: https://cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+
+  gcs_remote_state:
+    status: verified
+    evidence_url: https://developer.hashicorp.com/terraform/language/backend/gcs
+
+runtime_inputs:
+  target_project:
+    status: pending-user-input
+    required_evidence:
+      - project_id
+
+  billing:
+    status: pending-runtime-verification
+    required_evidence:
+      - billing_enabled
+      - budget_alert_configured
+
+  location_and_quota:
+    status: pending-user-input
+    required_evidence:
+      - region
+      - zone
+      - gke_and_compute_quota
+
+  local_authentication:
+    status: pending-runtime-verification
+    required_evidence:
+      - application_default_credentials_or_service_account_impersonation
+
+  required_apis:
+    status: pending-bootstrap
+    required_evidence:
+      - serviceusage_googleapis_com
+      - container_googleapis_com
+      - compute_googleapis_com
+      - iam_googleapis_com
+
+  remote_state_bucket:
+    status: pending-bootstrap
+    required_evidence:
+      - preexisting_gcs_bucket
+      - object_versioning
+      - least_privilege_iam
+
+gates:
+  terraform_design:
+    status: ready
+    required_capabilities:
+      - terraform_google_provider
+      - gke_standard_mode
+      - gke_dataplane_v2_observability
+      - workload_identity_federation
+      - gcs_remote_state
+
+  terraform_plan_apply:
+    status: blocked
+    required_runtime_inputs:
+      - target_project
+      - billing
+      - location_and_quota
+      - local_authentication
+      - required_apis
+      - remote_state_bucket

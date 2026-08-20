@@ -256,17 +256,6 @@ def validate_namespaces() -> None:
     legacy = {"platform", "ai-serving", "aiops"} & names
     if legacy:
         raise ValidationFailure(f"legacy namespaces remain: {sorted(legacy)}")
-    for document in documents:
-        annotations = document.get("metadata", {}).get("annotations", {})
-        gke_annotations = [
-            key for key in annotations if key.startswith("policy.network.gke.io/")
-        ]
-        if gke_annotations:
-            raise ValidationFailure(
-                f"active namespace contains GKE-only annotations: {gke_annotations}"
-            )
-
-
 def validate_rbac_documents(documents: list[dict[str, Any]]) -> None:
     service_accounts = {
         (document["metadata"].get("namespace"), document["metadata"]["name"])
@@ -328,138 +317,113 @@ def validate_rbac() -> None:
 def validate_versions_and_manifests() -> None:
     versions = load_yaml_documents(ROOT / "platform" / "versions.yaml")[0]
     expected_execution_target = {
-        "cloud": "kt-cloud",
-        "zone": "DX-M1",
+        "cloud": "gcp",
+        "location": "input-required",
     }
     if versions.get("execution_target") != expected_execution_target:
-        raise ValidationFailure("platform version boundary must target KT Cloud DX-M1")
+        raise ValidationFailure("platform version boundary must target GCP")
     expected_kubernetes_boundary = {
-        "mode": "self-managed-on-vm",
-        "distribution": "pending-verification",
-        "bootstrap_owner": "ansible",
-        "cni": "cilium",
-        "cilium_version": "pending-verification",
-        "network_observability": "hubble",
+        "service": "gke",
+        "mode": "standard",
+        "cluster_availability": "zonal-dev",
+        "release_channel": "regular",
+        "dataplane": "gke-dataplane-v2",
+        "network_observability": "gke-dataplane-v2-observability",
+        "workload_identity": "workload-identity-federation",
     }
     if versions.get("kubernetes") != expected_kubernetes_boundary:
         raise ValidationFailure(
-            "Kubernetes boundary must remain self-managed with Ansible, Cilium, and Hubble"
+            "Kubernetes boundary must remain GKE Standard with Dataplane V2 and Workload Identity"
         )
-    if "gke" in versions or "google_provider" in versions.get("terraform", {}):
-        raise ValidationFailure("active platform versions still contain a GKE boundary")
-    if versions["terraform"].get("provider_selection") != (
-        "pending-capability-verification"
-    ):
-        raise ValidationFailure(
-            "Terraform provider must remain capability-gated until KT Cloud verification"
-        )
+    if versions["terraform"].get("provider") != "hashicorp/google":
+        raise ValidationFailure("Terraform provider must be hashicorp/google")
 
     scope = load_yaml_documents(ROOT / "config" / "project-scope.yaml")[0]
     expected_scope_target = {
         **expected_execution_target,
-        "provisioning_gate": "capability-verification-required",
-        "kubernetes_mode": "self-managed-on-vm",
-        "bootstrap_owner": "ansible",
-        "cni": "cilium",
-        "network_observability": "hubble",
+        "provisioning_status": "design-ready-runtime-unverified",
+        "kubernetes_service": "gke",
+        "kubernetes_mode": "standard",
+        "cluster_availability": "zonal-dev",
+        "dataplane": "gke-dataplane-v2",
+        "network_observability": "gke-dataplane-v2-observability",
+        "workload_identity": "workload-identity-federation",
     }
     if scope.get("execution_target") != expected_scope_target:
-        raise ValidationFailure("project scope and platform KT Cloud boundaries disagree")
-    forbidden_gke_scope_values = {
-        "gke-network-policy-logs",
-        "always-on-gke",
-        "regional-gke",
-    }
-    scope_values = set(scope.get("secondary_evidence", [])) | set(
-        scope.get("excluded_from_mvp", [])
-    )
-    stale_scope_values = forbidden_gke_scope_values & scope_values
-    if stale_scope_values:
-        raise ValidationFailure(
-            f"active project scope still contains GKE-only values: {sorted(stale_scope_values)}"
-        )
+        raise ValidationFailure("project scope and platform GCP boundaries disagree")
 
-    capabilities = load_yaml_documents(
-        ROOT / "config" / "kt-cloud-capabilities.yaml"
-    )[0]
-    expected_capability_decision = {
+    readiness = load_yaml_documents(ROOT / "config" / "gcp-readiness.yaml")[0]
+    expected_readiness_decision = {
         **expected_execution_target,
-        "status": "project-confirmed",
-        "confirmed_at": "2026-08-14",
-        "kubernetes_mode": "self-managed-on-vm",
-        "bootstrap_owner": "ansible",
-        "cni": "cilium",
-        "network_observability": "hubble",
+        "status": "architecture-confirmed",
+        "confirmed_at": "2026-08-19",
+        "kubernetes_service": "gke",
+        "kubernetes_mode": "standard",
+        "cluster_availability": "zonal-dev",
+        "dataplane": "gke-dataplane-v2",
+        "network_observability": "gke-dataplane-v2-observability",
+        "workload_identity": "workload-identity-federation",
+        "remote_state_backend": "gcs",
     }
-    if capabilities.get("decision") != expected_capability_decision:
-        raise ValidationFailure("KT Cloud capability decision does not match the target")
+    if readiness.get("decision") != expected_readiness_decision:
+        raise ValidationFailure("GCP readiness decision does not match the target")
 
-    required_capabilities = {
-        "tenant_openstack_identity_api",
-        "terraform_openstack_provider_compatibility",
-        "compute_api",
-        "network_api",
-        "block_storage_api",
-        "remote_state_backend",
+    required_design_capabilities = {
+        "terraform_google_provider",
+        "gke_standard_mode",
+        "gke_dataplane_v2_observability",
+        "workload_identity_federation",
+        "gcs_remote_state",
     }
-    recorded_capabilities = capabilities.get("capabilities", {})
-    missing_capabilities = required_capabilities - set(recorded_capabilities)
-    if missing_capabilities:
+    recorded_design = readiness.get("design_capabilities", {})
+    missing_design = required_design_capabilities - set(recorded_design)
+    if missing_design:
         raise ValidationFailure(
-            f"KT Cloud capability matrix is incomplete: {sorted(missing_capabilities)}"
+            f"GCP design capability matrix is incomplete: {sorted(missing_design)}"
         )
-    unresolved_capabilities = {
+    unresolved_design = {
         capability
-        for capability in required_capabilities
-        if recorded_capabilities[capability].get("status") != "verified"
+        for capability in required_design_capabilities
+        if recorded_design[capability].get("status") != "verified"
     }
-    terraform_gate = capabilities.get("gates", {}).get(
-        "terraform_implementation", {}
-    )
-    if unresolved_capabilities and terraform_gate.get("status") != "blocked":
+    if unresolved_design:
         raise ValidationFailure(
-            "Terraform implementation gate must stay blocked while capabilities are unresolved"
-        )
-    if set(terraform_gate.get("required_capabilities", [])) != required_capabilities:
-        raise ValidationFailure(
-            "Terraform implementation gate does not cover every required capability"
+            f"GCP Terraform design capabilities are unresolved: {sorted(unresolved_design)}"
         )
 
-    automation_requirements = {
-        name: version
-        for name, version in (
-            line.strip().split("==", maxsplit=1)
-            for line in (
-                ROOT / "automation" / "ansible" / "requirements.txt"
-            ).read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        )
-    }
-    expected_automation_requirements = {
-        "ansible-core": versions["automation"]["ansible_core"],
-        "kubernetes": versions["automation"]["kubernetes_python_client"],
-    }
-    for package, expected_version in expected_automation_requirements.items():
-        if automation_requirements.get(package) != expected_version:
-            raise ValidationFailure(
-                f"{package} version mismatch: expected {expected_version}, "
-                f"got {automation_requirements.get(package)}"
-            )
-
-    collection_requirements = load_yaml_documents(
-        ROOT / "automation" / "ansible" / "collections" / "requirements.yml"
-    )[0]
-    kubernetes_collection = next(
-        collection
-        for collection in collection_requirements["collections"]
-        if collection["name"] == "kubernetes.core"
-    )
-    if (
-        kubernetes_collection["version"]
-        != versions["automation"]["kubernetes_collection"]
-    ):
+    design_gate = readiness.get("gates", {}).get("terraform_design", {})
+    if design_gate.get("status") != "ready":
+        raise ValidationFailure("GCP Terraform design gate must be ready")
+    if set(design_gate.get("required_capabilities", [])) != required_design_capabilities:
         raise ValidationFailure(
-            "kubernetes.core collection version does not match platform/versions.yaml"
+            "GCP Terraform design gate does not cover every required capability"
+        )
+
+    required_runtime_inputs = {
+        "target_project",
+        "billing",
+        "location_and_quota",
+        "local_authentication",
+        "required_apis",
+        "remote_state_bucket",
+    }
+    recorded_runtime_inputs = readiness.get("runtime_inputs", {})
+    missing_runtime_inputs = required_runtime_inputs - set(recorded_runtime_inputs)
+    if missing_runtime_inputs:
+        raise ValidationFailure(
+            f"GCP runtime input matrix is incomplete: {sorted(missing_runtime_inputs)}"
+        )
+    runtime_gate = readiness.get("gates", {}).get("terraform_plan_apply", {})
+    if set(runtime_gate.get("required_runtime_inputs", [])) != required_runtime_inputs:
+        raise ValidationFailure("GCP runtime gate does not cover every required input")
+    unresolved_runtime = {
+        item
+        for item in required_runtime_inputs
+        if recorded_runtime_inputs[item].get("status") != "verified"
+    }
+    if unresolved_runtime and runtime_gate.get("status") != "blocked":
+        raise ValidationFailure(
+            "Terraform plan/apply gate must stay blocked while runtime inputs are unresolved"
         )
 
     boutique = load_yaml_documents(
@@ -553,7 +517,7 @@ def main() -> None:
     print("- 6 contract fixture groups are valid")
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
-    print("- KT Cloud target/capability gate, automation dependencies, and Kustomize pins are consistent")
+    print("- GCP/GKE target, readiness gates, and Kustomize pins are consistent")
     print("- routing, evaluation, Graph, and Ground Truth policies are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 

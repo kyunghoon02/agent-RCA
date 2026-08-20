@@ -7,13 +7,15 @@ target:
   commit_sha: 5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb
 
 execution_target:
-  cloud: kt-cloud
-  zone: DX-M1
-  provisioning_gate: capability-verification-required
-  kubernetes_mode: self-managed-on-vm
-  bootstrap_owner: ansible
-  cni: cilium
-  network_observability: hubble
+  cloud: gcp
+  location: input-required
+  provisioning_status: design-ready-runtime-unverified
+  kubernetes_service: gke
+  kubernetes_mode: standard
+  cluster_availability: zonal-dev
+  dataplane: gke-dataplane-v2
+  network_observability: gke-dataplane-v2-observability
+  workload_identity: workload-identity-federation
 
 platform_namespaces:
   - incident-platform
@@ -47,9 +49,9 @@ primary_evidence:
 
 secondary_evidence:
   - opentelemetry-traces
-  - cilium-hubble-network-flow
+  - gke-dataplane-v2-network-flow
   - git-or-argocd-history
-  - provider-audit-logs
+  - gcp-audit-logs
 
 excluded_from_mvp:
   - target-application-development
