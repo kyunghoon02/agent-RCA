@@ -1,4 +1,4 @@
-# Provider interface와 KT Cloud runtime 경계
+# Provider interface와 GCP/kubeadm runtime 경계
 
 > 상태: Phase 0 contract + Prometheus/Kubernetes adapter code
 >
@@ -35,7 +35,7 @@ request_id
 - 모든 원본 위치와 query는 `EvidenceItem.provenance`로 남긴다.
 - Reasoning 계층은 임의 query string을 실행하지 않고 allowlisted provider method만
   호출한다.
-- KT Cloud infrastructure API와 observability provider를 분리한다. RCA runtime은
+- GCP infrastructure API와 observability provider를 분리한다. RCA runtime은
   cloud resource를 생성·변경·삭제하지 않는다.
 
 ## interface
@@ -143,7 +143,7 @@ domain-neutral하며 Kubernetes와 다른 서비스 의미는 Evidence projector
 | 단계 | 구현 |
 |---|---|
 | fixture test | in-memory repository |
-| KT Cloud runtime | capability/topology 확인 뒤 backend 고정 |
+| GCP/kubeadm runtime | capability/topology 확인 뒤 backend 고정 |
 
 ### IncidentRepository
 
@@ -157,16 +157,43 @@ append_audit_event(incident_id, audit_event)
 ```
 
 목표 runtime은 cluster 내부 PostgreSQL adapter다. managed database는 MVP 범위가
-아니며, storage class와 backup 경계는 KT Cloud storage capability 확인 뒤
+아니며, storage class와 backup 경계는 GCP/kubeadm storage topology 확인 뒤
 고정한다.
+
+### KnowledgeRetriever
+
+```text
+retrieve(
+  incident_id,
+  investigation_scope,
+  localized_entity_keys,
+  allowed_document_types,
+  query_terms,
+  top_k,
+  character_budget,
+  request_id
+)
+```
+
+- StateGraph가 localization한 Entity 또는 승인한 다음 seed 범위만 조회한다.
+- `approved`이고 Incident 시점에 유효한 reference 문서만 반환한다.
+- 문서 ID, version, content hash, retrieval method와 rank를 보존한다.
+- Ground Truth, fault injection 정답과 미검증 Agent 출력은 index에 포함하지 않는다.
+- retrieved reference는 조사 힌트이며 `EvidenceItem`으로 변환하지 않는다.
+- MVP는 metadata/entity/lexical retrieval을 사용하며 Vector DB를 요구하지 않는다.
+
+상세 contract는 [`knowledge-retrieval.md`](knowledge-retrieval.md)를 따른다. Retriever
+runtime과 ReferenceDocument schema는 아직 구현하지 않았다.
 
 ### LLMProvider
 
 ```text
-generate_structured(task_type, context_package, output_schema, budget)
+generate_structured(task_type, agent_context, tool_schemas, output_schema, budget)
 ```
 
+- `agent_context`는 Frozen Context Package와 bounded RetrievedReference만 포함한다.
 - Context Package에 포함되지 않은 Evidence를 인용할 수 없다.
+- reference citation과 Evidence citation을 서로 다른 ID로 출력한다.
 - structured output은 저장 전에 JSON Schema와 evidence reference validation을
   통과해야 한다.
 - Kubernetes/cloud write tool과 shell은 제공하지 않는다.
@@ -184,9 +211,13 @@ Collector
 Graph Localizer
 -> 조사할 entity와 statepath 범위 결정
 
+Knowledge Retriever
+-> localized entity와 허용된 문서 종류에 맞는 versioned reference만 선택
+
 Reasoning Controller
--> 동결된 Context Package 안에서 원인 가설 평가
+-> 동결된 Context Package와 bounded reference 안에서 tool-calling 조사와 가설 평가
 ```
 
-Graph Localizer는 어디를 조사할지 결정하고 Reasoning Controller는 Evidence가
-어떤 원인을 지지하는지 판단한다.
+Graph Localizer는 어디를 조사할지 결정하고 Knowledge Retriever는 어떤 운영 문서를
+참고할지 제한한다. Reasoning Controller는 LLM API와 read-only tools를 조율하고,
+Evidence Gate는 실제 Evidence가 어떤 원인을 지지하는지 검증한다.

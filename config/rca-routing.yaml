@@ -63,6 +63,36 @@ adaptive_localization:
     - round_budget_exhausted
   on_budget_exhaustion: abstain_with_best_hypotheses
 
+knowledge_retrieval:
+  status: design-contract-runtime-unimplemented
+  allowed_review_status:
+    - approved
+  allowed_document_types:
+    - architecture
+    - service-catalog
+    - runbook
+    - slo
+    - tool-guide
+  required_scope:
+    - incident_id
+    - investigation_scope
+    - localized_entity_keys
+    - allowed_document_types
+  bounds:
+    max_documents: 5
+    max_characters: 12000
+  evidence_separation:
+    references_are_evidence: false
+    require_evidence_id_for_root_cause: true
+  prohibited_sources:
+    - evaluation-ground-truth
+    - fault-injection-answer
+    - unverified-agent-output
+    - secret-or-credential
+  incident_memory:
+    enabled: false
+    activation_requirement: verified-rca-corpus-and-evaluation-baseline
+
 fast_path:
   when_all:
     deterministic_result: proven

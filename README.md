@@ -1,286 +1,218 @@
 # Agent RCA
 
-GCP에 재현 가능한 GKE Standard 운영환경을 만들고,
-Prometheus·Loki·Alertmanager·Kubernetes API·GKE Dataplane V2에서 수집한 Evidence로
-Google Online Boutique 장애를 재현·분석하는 evidence-grounded Agent RCA 및
-인프라/SRE 포트폴리오다.
+Agent RCA는 운영 장애를 bounded read-only Evidence로 조사하고, 모든 결론을 실제
+`evidence_id`로 추적하는 evidence-grounded incident analysis platform이다. 근거가
+충분하지 않거나 서로 충돌하면 원인을 추측하지 않고 `ABSTAIN`한다.
 
-이 프로젝트의 Agent RCA는 LLM이 근거 없이 원인을 추측하는 기능이 아니다.
-Agent RCA Orchestrator가 bounded Evidence, Temporal StateGraph와 read-only 조사
-도구를 사용해 Incident 분석을 주도하고, 모든 결론을 실제 Evidence로 추적한다.
-Deterministic rule은 별도의 주 경로가 아니라 Agent 내부 Evidence Gate에서 명확한
-장애 신호를 검증하고 조사를 조기 종료하거나 `ABSTAIN`시키는 안전장치다.
-
-## 확정된 실행 경계
-
-- cloud target: Google Cloud
-- Kubernetes: GKE Standard
-- dev availability: zonal cluster; 실제 region/zone은 Terraform 입력으로 확정
-- network dataplane/evidence: GKE Dataplane V2와 관리형 flow observability
-- workload identity: Workload Identity Federation for GKE
-- Terraform remote state: versioning을 활성화한 사전 생성 GCS bucket
-- target application: Google Online Boutique `v0.10.6`
-- RCA 권한: read-only, bounded query, 근거 부족 시 `ABSTAIN`
-
-GCP/GKE 설계 경계는 확정했지만 target project, billing, region/zone, quota,
-Application Default Credentials와 state bucket은 아직 runtime 확인 전이다.
-따라서 Terraform contract 구현은 시작할 수 있지만 실제 `plan/apply` 성공이나
-GKE runtime은 검증됐다고 표현하지 않는다.
-
-## 포트폴리오에서 보여줄 역량
-
-1. GCP project bootstrap과 GKE 기반을 Terraform으로 재현한다.
-2. VPC-native GKE Standard, Dataplane V2와 Workload Identity 경계를 검증한다.
-3. metric, log, event, resource state와 network flow를 Incident time window로 묶는다.
-4. 반복 가능한 fault fixture와 수동 troubleshooting 결과를 자동 RCA와 비교한다.
-5. 최소 권한, redaction, timeout, partial failure, 비용과 destroy 경계를 검증한다.
-6. 모든 RCA 결론을 `evidence_id`로 추적하고 근거가 부족하면 판단을 보류한다.
-
-AI/LLM 기능보다 인프라 생성, 관측, 장애 재현, troubleshooting과 운영 검증
-Evidence를 먼저 제시한다.
+Agent RCA Orchestrator가 Incident 조사 상태와 budget을 관리하며, deterministic
+rule과 citation validation은 별도 주 경로가 아니라 Orchestrator 내부 `Evidence Gate`로
+동작한다. 이 저장소는 cloud-neutral RCA core와 Kubernetes reference runtime을 함께
+구축한다.
 
 ## 목표 아키텍처
 
+![Agent RCA cloud-neutral logical architecture with a Kubernetes reference runtime](docs/assets/agent-rca-target-architecture.svg)
+
+> Cloud-neutral logical architecture이며, single-node kubeadm Kubernetes는 현재
+> reference runtime이다.
+
+## Incident 조사 흐름
+
 ```mermaid
-flowchart TB
-    USER["k6 / 사용자 트래픽"] --> APP
+sequenceDiagram
+    autonumber
+    participant AM as Alertmanager
+    participant IC as Incident Core
+    participant BC as Bounded Collector
+    participant ES as Evidence Sources
+    participant LS as KRCA + StateGraph
+    participant KR as Knowledge Retriever
+    participant AO as Agent RCA Orchestrator
+    participant EG as Evidence Gate (internal)
 
-    subgraph GCP["Google Cloud"]
-        TF["Terraform<br/>VPC · GKE · IAM · GCS state"] --> KAPI
-
-        subgraph K8S["GKE Standard · zonal dev"]
-            KAPI["GKE control plane / Nodes"] --> APP["Online Boutique"]
-
-            APP --> P["Prometheus"]
-            APP --> L["Loki"]
-            APP --> H["GKE Dataplane V2<br/>flow observability"]
-            P -->|"alert rule"| AM["Alertmanager"]
-
-            AM -->|"webhook"| RX["Authenticated HTTP Receiver"]
-            RX --> INC["Incident lifecycle"]
-            INC --> COL["Bounded Collector Orchestrator"]
-
-            COL -->|"range query"| P
-            COL -->|"log query"| L
-            COL -->|"network flow query"| H
-            COL -->|"GET-only resource / Event"| KAPI
-            COL --> EV["Evidence<br/>provenance · redaction · hash"]
-
-            EV --> PG[("PostgreSQL")]
-            EV --> SG[("Temporal StateGraph")]
-            PG --> KRCA["KRCA-style API Drilldown<br/>failure rate · latency · Top-N"]
-            SG --> LOC["StateGraph Localizer<br/>adaptive bounded fallback"]
-            KRCA --> LOC
-            LOC --> RCA["Agent RCA Orchestrator<br/>bounded reasoning · read-only investigation"]
-            RCA --> GATE["Evidence Gate<br/>deterministic checks · citation guard"]
-            GATE --> REPORT["Evidence-grounded<br/>JSON / Markdown Report"]
-            REPORT --> PG
-            PG --> VIEW["Read-only RCA Viewer"]
-        end
-
+    AM->>IC: Alert webhook
+    IC->>IC: Deduplicate and freeze scope
+    IC->>BC: Start bounded collection
+    par Metrics and logs
+        BC->>ES: Query Prometheus and Loki
+        ES-->>BC: Telemetry
+    and Kubernetes and network
+        BC->>ES: Query API, Events and Hubble
+        ES-->>BC: Resource state and flows
     end
-
-    RCA -.->|"redacted bounded context"| LLM["External LLM Provider<br/>optional"]
+    Note over IC,BC: Normalize scope, provenance, redaction, hash and schema
+    BC-->>IC: Validated EvidenceItems
+    IC->>LS: Evidence-backed localization
+    LS-->>AO: Frozen Context
+    AO->>KR: Retrieve scoped references
+    KR-->>AO: Versioned Top-K knowledge
+    opt Ambiguous Incident
+        AO->>ES: Allowlisted read-only tool calls
+        ES-->>AO: Additional Evidence
+        AO->>AO: Conditional external LLM reasoning
+    end
+    AO->>EG: Hypotheses and citations
+    alt Evidence is sufficient and consistent
+        EG-->>IC: Evidence-grounded Report
+    else Evidence is missing or contradictory
+        EG-->>IC: ABSTAIN with explicit gaps
+    end
 ```
 
-Alertmanager는 장애 신호를 전달하고, RCA 플랫폼은 Incident 범위 안에서 각
-provider를 read-only로 조회한다. 수집 결과는 provenance와 hash를 가진 Evidence로
-정규화된다. Agent RCA Orchestrator는 저장된 Evidence와 StateGraph를 바탕으로
-조사를 수행하고, deterministic check와 citation guard를 통과한 판단만 보고서로
-만든다. 모든 원인 판단과 보고서는 실제 `evidence_id`를 통해 역추적할 수 있다.
+KRCA-style API Drilldown은 failure-rate와 latency propagation으로 Top-N service
+seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Frozen Context`로
+고정한다. Operational Knowledge는 localized Entity 범위 안의 조사 reference로만
+사용하며 root cause는 실제 `evidence_id` 없이는 확정하지 않는다.
 
-현재 fixture 구현 범위에는 Incident/Evidence pipeline, deterministic Fast Path,
-StateGraph core, KRCA-style drilldown scorer와 adaptive fallback contract가 포함된다.
-API별 시계열 feature 추출, 실제 dependency graph, Agent RCA orchestration,
-optional LLM 연동과 runtime 통합은 아직 구현·검증됐다는 뜻이 아니다.
+## Evidence와 안전 경계
 
-## 데이터 수집 경계
+| 입력 계층 | 역할 | 원인 증명 가능 여부 |
+|---|---|---|
+| Runtime Evidence | metric, log, resource state, Event, network flow와 change history | 가능, `evidence_id` 필수 |
+| Graph Context | Evidence에서 파생된 Entity, 상태·관계와 시간 구간 | 조사 범위 결정 |
+| Operational Knowledge | versioned architecture, catalog, runbook과 SLO | 불가능, 조사 reference 전용 |
+| Incident Memory | 검증된 과거 Incident와 일반화된 진단 경험 | 후속 단계, runtime Evidence로 재검증 필요 |
+| Ground Truth | fault fixture 정답과 평가 label | RCA runtime 접근 금지 |
 
-- query에는 `online-boutique` namespace, workload와 Incident time window가 반드시
-  포함된다.
-- 원본 metric/log/network flow는 각 관측 시스템의 retention에 두고, Evidence와
-  StateGraph에는 요약, provenance, content hash와 필요한 state만 저장한다.
-- 검색 결과 없음, retention 만료, timeout과 provider 실패를 구분한다.
-- Dataplane V2 flow는 보조 evidence이며 모든 장애의 기본 원인을 대신 판정하지 않는다.
+모든 provider와 Agent tool은 다음 불변 조건을 따른다.
 
-## Provider 확장 계획
+- namespace, resource와 Incident time window를 벗어난 query를 거부한다.
+- write/admin tool, 자동 복구와 LLM이 생성한 shell 또는 `kubectl` 실행을 허용하지 않는다.
+- 원본 telemetry는 source retention에 유지하고 Evidence에는 필요한 요약과 provenance만 저장한다.
+- 검색 결과 없음, retention 만료, timeout, 권한 거부와 provider failure를 구분한다.
+- 일부 collector가 실패해도 성공한 Evidence를 보존하고 불완전성을 Report에 표시한다.
+- root cause는 runtime Evidence 인용 없이는 확정할 수 없다.
 
-현재 구현 범위는 bounded HTTP transport, Prometheus range-query와 Kubernetes
-resource/Event read-only provider다. 아래 provider는 장애 원인 범위를 넓히기 위한
-후속 후보이며, 현재 코드·배포 manifest·runtime 연동이 구현됐다는 뜻이 아니다.
+## Reference Runtime
 
-- Loki application/container log
-- OpenTelemetry trace
-- GKE Dataplane V2 network flow
-- Git·Argo CD·Kubernetes rollout 기반 deployment/change history
-- database connection, lock, replication과 slow-query 상태
-- queue/worker backlog, consumer와 retry 상태
-- node OS, container runtime과 filesystem 상태
-- DNS, Ingress, Load Balancer와 external dependency 상태
-- cloud audit/event와 quota 상태
+- cloud: Google Cloud
+- compute: Compute Engine 단일 VM
+- Kubernetes: upstream Kubernetes, kubeadm single-node bootstrap
+- container runtime: containerd
+- dataplane and network evidence: Cilium CNI와 Hubble
+- observability: Prometheus, Alertmanager, Loki와 Kubernetes API/Event
+- reference workload: Google Online Boutique `v0.10.6`
+- state: versioning을 활성화한 사전 생성 GCS Terraform backend
+- identity: 전용 최소 권한 VM service account
+- RCA permission: Kubernetes와 observability source에 대한 bounded read-only access
 
-추가 provider는 실제 fault scenario가 필요성을 입증할 때 하나씩 구현한다. 모든
-provider는 원인을 직접 선언하지 않고 관측 사실을 공통 `EvidenceItem`으로
-정규화하며, read-only scope, time window, item/response limit, provenance,
-redaction과 partial failure 계약을 따라야 한다.
+Terraform은 VPC, subnet, firewall, IAM과 Compute Engine lifecycle까지만 소유한다.
+containerd, kubeadm, Cilium/Hubble과 workload 배포는 별도 bootstrap/deployment 계층이
+담당한다. Reference runtime은 교체할 수 있으며 RCA core와 Evidence contract는 GCP나
+특정 workload ontology에 종속되지 않는다.
 
-KRCA의 API dependency/metric feature provider는 위의 일반 관측 범위 확장
-provider와 구분한다. 이 provider는 primary localization 입력을 만드는 core
-dependency이므로 StateGraph 연결형 vertical slice와 service-to-Entity resolver
-계약을 먼저 고정한 직후 구현하고, Persistent Graph backend와 Agent runtime보다
-앞서 실제 Top-N seed 흐름에 연결한다.
+## Evaluation Strategy
 
-## 범용 Temporal StateGraph 방향
+Agent RCA는 공개 사용자 수가 아니라 실제 Kubernetes runtime에서 재현한
+`Change × Workload` Incident로 평가한다. 변경이 잠재 결함을 만들고 특정 요청 경로,
+동시성 또는 부하가 이를 드러내는 운영 상황을 중심으로 다음 네 실험 셀을 비교한다.
 
-StateGraph core는 Kubernetes, 특정 fintech 업무 또는 ChainOps ontology에
-종속시키지 않는다. 현재 Online Boutique는 첫 reference workload일 뿐이며,
-범용 core는 운영 장애를 설명하는 다음 네 record와 Evidence 연결만 책임진다.
+| Change | Workload | 평가 목적 |
+|---|---|---|
+| 없음 | normal | 정상 baseline과 false positive 측정 |
+| 있음 | normal | 배포·설정 자체의 regression 분리 |
+| 없음 | stress | 순수 traffic·capacity 문제 분리 |
+| 있음 | stress | 변경과 workload가 결합된 Incident 평가 |
 
-전체 Evidence-to-Graph 흐름과 계층별 책임은 다음과 같다.
+Change Evidence에는 Git commit과 manifest diff, Deployment/ReplicaSet revision, image
+digest, ConfigMap metadata hash, resource limit, NetworkPolicy와 rollout/rollback 시각을
+포함한다. Secret value는 수집하지 않으며 Change history만으로 root cause를 확정하지
+않는다. 변경이 실제 metric, log, Event, trace 또는 Hubble flow 변화와 시간적·인과적으로
+일치해야 한다.
 
-```text
-Prometheus / Kubernetes API·Event / Loki / Dataplane V2 / 기타 관측 소스
-    ↓ read-only 수집
-Provider → Collector / EvidenceBuilder → contract-valid EvidenceItem
-    ├─ API metric/dependency feature → KRCA-style drilldown → Top-N service seeds
-    └─ Domain Projector → GraphRepository → Graph DB
+대상 node의 resource signal을 오염시키지 않도록 load generator는 target node와 다른
+failure domain에서 실행한다. baseline, spike, soak와 path-weighted workload마다 seed와
+rate를 기록하고, 최소 15개 Incident scenario를 각각 5회 반복한다. 동일한 Frozen
+Evidence는 A/B/C/D variant에 재사용하며 root-cause accuracy, Evidence precision/recall,
+`ABSTAIN` correctness, latency, tool/LLM cost와 반복 재현성을 비교한다. Fault manifest와
+Ground Truth는 Agent runtime에서 계속 격리한다.
 
-Top-N seeds + Graph DB
-    ↓
-GraphLocalizer → initial bounded Context
-    ↓
-AdaptiveScopeController          KRCA next-ranked 또는 현재 경계 Entity만 승인
-    ↺ 충돌·복수 가설·복합 원인일 때 hard cap 안에서 재실행
-    ↓
-Frozen Context Package 또는 budget exhaustion/ABSTAIN
-    ↓
-RCA Agent                       후속 구현
-```
+## 현재 구현 상태
 
-Provider는 `GraphRecord`를 직접 생성하지 않는다. Provider는 관측 결과를
-`EvidenceDraft`로 반환하고, `EvidenceBuilder`가 provenance, hash, redaction과
-schema 검증을 적용해 공통 `EvidenceItem`으로 정규화한다. 도메인별 Projector만
-검증된 `EvidenceItem`을 읽어 Graph의 Entity, 상태, 관계와 Event 집계로 변환한다.
-따라서 Provider는 Evidence 계약에, Projector는 Evidence와 Graph record 계약에,
-GraphRepository는 Graph record 계약에 각각 의존한다.
+> 기준일: 2026-08-20. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
-```text
-Entity            조사 가능한 서비스, 프로세스, 데이터 저장소, 인프라 리소스
-SnapshotInterval  한 Entity의 정규화된 상태가 유효했던 시간 구간
-RelationInterval  Entity 사이 관계가 유효했던 시간 구간
-EventAggregate    반복된 상태 변화나 운영 Event의 시간 기반 집계
-```
+| 영역 | 현재 상태 | Runtime 상태 |
+|---|---|---|
+| Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
+| Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
+| PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
+| KRCA scorer, StateGraph, localization, adaptive fallback | fixture와 in-memory 구현 | API feature provider와 persistent Graph 미연결 |
+| Operational Knowledge와 Retriever | schema/contract 및 Git 문서 경계 정의 | Retriever runtime 미구현 |
+| Agent RCA와 LLM tool-calling | 목표 state, budget, Evidence Gate 경계 정의 | 미구현·미연결 |
+| Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
+| GCP, Terraform, kubeadm, Cilium/Hubble | target boundary와 readiness gate 정의 | `plan/apply`, bootstrap과 fault runtime 미검증 |
 
-각 record는 안정적인 ID, `valid_from`/`valid_to`, 정규화된 state 또는 relation,
-provenance와 `evidence_id`를 가져야 한다. 원본 metric, log, trace와 resource JSON
-전체를 Graph에 복제하지 않고, 검증된 Evidence에서 파생된 상태와 관계만 저장한다.
+Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
+production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed
+control-plane 장애를 증명하지 않는다. VM 장애까지 분석하려면 Agent control plane을
+별도 failure domain으로 분리해야 한다.
 
-도메인 차이는 core schema가 아니라 projector가 담당한다.
+## Core Localization 설계
 
-```text
-Kubernetes projector  Deployment, Pod, Service, Node, Config, Volume
-Web service projector API, Service, Job, Queue, Cache, Database, Dependency
-Fintech projector     Request, Transaction, Ledger/Settlement state, Gateway
-```
+Provider는 `GraphRecord`를 직접 만들지 않는다. `EvidenceDraft`를 반환하면
+`EvidenceBuilder`가 provenance, redaction, hash와 schema를 검증하고, domain
+Projector만 검증된 Evidence를 Entity, `SnapshotInterval`, `RelationInterval`과
+`EventAggregate`로 변환한다.
 
-공통 관계는 `DEPENDS_ON`, `CALLS`, `ROUTES_TO`, `PROCESSES`, `READS_FROM`,
-`WRITES_TO`, `RUNS_ON`, `CHANGED_BY`처럼 운영 의미 중심으로 제한한다. 특정 도메인
-관계가 필요하면 별도 projector vocabulary로 확장하되 Agent에 전달하기 전 공통
-Context Package로 변환한다.
-
-현재 domain-neutral Graph record와 `InvestigationScope`, 연속 동일 상태/관계를
-병합하는 in-memory interval repository, Kubernetes Evidence projector, KRCA-style
-API drilldown, bounded localizer와 adaptive fallback까지 fixture로 구현했다. Adaptive
-controller는 현재 Context Entity 또는 KRCA가 승인한 다음 순위 seed만 열고
-시간·도메인·관계 경계는 유지한다. Persistent Graph backend, API metric feature
-provider, Kubernetes watch와 실제 Agent assessment 연결은 아직 구현하지 않았다.
-
-KRCA-style drilldown은 장애율 상관관계와 latency anomaly, fluctuation contribution,
-correlation을 이용해 호출 edge를 점수화한다. 핵심은 다음처럼 장애율과 latency 중
-더 강한 전파 신호를 선택하는 것이다.
+KRCA-style API Drilldown은 호출 edge마다 failure-rate propagation과 latency signal 중
+더 강한 값을 사용한다.
 
 ```text
 Score(P, C) = max(FailureRateScore(P, C), LatencyScore(P, C))
 ```
 
-threshold를 통과한 API만 재귀 탐색하고 service Top-N을 StateGraph localization의
-초기 후보로 전달한다. 식의 정의, paper-aligned 기본값, feature 계산 책임과 한계는
-[KRCA-style API Drilldown Contract](contracts/krca-drilldown.md)에 분리했다.
+threshold를 통과한 API만 탐색하고 Top-N service를 StateGraph localization seed로
+전달한다. Evidence가 부족하거나 충돌하면 `AdaptiveScopeController`가 승인된 다음
+순위 seed 또는 현재 Graph 경계만 fixed time/domain/relation budget 안에서 확장한다.
+새 Context가 없거나 budget이 소진되면 best hypothesis와 한계를 남기고 `ABSTAIN`한다.
 
-다음 구현 순서는 다음과 같이 고정한다.
+상세 scoring, feature provider 책임과 fixture 기본값은
+[KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph와 adaptive
+localization 결정은 [ADR-0005](docs/adr/0005-domain-neutral-stategraph-core.md)와
+[ADR-0006](docs/adr/0006-evidence-gated-adaptive-localization.md)에 기록한다.
 
-1. `StateGraphRepository` port와 `IncidentLocalizationService`를 정의한다.
-2. service-to-Entity resolver 계약을 만들고 기존 Kubernetes Evidence로
-   `Projector → StateGraph → Frozen Context` 연결형 vertical slice를 검증한다.
-3. API dependency/metric feature provider를 구현한다.
-4. KRCA Top-N service를 StateGraph seed로 해석하는 runtime 흐름을 연결한다.
-5. 같은 repository contract를 만족하는 Persistent Graph backend를 구현한다.
-6. Graph-localized Context만 조회하는 bounded read-only RCA Agent를 연결한다.
+## 검증
 
-Loki, Dataplane V2 flow, OpenTelemetry와 DB/Queue 등 일반 확장 provider는 이 core 흐름을
-검증한 뒤 실제 fault scenario가 요구할 때 추가한다.
+```bash
+make bootstrap-dev
+make validate-core
+make gcp-readiness
+kubectl kustomize platform/online-boutique
+```
+
+`make validate-core`는 schema contract, Alertmanager HTTP 경계, Incident lifecycle,
+Collector concurrency·timeout·retry·partial failure, Evidence redaction/hash,
+deterministic RCA, StateGraph와 KRCA/localization fixture를 확인한다.
+
+`POSTGRES_TEST_DSN`이 없으면 live PostgreSQL contract test 한 건을 건너뛴다. 승인된
+테스트 DSN을 제공하면 random schema만 생성·검증·제거하며 공유 DB를 truncate하지
+않는다. `make gcp-readiness`는 설계 gate와 실제 `plan/apply` 준비 상태를 분리하며,
+project, billing, location, auth, API와 GCS backend가 확인되지 않으면 의도적으로
+미완료를 반환한다. Online Boutique remote base render에는 GitHub 접근이 필요하다.
 
 ## 저장소 구조
 
 ```text
-config/              프로젝트 범위, GCP readiness, RCA routing 정책
+config/              프로젝트 범위, GCP/cluster readiness, RCA routing 정책
 contracts/           Incident, Evidence, Graph, RCA 및 provider 계약
 db/migrations/       PostgreSQL schema migration
 docs/                아키텍처, ADR, runbook, 진행 기록
 evaluation/          평가 사전등록과 Ground Truth 격리 정책
-infra/terraform/     GCP bootstrap과 GKE provisioning 경계
+infra/terraform/     GCP VPC, IAM과 Compute Engine provisioning 경계
+knowledge/           versioned operational reference와 retrieval index
 platform/            cloud-neutral Kubernetes manifest와 Kustomize base
 src/                 Incident/Evidence/RCA core
 tests/               deterministic fixture와 core unit test
 tools/               정적 검증 도구
 ```
 
-## 현재 가능한 검증
-
-초기 1회 로컬 검증 환경을 만든다.
-
-```bash
-make bootstrap-dev
-```
-
-`requirements.txt`는 Core가 직접 import하는 런타임 라이브러리,
-`requirements-dev.txt`는 위 의존성과 YAML 기반 로컬 검증 도구를 설치한다.
-개발 환경은 `platform/versions.yaml`과 동일하게 Python 3.12를 사용한다.
-
-그다음 Core 검증을 실행한다.
-
-```bash
-make validate-core
-```
-
-이 검증은 contract, 인증·request limit이 적용된 Alertmanager HTTP 경계,
-입력 정규화, Incident lifecycle, Collector의 병렬 실행·timeout·retry·partial
-failure, Evidence redaction/hash, deterministic RCA와 Fast Path report를
-fixture로 확인한다.
-
-`POSTGRES_TEST_DSN`이 없는 기본 검증에서는 실제 DB 테스트 한 건을 건너뛴다.
-승인된 테스트 전용 PostgreSQL DSN을 환경 변수로 제공하면 random schema를
-만들어 동일 repository contract를 실행하고 그 schema만 제거한다. 공유 DB를
-truncate하지 않으며 DSN을 저장소나 명령 출력에 기록하지 않는다.
-
-GCP 설계와 실제 `plan/apply` 준비 상태는 다음 명령으로 분리해 확인한다.
-
-```bash
-make gcp-readiness
-```
-
-현재 설계 gate는 준비됐지만 project, billing, location, 인증, API와 GCS backend가
-실제 확인되기 전에는 `plan/apply` 준비 미완료 상태를 의도적으로 반환한다.
-
 ## 상세 문서
 
-- [GCP/GKE 실행 환경 ADR](docs/adr/0007-gcp-gke-runtime-boundary.md)
-- [GCP/GKE 목표 아키텍처](docs/architecture/gcp-overview.md)
-- [GCP/GKE Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
-- [GCP/GKE 구현 로드맵](docs/roadmap/gcp-plan.md)
-
-Online Boutique remote base render에는 GitHub 접근이 필요하다.
-
-```bash
-kubectl kustomize platform/online-boutique
-```
+- [Project Scope](docs/scope/project-scope.md)
+- [Implemented Core Flow](docs/architecture/implemented-core-flow.md)
+- [Provider Contract](contracts/providers.md)
+- [Knowledge Retrieval Contract](contracts/knowledge-retrieval.md)
+- [GCP self-managed Kubernetes ADR](docs/adr/0008-gcp-kubeadm-runtime-boundary.md)
+- [Knowledge와 Incident Memory ADR](docs/adr/0009-knowledge-and-memory-boundary.md)
+- [GCP/Cluster Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
+- [GCP/kubeadm Implementation Plan](docs/roadmap/gcp-plan.md)

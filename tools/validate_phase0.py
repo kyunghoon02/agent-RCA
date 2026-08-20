@@ -323,17 +323,18 @@ def validate_versions_and_manifests() -> None:
     if versions.get("execution_target") != expected_execution_target:
         raise ValidationFailure("platform version boundary must target GCP")
     expected_kubernetes_boundary = {
-        "service": "gke",
-        "mode": "standard",
-        "cluster_availability": "zonal-dev",
-        "release_channel": "regular",
-        "dataplane": "gke-dataplane-v2",
-        "network_observability": "gke-dataplane-v2-observability",
-        "workload_identity": "workload-identity-federation",
+        "service": "self-managed",
+        "distribution": "upstream",
+        "bootstrap_tool": "kubeadm",
+        "cluster_availability": "single-node-dev",
+        "container_runtime": "containerd",
+        "dataplane": "cilium",
+        "network_observability": "hubble",
+        "cloud_identity": "dedicated-vm-service-account",
     }
     if versions.get("kubernetes") != expected_kubernetes_boundary:
         raise ValidationFailure(
-            "Kubernetes boundary must remain GKE Standard with Dataplane V2 and Workload Identity"
+            "Kubernetes boundary must remain self-managed kubeadm with Cilium/Hubble"
         )
     if versions["terraform"].get("provider") != "hashicorp/google":
         raise ValidationFailure("Terraform provider must be hashicorp/google")
@@ -342,12 +343,15 @@ def validate_versions_and_manifests() -> None:
     expected_scope_target = {
         **expected_execution_target,
         "provisioning_status": "design-ready-runtime-unverified",
-        "kubernetes_service": "gke",
-        "kubernetes_mode": "standard",
-        "cluster_availability": "zonal-dev",
-        "dataplane": "gke-dataplane-v2",
-        "network_observability": "gke-dataplane-v2-observability",
-        "workload_identity": "workload-identity-federation",
+        "compute_service": "compute-engine",
+        "kubernetes_service": "self-managed",
+        "kubernetes_distribution": "upstream",
+        "bootstrap_tool": "kubeadm",
+        "cluster_availability": "single-node-dev",
+        "container_runtime": "containerd",
+        "dataplane": "cilium",
+        "network_observability": "hubble",
+        "cloud_identity": "dedicated-vm-service-account",
     }
     if scope.get("execution_target") != expected_scope_target:
         raise ValidationFailure("project scope and platform GCP boundaries disagree")
@@ -356,13 +360,16 @@ def validate_versions_and_manifests() -> None:
     expected_readiness_decision = {
         **expected_execution_target,
         "status": "architecture-confirmed",
-        "confirmed_at": "2026-08-19",
-        "kubernetes_service": "gke",
-        "kubernetes_mode": "standard",
-        "cluster_availability": "zonal-dev",
-        "dataplane": "gke-dataplane-v2",
-        "network_observability": "gke-dataplane-v2-observability",
-        "workload_identity": "workload-identity-federation",
+        "confirmed_at": "2026-08-20",
+        "compute_service": "compute-engine",
+        "kubernetes_service": "self-managed",
+        "kubernetes_distribution": "upstream",
+        "bootstrap_tool": "kubeadm",
+        "cluster_availability": "single-node-dev",
+        "container_runtime": "containerd",
+        "dataplane": "cilium",
+        "network_observability": "hubble",
+        "cloud_identity": "dedicated-vm-service-account",
         "remote_state_backend": "gcs",
     }
     if readiness.get("decision") != expected_readiness_decision:
@@ -370,9 +377,10 @@ def validate_versions_and_manifests() -> None:
 
     required_design_capabilities = {
         "terraform_google_provider",
-        "gke_standard_mode",
-        "gke_dataplane_v2_observability",
-        "workload_identity_federation",
+        "compute_engine_vm",
+        "kubeadm_bootstrap",
+        "cilium_hubble",
+        "dedicated_vm_service_account",
         "gcs_remote_state",
     }
     recorded_design = readiness.get("design_capabilities", {})
@@ -388,15 +396,15 @@ def validate_versions_and_manifests() -> None:
     }
     if unresolved_design:
         raise ValidationFailure(
-            f"GCP Terraform design capabilities are unresolved: {sorted(unresolved_design)}"
+            f"GCP environment design capabilities are unresolved: {sorted(unresolved_design)}"
         )
 
-    design_gate = readiness.get("gates", {}).get("terraform_design", {})
+    design_gate = readiness.get("gates", {}).get("environment_design", {})
     if design_gate.get("status") != "ready":
-        raise ValidationFailure("GCP Terraform design gate must be ready")
+        raise ValidationFailure("GCP environment design gate must be ready")
     if set(design_gate.get("required_capabilities", [])) != required_design_capabilities:
         raise ValidationFailure(
-            "GCP Terraform design gate does not cover every required capability"
+            "GCP environment design gate does not cover every required capability"
         )
 
     required_runtime_inputs = {
@@ -464,6 +472,19 @@ def validate_policy_configs() -> None:
         raise ValidationFailure("RCA routing allows write tools")
     if routing["fast_path"]["llm_calls"] != 0:
         raise ValidationFailure("Fast Path must not call an LLM")
+    retrieval = routing["knowledge_retrieval"]
+    if retrieval["bounds"]["max_documents"] > 5:
+        raise ValidationFailure("Knowledge retrieval exceeds the MVP document cap")
+    if retrieval["bounds"]["max_characters"] > 12000:
+        raise ValidationFailure("Knowledge retrieval exceeds the MVP character cap")
+    if retrieval["evidence_separation"]["references_are_evidence"]:
+        raise ValidationFailure("Operational references must not become runtime Evidence")
+    if not retrieval["evidence_separation"]["require_evidence_id_for_root_cause"]:
+        raise ValidationFailure("Root-cause conclusions must require Evidence IDs")
+    if "evaluation-ground-truth" not in retrieval["prohibited_sources"]:
+        raise ValidationFailure("Knowledge retrieval does not exclude Ground Truth")
+    if retrieval["incident_memory"]["enabled"]:
+        raise ValidationFailure("Incident Memory must remain disabled before validation")
     budget = routing["deep_path"]["budget"]
     if any(value <= 0 for value in budget.values()):
         raise ValidationFailure("Every Deep Path budget must be positive")
@@ -478,6 +499,83 @@ def validate_policy_configs() -> None:
         raise ValidationFailure("Ground Truth may not be mounted into the RCA runtime")
     if preregistration["dataset"]["minimum_incidents"] < 15:
         raise ValidationFailure("evaluation dataset minimum dropped below 15 incidents")
+    if preregistration["dataset"]["minimum_scenarios"] < 15:
+        raise ValidationFailure("evaluation scenario minimum dropped below 15")
+    if preregistration["dataset"]["runtime_repetitions_per_scenario"] < 5:
+        raise ValidationFailure("runtime scenario repetitions dropped below 5")
+    if not preregistration["dataset"]["no_fault_controls_required"]:
+        raise ValidationFailure("evaluation must retain no-fault controls")
+    if not preregistration["dataset"]["workload_seed_recorded"]:
+        raise ValidationFailure("evaluation must record workload seeds")
+
+    required_cells = {
+        (False, "normal"),
+        (True, "normal"),
+        (False, "stress"),
+        (True, "stress"),
+    }
+    recorded_cells = {
+        (cell["change"], cell["workload"])
+        for cell in preregistration["experiment_design"]["required_cells"]
+    }
+    if (
+        recorded_cells != required_cells
+        or len(preregistration["experiment_design"]["required_cells"]) != 4
+    ):
+        raise ValidationFailure("Change x Workload evaluation cells changed")
+    required_workload_profiles = {"normal", "spike", "soak", "path-weighted"}
+    if (
+        set(preregistration["dataset"]["required_workload_profiles"])
+        != required_workload_profiles
+    ):
+        raise ValidationFailure("required workload profiles changed")
+    required_change_families = {
+        "application-rollout",
+        "configuration",
+        "resource-policy",
+        "network-policy",
+    }
+    if (
+        set(preregistration["dataset"]["required_change_families"])
+        != required_change_families
+    ):
+        raise ValidationFailure("required change families changed")
+    if not preregistration["experiment_design"]["change_evidence_ablation"][
+        "enabled"
+    ]:
+        raise ValidationFailure("Change Evidence ablation must remain enabled")
+    load_generator = preregistration["experiment_design"]["load_generator"]
+    if load_generator["failure_domain"] != "external-to-target-node":
+        raise ValidationFailure("load generator must not distort target-node signals")
+    if not load_generator["synthetic_marker_required"]:
+        raise ValidationFailure("synthetic workload must remain identifiable")
+
+    change_evidence = preregistration["change_evidence"]
+    if change_evidence["secret_values_allowed"]:
+        raise ValidationFailure("Change Evidence allows Secret values")
+    if change_evidence["change_only_root_cause_allowed"]:
+        raise ValidationFailure("Change history alone may not prove root cause")
+    if not change_evidence["provenance_required"]:
+        raise ValidationFailure("Change Evidence must preserve provenance")
+    required_change_fields = {
+        "change_id",
+        "change_type",
+        "observed_at",
+        "affected_entity_keys",
+        "source_reference",
+        "before_hash",
+        "after_hash",
+    }
+    if set(change_evidence["required_fields"]) != required_change_fields:
+        raise ValidationFailure("Change Evidence required fields changed")
+    reporting = preregistration["reporting"]
+    required_records = (
+        "record_platform_and_application_versions",
+        "record_change_manifest_hash",
+        "record_workload_profile_and_seed",
+    )
+    if not all(reporting[item] for item in required_records):
+        raise ValidationFailure("evaluation reporting lost reproducibility metadata")
 
     graph_model = load_yaml_documents(
         ROOT / "contracts" / "graph" / "stategraph-model.yaml"
@@ -517,8 +615,8 @@ def main() -> None:
     print("- 6 contract fixture groups are valid")
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
-    print("- GCP/GKE target, readiness gates, and Kustomize pins are consistent")
-    print("- routing, evaluation, Graph, and Ground Truth policies are frozen")
+    print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
+    print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 
 

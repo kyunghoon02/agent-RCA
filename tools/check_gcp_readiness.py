@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report GCP/GKE design and runtime readiness without reading credentials."""
+"""Report GCP self-managed Kubernetes readiness without reading credentials."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def main() -> int:
         config = yaml.safe_load(handle)
 
     design = config["design_capabilities"]
-    required_design = config["gates"]["terraform_design"][
+    required_design = config["gates"]["environment_design"][
         "required_capabilities"
     ]
     unresolved_design = [
@@ -39,16 +39,16 @@ def main() -> int:
     decision = config["decision"]
     print(
         "GCP target: "
-        f"{decision['kubernetes_service']} / {decision['kubernetes_mode']} / "
-        f"{decision['cluster_availability']}"
+        f"{decision['compute_service']} / {decision['kubernetes_service']} "
+        f"({decision['bootstrap_tool']}) / {decision['cluster_availability']}"
     )
     if unresolved_design:
-        print("Terraform design readiness: BLOCKED")
+        print("Environment design readiness: BLOCKED")
         for capability, status in unresolved_design:
             print(f"- {capability}: {status}")
         return 2
 
-    print("Terraform design readiness: READY")
+    print("Environment design readiness: READY")
     if unresolved_runtime:
         print("Terraform plan/apply readiness: BLOCKED")
         for item, status in unresolved_runtime:

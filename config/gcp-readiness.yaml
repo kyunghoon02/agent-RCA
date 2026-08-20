@@ -3,14 +3,17 @@ schema_version: "1.0.0"
 decision:
   cloud: gcp
   status: architecture-confirmed
-  confirmed_at: "2026-08-19"
+  confirmed_at: "2026-08-20"
   location: input-required
-  kubernetes_service: gke
-  kubernetes_mode: standard
-  cluster_availability: zonal-dev
-  dataplane: gke-dataplane-v2
-  network_observability: gke-dataplane-v2-observability
-  workload_identity: workload-identity-federation
+  compute_service: compute-engine
+  kubernetes_service: self-managed
+  kubernetes_distribution: upstream
+  bootstrap_tool: kubeadm
+  cluster_availability: single-node-dev
+  container_runtime: containerd
+  dataplane: cilium
+  network_observability: hubble
+  cloud_identity: dedicated-vm-service-account
   remote_state_backend: gcs
 
 design_capabilities:
@@ -18,17 +21,21 @@ design_capabilities:
     status: verified
     evidence_url: https://registry.terraform.io/providers/hashicorp/google/latest/docs
 
-  gke_standard_mode:
+  compute_engine_vm:
     status: verified
-    evidence_url: https://cloud.google.com/kubernetes-engine/docs/concepts/configuration-overview
+    evidence_url: https://cloud.google.com/compute/docs/instances
 
-  gke_dataplane_v2_observability:
+  kubeadm_bootstrap:
     status: verified
-    evidence_url: https://cloud.google.com/kubernetes-engine/docs/concepts/about-dpv2-observability
+    evidence_url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/
 
-  workload_identity_federation:
+  cilium_hubble:
     status: verified
-    evidence_url: https://cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+    evidence_url: https://docs.cilium.io/en/stable/observability/hubble/
+
+  dedicated_vm_service_account:
+    status: verified
+    evidence_url: https://cloud.google.com/compute/docs/access/service-accounts
 
   gcs_remote_state:
     status: verified
@@ -51,7 +58,7 @@ runtime_inputs:
     required_evidence:
       - region
       - zone
-      - gke_and_compute_quota
+      - compute_quota
 
   local_authentication:
     status: pending-runtime-verification
@@ -62,7 +69,6 @@ runtime_inputs:
     status: pending-bootstrap
     required_evidence:
       - serviceusage_googleapis_com
-      - container_googleapis_com
       - compute_googleapis_com
       - iam_googleapis_com
 
@@ -74,13 +80,14 @@ runtime_inputs:
       - least_privilege_iam
 
 gates:
-  terraform_design:
+  environment_design:
     status: ready
     required_capabilities:
       - terraform_google_provider
-      - gke_standard_mode
-      - gke_dataplane_v2_observability
-      - workload_identity_federation
+      - compute_engine_vm
+      - kubeadm_bootstrap
+      - cilium_hubble
+      - dedicated_vm_service_account
       - gcs_remote_state
 
   terraform_plan_apply:

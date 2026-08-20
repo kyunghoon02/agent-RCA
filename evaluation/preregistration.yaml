@@ -1,12 +1,21 @@
-schema_version: "1.1.0"
+schema_version: "1.2.0"
 registered_at: "2026-07-27"
-status: frozen-before-implementation
+amended_at: "2026-08-20"
+status: frozen-before-runtime-evaluation
+amendment:
+  reason: add-change-evidence-and-change-workload-experiment-design
+  preserves:
+    - research-variant-ids
+    - ground-truth-isolation
+    - primary-rca-metrics
 
 research_questions:
   - id: rq1
     question: Does temporal graph localization reduce evidence volume without reducing root-cause recall?
   - id: rq2
     question: Does a bounded LATS-RCA path improve ambiguous or multi-factor incident diagnosis enough to justify added latency and cost?
+  - id: rq3
+    question: Does Change Evidence improve workload-dependent incident diagnosis without increasing false change attribution?
 
 variants:
   - id: A
@@ -36,15 +45,75 @@ variants:
 
 dataset:
   minimum_incidents: 15
+  minimum_scenarios: 15
+  runtime_repetitions_per_scenario: 5
   required_families:
     - deterministic-single-cause
     - ambiguous-single-cause
     - multi-factor
     - partial-collector-failure
+  required_change_families:
+    - application-rollout
+    - configuration
+    - resource-policy
+    - network-policy
+  required_workload_profiles:
+    - normal
+    - spike
+    - soak
+    - path-weighted
+  no_fault_controls_required: true
+  workload_seed_recorded: true
   split_unit: incident-family
   prompt_example_and_test_overlap_allowed: false
   ground_truth_path: evaluation/ground-truth/private
   runtime_mount_allowed: false
+
+experiment_design:
+  required_cells:
+    - change: false
+      workload: normal
+      purpose: baseline-and-false-positive
+    - change: true
+      workload: normal
+      purpose: change-regression
+    - change: false
+      workload: stress
+      purpose: traffic-and-capacity
+    - change: true
+      workload: stress
+      purpose: change-workload-interaction
+  change_evidence_ablation:
+    enabled: true
+    compare:
+      - runtime-evidence-without-change-context
+      - runtime-evidence-with-change-context
+  load_generator:
+    failure_domain: external-to-target-node
+    synthetic_marker_required: true
+
+change_evidence:
+  required_fields:
+    - change_id
+    - change_type
+    - observed_at
+    - affected_entity_keys
+    - source_reference
+    - before_hash
+    - after_hash
+  allowed_types:
+    - git-commit
+    - manifest-diff
+    - deployment-revision
+    - image-digest
+    - configmap-metadata
+    - resource-policy
+    - network-policy
+    - rollout
+    - rollback
+  provenance_required: true
+  secret_values_allowed: false
+  change_only_root_cause_allowed: false
 
 primary_metrics:
   - root_cause_top1_accuracy
@@ -76,5 +145,8 @@ reporting:
   publish_cost_regressions: true
   record_model_and_provider: true
   record_prompt_version: true
+  record_platform_and_application_versions: true
+  record_change_manifest_hash: true
+  record_workload_profile_and_seed: true
   stochastic_repetitions: 5
   confidence_interval: bootstrap_95

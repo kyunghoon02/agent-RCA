@@ -10,12 +10,15 @@ execution_target:
   cloud: gcp
   location: input-required
   provisioning_status: design-ready-runtime-unverified
-  kubernetes_service: gke
-  kubernetes_mode: standard
-  cluster_availability: zonal-dev
-  dataplane: gke-dataplane-v2
-  network_observability: gke-dataplane-v2-observability
-  workload_identity: workload-identity-federation
+  compute_service: compute-engine
+  kubernetes_service: self-managed
+  kubernetes_distribution: upstream
+  bootstrap_tool: kubeadm
+  cluster_availability: single-node-dev
+  container_runtime: containerd
+  dataplane: cilium
+  network_observability: hubble
+  cloud_identity: dedicated-vm-service-account
 
 platform_namespaces:
   - incident-platform
@@ -49,7 +52,7 @@ primary_evidence:
 
 secondary_evidence:
   - opentelemetry-traces
-  - gke-dataplane-v2-network-flow
+  - cilium-hubble-network-flow
   - git-or-argocd-history
   - gcp-audit-logs
 
