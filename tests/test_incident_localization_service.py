@@ -9,8 +9,10 @@ from incident_platform.localization import IncidentLocalizationService
 from incident_platform.projectors import KubernetesEvidenceProjector
 from incident_platform.repository import InMemoryIncidentRepository
 from incident_platform.stategraph import (
+    IncidentHistoryPin,
     InMemoryStateGraphRepository,
     InvestigationScope,
+    StateGraphPruneResult,
 )
 
 from tests.test_stategraph import WINDOW, kubernetes_evidence
@@ -211,6 +213,53 @@ class IncidentLocalizationServiceTests(unittest.TestCase):
         self.assertEqual(
             self.incident_repository.get(incident["incident_id"])["status"],
             "LOCALIZING",
+        )
+
+    def test_persistent_history_is_pinned_after_context_storage(self) -> None:
+        class PinningStateGraphRepository(InMemoryStateGraphRepository):
+            def __init__(self) -> None:
+                super().__init__()
+                self.pins = []
+
+            def pin_incident_history(
+                self, scope, entity_ids, *, pinned_at
+            ) -> IncidentHistoryPin:
+                pin = IncidentHistoryPin(
+                    incident_id=scope.incident_id,
+                    entity_ids=tuple(entity_ids),
+                    window=scope.window,
+                    pinned_at=pinned_at,
+                    expires_at=pinned_at.replace(day=pinned_at.day + 1),
+                )
+                self.pins.append(pin)
+                return pin
+
+            def prune_history(self, *, now, batch_size=1000) -> StateGraphPruneResult:
+                return StateGraphPruneResult()
+
+        incident = self.store_incident()
+        repository = PinningStateGraphRepository()
+        service = IncidentLocalizationService(
+            self.incident_repository,
+            repository,
+            (self.projector,),
+        )
+
+        run = service.localize_incident(
+            incident["incident_id"],
+            scope=localization_scope(self.evidence, self.projector),
+            frozen_at=FROZEN_AT,
+        )
+
+        self.assertEqual(len(repository.pins), 1)
+        self.assertEqual(repository.pins[0].incident_id, incident["incident_id"])
+        self.assertEqual(
+            set(repository.pins[0].entity_ids),
+            {
+                entity["entity_id"]
+                for path in run.context["state_paths"]
+                for entity in path["entities"]
+            },
         )
 
 

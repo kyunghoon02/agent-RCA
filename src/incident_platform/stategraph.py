@@ -7,7 +7,7 @@ import hashlib
 import json
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import (
     Any,
@@ -311,6 +311,44 @@ class GraphLocalization:
     entity_coverage: float
 
 
+@dataclass(frozen=True)
+class StateGraphRetentionPolicy:
+    """Hot-history and Incident pin lifetimes for a persistent StateGraph."""
+
+    ordinary_history: timedelta = timedelta(hours=72)
+    incident_pinned_history: timedelta = timedelta(days=30)
+
+    def __post_init__(self) -> None:
+        if self.ordinary_history <= timedelta(0):
+            raise ValueError("ordinary StateGraph history must be positive")
+        if self.incident_pinned_history <= self.ordinary_history:
+            raise ValueError(
+                "Incident-pinned StateGraph history must exceed ordinary history"
+            )
+
+
+@dataclass(frozen=True)
+class IncidentHistoryPin:
+    """A bounded retention lease for the Entities used by one frozen Context."""
+
+    incident_id: str
+    entity_ids: Tuple[str, ...]
+    window: EvidenceWindow
+    pinned_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class StateGraphPruneResult:
+    """Deletion counts from one bounded persistent Graph garbage-collection pass."""
+
+    expired_pins: int = 0
+    snapshot_intervals: int = 0
+    relation_intervals: int = 0
+    event_aggregates: int = 0
+    unreferenced_entities: int = 0
+
+
 @runtime_checkable
 class StateGraphRepository(Protocol):
     """Storage port required by projection and bounded Graph localization.
@@ -327,6 +365,28 @@ class StateGraphRepository(Protocol):
         ...
 
     def find_state_paths(self, scope: InvestigationScope) -> GraphLocalization:
+        ...
+
+
+@runtime_checkable
+class StateGraphHistoryRepository(Protocol):
+    """Optional persistent-history operations kept outside the localization Port."""
+
+    def pin_incident_history(
+        self,
+        scope: InvestigationScope,
+        entity_ids: Sequence[str],
+        *,
+        pinned_at: datetime,
+    ) -> IncidentHistoryPin:
+        ...
+
+    def prune_history(
+        self,
+        *,
+        now: datetime,
+        batch_size: int = 1000,
+    ) -> StateGraphPruneResult:
         ...
 
 

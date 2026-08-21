@@ -13,6 +13,7 @@ from .stategraph import (
     GraphLocalizer,
     GraphProjection,
     InvestigationScope,
+    StateGraphHistoryRepository,
     StateGraphRepository,
 )
 
@@ -90,6 +91,14 @@ class IncidentLocalizationService:
                 collector_failures=self._collector_failures(incident),
             )
             self._incident_repository.store_context(context)
+            if isinstance(
+                self._stategraph_repository, StateGraphHistoryRepository
+            ):
+                self._stategraph_repository.pin_incident_history(
+                    scope,
+                    self._context_entity_ids(context),
+                    pinned_at=now,
+                )
             analyzing = self._incident_repository.transition(
                 incident_id,
                 expected_status="LOCALIZING",
@@ -105,6 +114,18 @@ class IncidentLocalizationService:
             projected_evidence_ids=projected_evidence_ids,
             projected_record_count=len(records),
             incident=analyzing,
+        )
+
+    @staticmethod
+    def _context_entity_ids(context: Mapping[str, Any]) -> Tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    entity["entity_id"]
+                    for path in context["state_paths"]
+                    for entity in path["entities"]
+                }
+            )
         )
 
     def _project(

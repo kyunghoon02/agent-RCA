@@ -203,3 +203,17 @@ retention:
     - expired_relation_intervals
     - expired_event_aggregates
     - expired_unreferenced_entities
+
+persistence:
+  port: StateGraphRepository
+  primary_adapter: Neo4jStateGraphRepository
+  target_engine: Neo4j Community
+  incident_artifact_store: PostgreSQL
+  graph_record_json_is_interchange_contract: true
+  agent_backend_query_language_access: false
+  transaction_boundary:
+    - entity_upsert
+    - interval_close_or_extend
+    - relation_merge
+    - event_aggregate_upsert
+    - placeholder_reconciliation

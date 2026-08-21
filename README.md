@@ -91,6 +91,7 @@ seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Fro
 - container runtime: containerd
 - dataplane and network evidence: Cilium CNI와 Hubble
 - observability: Prometheus, Alertmanager, Loki와 Kubernetes API/Event
+- graph: Neo4j Community 기반 temporal StateGraph
 - reference workload: Google Online Boutique `v0.10.6`
 - state: versioning을 활성화한 사전 생성 GCS Terraform backend
 - identity: 전용 최소 권한 VM service account
@@ -136,7 +137,7 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
-| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 구현 | live PromQL/dependency config와 persistent Graph 미연결 |
+| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | live PromQL/dependency config, continuous projection과 cluster Graph 미연결 |
 | Operational Knowledge와 Retriever | schema/contract 및 Git 문서 경계 정의 | Retriever runtime 미구현 |
 | Agent RCA와 LLM tool-calling | 목표 state, budget, Evidence Gate 경계 정의 | 미구현·미연결 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
@@ -198,10 +199,18 @@ threshold를 통과한 API만 탐색하고 Top-N service를 StateGraph localizat
 순위 seed 또는 현재 Graph 경계만 fixed time/domain/relation budget 안에서 확장한다.
 새 Context가 없거나 budget이 소진되면 best hypothesis와 한계를 남기고 `ABSTAIN`한다.
 
+Persistent StateGraph는 JSON 파일을 Graph처럼 읽는 구조가 아니다. Projector가 만든
+versioned JSON Graph record를 Repository 입구에서 검증한 뒤 Neo4j의 Entity/Snapshot/Event
+node와 temporal relationship로 저장한다. exact lookup과 bounded BFS는
+`StateGraphRepository` 뒤에서 Cypher로 실행되며 상위 service와 Agent는 Cypher를 직접
+만들 수 없다. 일반 closed history는 72시간, Frozen Context에 포함된 Entity와 조사
+시간창은 30일 pin으로 보존하고 open interval은 TTL만으로 삭제하지 않는다.
+
 상세 scoring, feature provider 책임과 fixture 기본값은
 [KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph와 adaptive
 localization 결정은 [ADR-0005](docs/adr/0005-domain-neutral-stategraph-core.md)와
-[ADR-0006](docs/adr/0006-evidence-gated-adaptive-localization.md)에 기록한다.
+[ADR-0006](docs/adr/0006-evidence-gated-adaptive-localization.md), persistent 저장 결정은
+[ADR-0010](docs/adr/0010-neo4j-stategraph-persistence.md)에 기록한다.
 
 ## 검증
 
@@ -218,7 +227,10 @@ deterministic RCA, StateGraph와 KRCA/localization fixture를 확인한다.
 
 `POSTGRES_TEST_DSN`이 없으면 live PostgreSQL contract test 한 건을 건너뛴다. 승인된
 테스트 DSN을 제공하면 random schema만 생성·검증·제거하며 공유 DB를 truncate하지
-않는다. `make gcp-readiness`는 설계 gate와 실제 `plan/apply` 준비 상태를 분리하며,
+않는다. Neo4j live contract는 기본적으로 skip하며, 명시적으로 승인된 test instance에
+`NEO4J_TEST_URI`, `NEO4J_TEST_USERNAME`, `NEO4J_TEST_PASSWORD`를 제공할 때만 실행하고
+테스트가 만든 Entity/Pin만 제거한다. `make gcp-readiness`는 설계 gate와 실제
+`plan/apply` 준비 상태를 분리하며,
 project, billing, location, auth, API와 GCS backend가 확인되지 않으면 의도적으로
 미완료를 반환한다. Online Boutique remote base render에는 GitHub 접근이 필요하다.
 
@@ -246,5 +258,6 @@ tools/               정적 검증 도구
 - [Knowledge Retrieval Contract](contracts/knowledge-retrieval.md)
 - [GCP self-managed Kubernetes ADR](docs/adr/0008-gcp-kubeadm-runtime-boundary.md)
 - [Knowledge와 Incident Memory ADR](docs/adr/0009-knowledge-and-memory-boundary.md)
+- [Neo4j StateGraph Persistence ADR](docs/adr/0010-neo4j-stategraph-persistence.md)
 - [GCP/Cluster Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
 - [GCP/kubeadm Implementation Plan](docs/roadmap/gcp-plan.md)
