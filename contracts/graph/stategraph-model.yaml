@@ -11,10 +11,28 @@ core_boundary:
     - EventAggregate
 
 identity:
+  contract_version: "1.0.0"
   entity_id: projector-owned-stable-identity
+  kubernetes_resource_keys:
+    - cluster_id
+    - uid
+  kubernetes_placeholder_keys:
+    - cluster_id
+    - api_version
+    - kind
+    - namespace
+    - name
+  logical_service_keys:
+    - cluster_id
+    - namespace
+    - service_name
+  logical_service_is_distinct_from_kubernetes_service: true
   same_external_identity_reuses_entity: true
   changed_external_identity_is_new_entity: true
-  unresolved_to_resolved_transition_preserves_reference_history: true
+  unresolved_to_resolved_transition:
+    merge_entities: false
+    relation_type: RESOLVES_TO
+    preserves_reference_history: true
 
 common_entity_types:
   - Service
@@ -37,6 +55,8 @@ common_relation_types:
   - RUNS_ON
   - CHANGED_BY
   - REFERENCES
+  - REPRESENTED_BY
+  - RESOLVES_TO
 
 projectors:
   kubernetes:
@@ -61,6 +81,8 @@ projectors:
       - MOUNTS
       - BINDS
       - REFERENCES
+      - REPRESENTED_BY
+      - RESOLVES_TO
       - USES_IMAGE
   web_service:
     entity_types:

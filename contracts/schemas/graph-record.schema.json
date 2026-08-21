@@ -32,6 +32,7 @@
       "required": [
         "record_type",
         "entity_id",
+        "identity",
         "entity_type",
         "domain",
         "name",
@@ -49,6 +50,9 @@
         "entity_id": {
           "type": "string",
           "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"
+        },
+        "identity": {
+          "$ref": "#/$defs/entityIdentity"
         },
         "entity_type": {
           "type": "string",
@@ -84,6 +88,37 @@
         },
         "evidence_ids": {
           "$ref": "#/$defs/evidenceIds"
+        }
+      }
+    },
+    "entityIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "identity_type",
+        "domain",
+        "keys"
+      ],
+      "properties": {
+        "version": {
+          "const": "1.0.0"
+        },
+        "identity_type": {
+          "enum": [
+            "kubernetes-resource",
+            "kubernetes-placeholder",
+            "logical-service",
+            "external"
+          ]
+        },
+        "domain": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,63}$"
+        },
+        "keys": {
+          "type": "object",
+          "minProperties": 1
         }
       }
     },

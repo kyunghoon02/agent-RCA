@@ -208,14 +208,18 @@ class KubernetesStateProvider:
         client: KubernetesReadClient,
         resource: KubernetesResourceSpec,
         *,
+        cluster_id: str,
         include_events: bool = True,
         event_page_size: int = 50,
         max_events: int = 100,
     ) -> None:
         if event_page_size <= 0 or max_events < 0:
             raise ValueError("Kubernetes Event limits are invalid")
+        if not cluster_id.strip():
+            raise ValueError("Kubernetes cluster_id must not be empty")
         self._client = client
         self._resource = resource
+        self._cluster_id = cluster_id
         self._include_events = include_events
         self._event_page_size = event_page_size
         self._max_events = max_events
@@ -289,6 +293,7 @@ class KubernetesStateProvider:
         )
         if resource is None:
             subject = {
+                "cluster_id": self._cluster_id,
                 "api_version": self._resource.api_version,
                 "kind": self._resource.kind,
                 "namespace": request.scope.namespace,
@@ -339,6 +344,7 @@ class KubernetesStateProvider:
         if uid is not None and not isinstance(uid, str):
             raise PermanentProviderError("Kubernetes resource UID is malformed")
         subject = {
+            "cluster_id": self._cluster_id,
             "api_version": self._resource.api_version,
             "kind": self._resource.kind,
             "namespace": request.scope.namespace,
@@ -568,6 +574,7 @@ class KubernetesStateProvider:
             }
             self._add_missing_reference(facts, message)
             subject = {
+                "cluster_id": self._cluster_id,
                 "api_version": involved.get("apiVersion") or self._resource.api_version,
                 "kind": involved.get("kind") or self._resource.kind,
                 "namespace": request.scope.namespace,

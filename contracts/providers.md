@@ -99,7 +99,9 @@ Kubernetes API client다.
 paged core/v1 Event list를 구현하고 만료된 pagination snapshot은 한 번 재시작한다.
 Secret 조회와 write method는 제공하지 않으며
 ConfigMap value와 Pod spec 원문을 Evidence로 복사하지 않는다. Watch/checkpoint와
-실제 cluster ServiceAccount/CA 연결은 후속 runtime 작업이다.
+실제 cluster ServiceAccount/CA 연결은 후속 runtime 작업이다. 각 adapter instance는
+Alert 입력이 아닌 trusted runtime 설정의 `cluster_id`를 요구하고 모든 Kubernetes
+Evidence subject에 포함한다.
 
 ### NetworkFlowProvider
 
@@ -127,24 +129,29 @@ MVP에서는 Kubernetes Deployment/ReplicaSet 상태만 사용한다. GitHub와 
 
 ```text
 ingest(graph_records)
+find_entities(exact_bounded_lookup)
 find_state_paths(investigation_scope)
 ```
 
-현재 Port는 Evidence projection 저장과 bounded localization에 필요한 최소 연산만
+현재 Port는 Evidence projection 저장, exact/time-bounded Entity resolution과 bounded
+localization에 필요한 최소 연산만
 노출한다. `ingest` 구현은 Entity를 먼저 upsert하고 연속된 동일 상태/관계만 병합해야
 한다. Reasoning 계층은 Graph query language를 직접 생성하지 않고 repository method만
 사용한다. Core record는 domain-neutral하며 Kubernetes와 다른 서비스 의미는 Evidence
 projector가 변환한다.
 
-seed resolution, Incident history pin과 garbage collection은 resolver 및 persistent
-backend 단계에서 별도 capability로 확장한다. 아직 구현되지 않은 capability를 현재
-Port의 runtime 보장으로 표현하지 않는다.
+`find_entities`는 trusted `cluster_id`, namespace, exact name, time window와 result
+limit을 요구한다. `ServiceToEntityResolver`는 논리 Service를 우선하고 Kubernetes
+Service를 fallback으로 사용하며, 복수 후보를 `AMBIGUOUS`로 반환한다. Incident history
+pin과 garbage collection은 persistent backend 단계에서 별도 capability로 확장한다.
+아직 구현되지 않은 capability를 현재 Port의 runtime 보장으로 표현하지 않는다.
 
 | 단계 | 구현 |
 |---|---|
 | Port | `StateGraphRepository` Protocol |
 | fixture test | `InMemoryStateGraphRepository` adapter |
 | Incident 연결 | `IncidentLocalizationService`가 Projector, Port와 Context 저장 연결 |
+| seed resolution | `ResolvedIncidentLocalizationService`가 exact resolver 결과로 scope 생성 |
 | GCP/kubeadm runtime | capability/topology 확인 뒤 persistent adapter 고정 |
 
 ### IncidentRepository

@@ -22,6 +22,11 @@
         "exists"
       ],
       "properties": {
+        "cluster_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
         "api_version": {
           "type": [
             "string",

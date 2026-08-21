@@ -36,6 +36,8 @@ from .providers import (
 )
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
 from .stategraph import (
+    EntityIdentity,
+    EntityLookup,
     GraphLocalizer,
     GraphProjection,
     InMemoryStateGraphRepository,
@@ -44,6 +46,15 @@ from .stategraph import (
     stable_graph_id,
     state_content_hash,
     validate_graph_record,
+)
+from .resolution import (
+    EntityResolutionCandidate,
+    EntityResolutionRequest,
+    EntityResolutionResult,
+    InvestigationScopeFactory,
+    ResolvedIncidentLocalizationRun,
+    ResolvedIncidentLocalizationService,
+    ServiceToEntityResolver,
 )
 from .localization import (
     AdaptiveLocalizationRound,
@@ -89,6 +100,11 @@ __all__ = [
     "EvidenceDraft",
     "EvidenceProjector",
     "EvidenceWindow",
+    "EntityIdentity",
+    "EntityLookup",
+    "EntityResolutionCandidate",
+    "EntityResolutionRequest",
+    "EntityResolutionResult",
     "FastPathArtifacts",
     "FastPathReportBuilder",
     "FastPathRun",
@@ -105,6 +121,7 @@ __all__ = [
     "InvalidAlert",
     "InvalidTransition",
     "InvestigationScope",
+    "InvestigationScopeFactory",
     "KubernetesHTTPAPI",
     "KubernetesEvidenceProjector",
     "KubernetesResourceSpec",
@@ -123,8 +140,11 @@ __all__ = [
     "PrometheusMetricProvider",
     "PrometheusQuerySpec",
     "ResourceScope",
+    "ResolvedIncidentLocalizationRun",
+    "ResolvedIncidentLocalizationService",
     "ReceiverConfig",
     "StateGraphRepository",
+    "ServiceToEntityResolver",
     "apply_migrations",
     "render_markdown",
     "stable_graph_id",

@@ -136,7 +136,7 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
-| KRCA scorer, StateGraph Port, Incident localization, adaptive fallback | 명시적 seed 기반 fixture 구현 | API feature provider, Entity resolver와 persistent Graph 미연결 |
+| KRCA scorer, StateGraph Port, Entity resolver, Incident localization, adaptive fallback | exact/time-bounded resolved-seed fixture 구현 | API feature provider와 persistent Graph 미연결 |
 | Operational Knowledge와 Retriever | schema/contract 및 Git 문서 경계 정의 | Retriever runtime 미구현 |
 | Agent RCA와 LLM tool-calling | 목표 state, budget, Evidence Gate 경계 정의 | 미구현·미연결 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
@@ -153,6 +153,23 @@ Provider는 `GraphRecord`를 직접 만들지 않는다. `EvidenceDraft`를 반�
 `EvidenceBuilder`가 provenance, redaction, hash와 schema를 검증하고, domain
 Projector만 검증된 Evidence를 Entity, `SnapshotInterval`, `RelationInterval`과
 `EventAggregate`로 변환한다.
+
+```text
+Validated Evidence
+→ domain Projector
+→ versioned EntityIdentity + temporal Graph records
+→ exact/time-bounded ServiceToEntityResolver
+→ bounded InvestigationScope
+→ IncidentLocalizationService
+→ Frozen Context
+```
+
+Kubernetes 실제 리소스 identity는 trusted `cluster_id + metadata.uid`이고, UID가 없는
+참조는 cluster-aware placeholder로 남긴다. 동일 좌표의 실제 리소스가 나중에 확인되면
+기존 Entity를 덮어쓰지 않고 `RESOLVES_TO`로 연결한다. 애플리케이션의 논리 Service와
+Kubernetes Service도 별도 Entity로 두고 `REPRESENTED_BY`로 연결한다. Resolver는
+cluster, namespace, exact service name, Incident time window와 결과 상한을 강제하며
+0개는 `NOT_FOUND`, 복수 후보는 `AMBIGUOUS`로 처리한다.
 
 KRCA-style API Drilldown은 호출 edge마다 failure-rate propagation과 latency signal 중
 더 강한 값을 사용한다.

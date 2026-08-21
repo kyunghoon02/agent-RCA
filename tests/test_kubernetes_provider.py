@@ -16,6 +16,7 @@ from contract_suites import ProviderAdapterContract, contract_request
 
 
 INCIDENT_ID = "inc-kubernetes-provider-0001"
+CLUSTER_ID = "gcp-dev-01"
 
 
 class StaticKubernetesClient:
@@ -95,6 +96,14 @@ def warning_event() -> dict:
 
 
 class KubernetesStateProviderTests(unittest.TestCase):
+    def test_cluster_identity_is_required_from_trusted_configuration(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cluster_id"):
+            KubernetesStateProvider(
+                StaticKubernetesClient(resource=pod_resource()),
+                KubernetesResourceSpec("v1", "Pod"),
+                cluster_id="",
+            )
+
     def test_pod_state_and_event_are_safe_and_contract_valid(self) -> None:
         client = StaticKubernetesClient(
             pod_resource(),
@@ -103,6 +112,7 @@ class KubernetesStateProviderTests(unittest.TestCase):
         provider = KubernetesStateProvider(
             client,
             KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
         )
         request = contract_request(INCIDENT_ID, "checkoutservice")
 
@@ -110,6 +120,8 @@ class KubernetesStateProviderTests(unittest.TestCase):
 
         batch = provider.collect(request)
         state, event = batch.items
+        self.assertEqual(state.subject["cluster_id"], CLUSTER_ID)
+        self.assertEqual(event.subject["cluster_id"], CLUSTER_ID)
         self.assertEqual(state.facts["waiting_reason"], "ImagePullBackOff")
         self.assertNotIn("must-not-be-copied", str(state.facts))
         self.assertEqual(event.facts["message_code"], "ImagePullBackOff")
@@ -118,6 +130,7 @@ class KubernetesStateProviderTests(unittest.TestCase):
         provider = KubernetesStateProvider(
             StaticKubernetesClient(resource=None),
             KubernetesResourceSpec("v1", "ConfigMap", required=True),
+            cluster_id=CLUSTER_ID,
             include_events=False,
         )
 
@@ -146,6 +159,7 @@ class KubernetesStateProviderTests(unittest.TestCase):
         provider = KubernetesStateProvider(
             StaticKubernetesClient(resource=resource),
             KubernetesResourceSpec("v1", "ConfigMap"),
+            cluster_id=CLUSTER_ID,
             include_events=False,
         )
 
@@ -165,6 +179,7 @@ class KubernetesStateProviderTests(unittest.TestCase):
         provider = KubernetesStateProvider(
             client,
             KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
             event_page_size=1,
             max_events=1,
         )
@@ -200,6 +215,7 @@ class KubernetesStateProviderTests(unittest.TestCase):
         provider = KubernetesStateProvider(
             client,
             KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
             event_page_size=1,
             max_events=2,
         )
@@ -223,6 +239,7 @@ class KubernetesStateProviderTests(unittest.TestCase):
         provider = KubernetesStateProvider(
             StaticKubernetesClient(resource=pod_resource()),
             KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
         )
         request = contract_request(INCIDENT_ID, "pod,metadata.namespace=default")
 
@@ -235,6 +252,7 @@ class KubernetesStateProviderTests(unittest.TestCase):
         provider = KubernetesStateProvider(
             StaticKubernetesClient(resource=resource),
             KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
             include_events=False,
         )
 

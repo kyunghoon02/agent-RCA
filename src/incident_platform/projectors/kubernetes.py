@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Mapping
 from ..contracts import validate_contract
 from ..errors import ContractViolation
 from ..stategraph import (
+    EntityIdentity,
     GraphProjection,
     stable_graph_id,
     state_content_hash,
@@ -54,6 +55,11 @@ class KubernetesEvidenceProjector:
         subject = evidence["subject"]
         entity = self._entity(subject, evidence)
         records: List[Mapping[str, Any]] = [entity]
+        if entity["entity_type"] == "Service" and entity["exists"]:
+            logical_service = self._logical_service(entity, evidence)
+            records.extend(
+                [logical_service, self._represented_by(logical_service, entity, evidence)]
+            )
         if evidence["kind"] == "resource-state":
             records.append(self._snapshot(entity["entity_id"], evidence))
         else:
@@ -71,35 +77,97 @@ class KubernetesEvidenceProjector:
         namespace = subject.get("namespace")
         api_version = subject.get("api_version")
         uid = subject.get("uid")
+        cluster_id = subject.get("cluster_id")
+        if not isinstance(cluster_id, str) or not cluster_id:
+            raise ContractViolation("Kubernetes Evidence subject cluster_id is required")
         if not isinstance(kind, str) or not kind:
             raise ContractViolation("Kubernetes Evidence subject kind is required")
         if not isinstance(name, str) or not name:
             raise ContractViolation("Kubernetes Evidence subject name is required")
+        if not isinstance(namespace, str) or not namespace:
+            raise ContractViolation("Kubernetes Evidence subject namespace is required")
+        if not isinstance(api_version, str) or not api_version:
+            raise ContractViolation("Kubernetes Evidence subject api_version is required")
         identity = (
-            {"domain": "kubernetes", "uid": uid}
-            if uid
-            else {
-                "domain": "kubernetes",
-                "api_version": api_version,
-                "kind": kind,
-                "namespace": namespace,
-                "name": name,
-            }
+            EntityIdentity.kubernetes_resource(cluster_id=cluster_id, uid=uid)
+            if isinstance(uid, str) and uid
+            else EntityIdentity.kubernetes_placeholder(
+                cluster_id=cluster_id,
+                api_version=api_version,
+                kind=kind,
+                namespace=namespace,
+                name=name,
+            )
         )
         return {
             "record_type": "entity",
-            "entity_id": stable_graph_id("ent", identity),
+            "entity_id": identity.entity_id,
+            "identity": identity.to_contract(),
             "entity_type": kind,
             "domain": "kubernetes",
             "name": name,
             "scope": {
+                "cluster_id": cluster_id,
                 "namespace": namespace,
                 "api_version": api_version,
             },
-            "external_ref": uid or f"k8s://{namespace}/{kind}/{name}",
+            "external_ref": uid or f"k8s://{cluster_id}/{namespace}/{kind}/{name}",
             "exists": bool(subject.get("exists")),
             "first_seen_at": evidence["observed_at"],
             "last_seen_at": evidence["observed_at"],
+            "evidence_ids": [evidence["evidence_id"]],
+        }
+
+    def _logical_service(
+        self, resource: Mapping[str, Any], evidence: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        cluster_id = resource["scope"]["cluster_id"]
+        namespace = resource["scope"]["namespace"]
+        identity = EntityIdentity.logical_service(
+            cluster_id=cluster_id,
+            namespace=namespace,
+            service_name=resource["name"],
+        )
+        return {
+            "record_type": "entity",
+            "entity_id": identity.entity_id,
+            "identity": identity.to_contract(),
+            "entity_type": "Service",
+            "domain": "web-service",
+            "name": resource["name"],
+            "scope": {"cluster_id": cluster_id, "namespace": namespace},
+            "external_ref": f"service://{cluster_id}/{namespace}/{resource['name']}",
+            "exists": True,
+            "first_seen_at": evidence["observed_at"],
+            "last_seen_at": evidence["observed_at"],
+            "evidence_ids": [evidence["evidence_id"]],
+        }
+
+    def _represented_by(
+        self,
+        logical_service: Mapping[str, Any],
+        resource: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        identity = {
+            "source_entity_id": logical_service["entity_id"],
+            "relation_type": "REPRESENTED_BY",
+            "destination_entity_id": resource["entity_id"],
+            "reference_key": "kubernetes-service",
+            "projector": self.projector_name,
+        }
+        relation_key = stable_graph_id("relkey", identity)
+        return {
+            "record_type": "relation_interval",
+            "relation_id": stable_graph_id(
+                "rel",
+                {"relation_key": relation_key, "valid_from": evidence["observed_at"]},
+            ),
+            "relation_key": relation_key,
+            **identity,
+            "observed_at": evidence["observed_at"],
+            "valid_from": evidence["observed_at"],
+            "valid_to": None,
             "evidence_ids": [evidence["evidence_id"]],
         }
 
@@ -170,9 +238,11 @@ class KubernetesEvidenceProjector:
         if not isinstance(missing_kind, str) or not isinstance(missing_name, str):
             return []
         namespace = evidence["subject"].get("namespace")
+        cluster_id = evidence["subject"].get("cluster_id")
         api_version = "v1" if missing_kind in {"ConfigMap", "Secret"} else None
         destination = self._entity(
             {
+                "cluster_id": cluster_id,
                 "api_version": api_version,
                 "kind": missing_kind,
                 "namespace": namespace,

@@ -68,10 +68,132 @@ def state_content_hash(state: Mapping[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
 
+@dataclass(frozen=True)
+class EntityIdentity:
+    """Versioned identity material kept separate from mutable Entity state."""
+
+    identity_type: str
+    domain: str
+    keys: Mapping[str, str]
+    version: str = "1.0.0"
+
+    _REQUIRED_KEYS = {
+        "kubernetes-resource": frozenset({"cluster_id", "uid"}),
+        "kubernetes-placeholder": frozenset(
+            {"cluster_id", "api_version", "kind", "namespace", "name"}
+        ),
+        "logical-service": frozenset(
+            {"cluster_id", "namespace", "service_name"}
+        ),
+        "external": frozenset({"external_key"}),
+    }
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "keys", dict(self.keys))
+        if self.version != "1.0.0":
+            raise ContractViolation("unsupported EntityIdentity version")
+        required = self._REQUIRED_KEYS.get(self.identity_type)
+        if required is None:
+            raise ContractViolation(
+                f"unsupported EntityIdentity type: {self.identity_type}"
+            )
+        if set(self.keys) != required:
+            raise ContractViolation(
+                f"{self.identity_type} identity requires exactly "
+                f"{', '.join(sorted(required))}"
+            )
+        if not self.domain:
+            raise ContractViolation("EntityIdentity domain is required")
+        if any(not isinstance(value, str) or not value for value in self.keys.values()):
+            raise ContractViolation("EntityIdentity key values must be non-empty strings")
+
+    @classmethod
+    def from_contract(cls, value: Mapping[str, Any]) -> "EntityIdentity":
+        try:
+            return cls(
+                version=value["version"],
+                identity_type=value["identity_type"],
+                domain=value["domain"],
+                keys=value["keys"],
+            )
+        except (KeyError, TypeError) as error:
+            raise ContractViolation("Entity identity is malformed") from error
+
+    @classmethod
+    def kubernetes_resource(cls, *, cluster_id: str, uid: str) -> "EntityIdentity":
+        return cls(
+            identity_type="kubernetes-resource",
+            domain="kubernetes",
+            keys={"cluster_id": cluster_id, "uid": uid},
+        )
+
+    @classmethod
+    def kubernetes_placeholder(
+        cls,
+        *,
+        cluster_id: str,
+        api_version: str,
+        kind: str,
+        namespace: str,
+        name: str,
+    ) -> "EntityIdentity":
+        return cls(
+            identity_type="kubernetes-placeholder",
+            domain="kubernetes",
+            keys={
+                "cluster_id": cluster_id,
+                "api_version": api_version,
+                "kind": kind,
+                "namespace": namespace,
+                "name": name,
+            },
+        )
+
+    @classmethod
+    def logical_service(
+        cls, *, cluster_id: str, namespace: str, service_name: str
+    ) -> "EntityIdentity":
+        return cls(
+            identity_type="logical-service",
+            domain="web-service",
+            keys={
+                "cluster_id": cluster_id,
+                "namespace": namespace,
+                "service_name": service_name,
+            },
+        )
+
+    @classmethod
+    def external(cls, *, domain: str, external_key: str) -> "EntityIdentity":
+        return cls(
+            identity_type="external",
+            domain=domain,
+            keys={"external_key": external_key},
+        )
+
+    def to_contract(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "identity_type": self.identity_type,
+            "domain": self.domain,
+            "keys": dict(self.keys),
+        }
+
+    @property
+    def entity_id(self) -> str:
+        return stable_graph_id("ent", self.to_contract())
+
+
 def validate_graph_record(record: Mapping[str, Any]) -> None:
     """Validate structure and reject content that still needs redaction."""
 
     validate_contract("graph-record.schema.json", record)
+    if record.get("record_type") == "entity":
+        identity = EntityIdentity.from_contract(record["identity"])
+        if identity.domain != record["domain"]:
+            raise ContractViolation("Entity identity domain does not match Entity domain")
+        if identity.entity_id != record["entity_id"]:
+            raise ContractViolation("Entity entity_id does not match EntityIdentity")
     _, redactions = redact(record)
     if redactions:
         raise ContractViolation(
@@ -138,6 +260,36 @@ class InvestigationScope:
 
 
 @dataclass(frozen=True)
+class EntityLookup:
+    """Exact, time-bounded Entity lookup contract used by resolvers."""
+
+    cluster_id: str
+    namespace: str
+    name: str
+    window: EvidenceWindow
+    domains: Tuple[str, ...] = field(default_factory=tuple)
+    entity_types: Tuple[str, ...] = field(default_factory=tuple)
+    identity_types: Tuple[str, ...] = field(default_factory=tuple)
+    include_placeholders: bool = False
+    limit: int = 10
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "domains", tuple(self.domains))
+        object.__setattr__(self, "entity_types", tuple(self.entity_types))
+        object.__setattr__(self, "identity_types", tuple(self.identity_types))
+        if not self.cluster_id or not self.namespace or not self.name:
+            raise ContractViolation(
+                "EntityLookup cluster_id, namespace, and name are required"
+            )
+        if not 1 <= self.limit <= 100:
+            raise ContractViolation("EntityLookup limit must be between 1 and 100")
+        if _parse_time(self.window.start, "EntityLookup.window.start") > _parse_time(
+            self.window.end, "EntityLookup.window.end"
+        ):
+            raise ContractViolation("EntityLookup start must not follow end")
+
+
+@dataclass(frozen=True)
 class GraphProjection:
     records: Tuple[Mapping[str, Any], ...]
 
@@ -169,6 +321,9 @@ class StateGraphRepository(Protocol):
     """
 
     def ingest(self, records: Sequence[Mapping[str, Any]]) -> None:
+        ...
+
+    def find_entities(self, lookup: EntityLookup) -> Tuple[Mapping[str, Any], ...]:
         ...
 
     def find_state_paths(self, scope: InvestigationScope) -> GraphLocalization:
@@ -217,13 +372,21 @@ class InMemoryStateGraphRepository:
         last = _parse_time(candidate["last_seen_at"], "Entity.last_seen_at")
         if first > last:
             raise ContractViolation("Entity first_seen_at must not follow last_seen_at")
-        identity_fields = ("entity_type", "domain", "name", "scope", "external_ref")
+        identity_fields = (
+            "identity",
+            "entity_type",
+            "domain",
+            "name",
+            "scope",
+            "external_ref",
+        )
 
         with self._lock:
             existing = self._entities.get(candidate["entity_id"])
             if existing is None:
                 self._entities[candidate["entity_id"]] = candidate
                 self._snapshots_by_entity[candidate["entity_id"]] = []
+                self._reconcile_kubernetes_placeholder(candidate)
                 return copy.deepcopy(candidate)
             if any(existing[field] != candidate[field] for field in identity_fields):
                 raise ContractViolation(
@@ -241,7 +404,127 @@ class InMemoryStateGraphRepository:
             )
             validate_graph_record(updated)
             self._entities[candidate["entity_id"]] = updated
+            self._reconcile_kubernetes_placeholder(updated)
             return copy.deepcopy(updated)
+
+    def _reconcile_kubernetes_placeholder(self, entity: Mapping[str, Any]) -> None:
+        identity = EntityIdentity.from_contract(entity["identity"])
+        if identity.identity_type not in {
+            "kubernetes-resource",
+            "kubernetes-placeholder",
+        }:
+            return
+        for other in tuple(self._entities.values()):
+            if other["entity_id"] == entity["entity_id"]:
+                continue
+            other_identity = EntityIdentity.from_contract(other["identity"])
+            pair = {identity.identity_type, other_identity.identity_type}
+            if pair != {"kubernetes-resource", "kubernetes-placeholder"}:
+                continue
+            placeholder, resource = (
+                (entity, other)
+                if identity.identity_type == "kubernetes-placeholder"
+                else (other, entity)
+            )
+            if not self._same_kubernetes_coordinates(placeholder, resource):
+                continue
+            observed_at = _format_time(
+                max(
+                    _parse_time(placeholder["last_seen_at"], "Entity.last_seen_at"),
+                    _parse_time(resource["last_seen_at"], "Entity.last_seen_at"),
+                )
+            )
+            valid_from = _format_time(
+                max(
+                    _parse_time(placeholder["first_seen_at"], "Entity.first_seen_at"),
+                    _parse_time(resource["first_seen_at"], "Entity.first_seen_at"),
+                )
+            )
+            relation_identity = {
+                "source_entity_id": placeholder["entity_id"],
+                "relation_type": "RESOLVES_TO",
+                "destination_entity_id": resource["entity_id"],
+                "reference_key": placeholder["entity_id"],
+                "projector": "stategraph-identity-reconciler",
+            }
+            relation_key = stable_graph_id("relkey", relation_identity)
+            self.append_or_extend_relation(
+                {
+                    "record_type": "relation_interval",
+                    "relation_id": stable_graph_id(
+                        "rel",
+                        {"relation_key": relation_key, "valid_from": valid_from},
+                    ),
+                    "relation_key": relation_key,
+                    **relation_identity,
+                    "observed_at": observed_at,
+                    "valid_from": valid_from,
+                    "valid_to": None,
+                    "evidence_ids": _merged_ids(
+                        placeholder["evidence_ids"], resource["evidence_ids"]
+                    ),
+                }
+            )
+
+    @staticmethod
+    def _same_kubernetes_coordinates(
+        placeholder: Mapping[str, Any], resource: Mapping[str, Any]
+    ) -> bool:
+        placeholder_keys = EntityIdentity.from_contract(placeholder["identity"]).keys
+        return (
+            placeholder_keys["cluster_id"] == resource["scope"].get("cluster_id")
+            and placeholder_keys["api_version"] == resource["scope"].get("api_version")
+            and placeholder_keys["kind"] == resource["entity_type"]
+            and placeholder_keys["namespace"] == resource["scope"].get("namespace")
+            and placeholder_keys["name"] == resource["name"]
+        )
+
+    def find_entities(self, lookup: EntityLookup) -> Tuple[Mapping[str, Any], ...]:
+        """Return deterministic exact matches without exposing backend query syntax."""
+
+        with self._lock:
+            matches = []
+            for entity in self._entities.values():
+                identity = EntityIdentity.from_contract(entity["identity"])
+                keys = identity.keys
+                if entity["name"] != lookup.name:
+                    continue
+                cluster_id = keys.get("cluster_id") or entity["scope"].get(
+                    "cluster_id"
+                )
+                namespace = keys.get("namespace") or entity["scope"].get("namespace")
+                if cluster_id != lookup.cluster_id:
+                    continue
+                if namespace != lookup.namespace:
+                    continue
+                if lookup.domains and entity["domain"] not in lookup.domains:
+                    continue
+                if lookup.entity_types and entity["entity_type"] not in lookup.entity_types:
+                    continue
+                if (
+                    lookup.identity_types
+                    and identity.identity_type not in lookup.identity_types
+                ):
+                    continue
+                if (
+                    not lookup.include_placeholders
+                    and identity.identity_type == "kubernetes-placeholder"
+                ):
+                    continue
+                snapshots = self._snapshots_by_entity[entity["entity_id"]]
+                if snapshots:
+                    in_window = any(
+                        _overlaps(item["valid_from"], item["valid_to"], lookup.window)
+                        for item in snapshots
+                    )
+                else:
+                    in_window = _overlaps(
+                        entity["first_seen_at"], entity["last_seen_at"], lookup.window
+                    )
+                if in_window:
+                    matches.append(copy.deepcopy(entity))
+            matches.sort(key=lambda item: item["entity_id"])
+            return tuple(matches[: lookup.limit])
 
     def append_or_extend_snapshot(self, record: Mapping[str, Any]) -> Dict[str, Any]:
         candidate = copy.deepcopy(dict(record))

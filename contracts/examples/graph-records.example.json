@@ -1,11 +1,21 @@
 [
   {
     "record_type": "entity",
-    "entity_id": "ent-kubernetes-pod-checkout-0001",
+    "entity_id": "ent-12f8e9f3341cd9dd8bb9a186",
+    "identity": {
+      "version": "1.0.0",
+      "identity_type": "kubernetes-resource",
+      "domain": "kubernetes",
+      "keys": {
+        "cluster_id": "gcp-dev-01",
+        "uid": "2d0f9ab3-8c18-4ffc-a453-f4cc13e457e1"
+      }
+    },
     "entity_type": "Pod",
     "domain": "kubernetes",
     "name": "checkoutservice-7b6c8d9f-example",
     "scope": {
+      "cluster_id": "gcp-dev-01",
       "namespace": "online-boutique",
       "api_version": "v1"
     },
@@ -19,11 +29,24 @@
   },
   {
     "record_type": "entity",
-    "entity_id": "ent-kubernetes-configmap-checkout-0001",
+    "entity_id": "ent-19024085ccd010e49785fbcb",
+    "identity": {
+      "version": "1.0.0",
+      "identity_type": "kubernetes-placeholder",
+      "domain": "kubernetes",
+      "keys": {
+        "cluster_id": "gcp-dev-01",
+        "api_version": "v1",
+        "kind": "ConfigMap",
+        "namespace": "online-boutique",
+        "name": "checkout-settings"
+      }
+    },
     "entity_type": "ConfigMap",
     "domain": "kubernetes",
     "name": "checkout-settings",
     "scope": {
+      "cluster_id": "gcp-dev-01",
       "namespace": "online-boutique",
       "api_version": "v1"
     },
@@ -38,7 +61,7 @@
   {
     "record_type": "snapshot_interval",
     "snapshot_id": "snap-kubernetes-configmap-checkout-0001",
-    "entity_id": "ent-kubernetes-configmap-checkout-0001",
+    "entity_id": "ent-19024085ccd010e49785fbcb",
     "observed_at": "2026-07-27T01:05:02Z",
     "valid_from": "2026-07-27T01:05:02Z",
     "valid_to": null,
@@ -56,9 +79,9 @@
     "record_type": "relation_interval",
     "relation_id": "rel-pod-configmap-checkout-0001",
     "relation_key": "relkey-pod-configmap-checkout-0001",
-    "source_entity_id": "ent-kubernetes-pod-checkout-0001",
+    "source_entity_id": "ent-12f8e9f3341cd9dd8bb9a186",
     "relation_type": "REFERENCES",
-    "destination_entity_id": "ent-kubernetes-configmap-checkout-0001",
+    "destination_entity_id": "ent-19024085ccd010e49785fbcb",
     "reference_key": "event-reported-reference",
     "projector": "kubernetes-evidence-projector",
     "observed_at": "2026-07-27T01:05:02Z",
@@ -71,7 +94,7 @@
   {
     "record_type": "event_aggregate",
     "event_id": "evt-checkout-pod-failedmount-0001",
-    "entity_id": "ent-kubernetes-pod-checkout-0001",
+    "entity_id": "ent-12f8e9f3341cd9dd8bb9a186",
     "event_type": "FailedMount",
     "first_seen_at": "2026-07-27T01:00:00Z",
     "last_seen_at": "2026-07-27T01:05:00Z",

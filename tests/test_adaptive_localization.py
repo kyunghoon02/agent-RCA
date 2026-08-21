@@ -17,6 +17,7 @@ from incident_platform.localization import (
     LocalizationAssessment,
 )
 from incident_platform.stategraph import (
+    EntityIdentity,
     GraphLocalizer,
     InMemoryStateGraphRepository,
     InvestigationScope,
@@ -32,10 +33,10 @@ WINDOW = EvidenceWindow(
     end="2026-08-12T01:10:00Z",
 )
 ENTITY_IDS = {
-    "checkout": "ent-adaptive-checkout-0001",
-    "payment": "ent-adaptive-payment-0001",
-    "worker": "ent-adaptive-worker-000001",
-    "gateway": "ent-adaptive-gateway-0001",
+    name: EntityIdentity.external(
+        domain="web-service", external_key=f"adaptive-fixture:{name}"
+    ).entity_id
+    for name in ("checkout", "payment", "worker", "gateway")
 }
 
 
@@ -78,9 +79,13 @@ def build_evidence(name: str, *, second: int) -> dict:
 
 def entity_record(name: str, evidence_id: str) -> dict:
     entity_id = ENTITY_IDS[name]
+    identity = EntityIdentity.external(
+        domain="web-service", external_key=f"adaptive-fixture:{name}"
+    )
     return {
         "record_type": "entity",
         "entity_id": entity_id,
+        "identity": identity.to_contract(),
         "entity_type": "Service",
         "domain": "web-service",
         "name": name,

@@ -15,6 +15,7 @@ from incident_platform.evidence import (
 )
 from incident_platform.projectors import KubernetesEvidenceProjector
 from incident_platform.stategraph import (
+    EntityIdentity,
     GraphLocalizer,
     InMemoryStateGraphRepository,
     InvestigationScope,
@@ -38,9 +39,13 @@ def graph_entity(
     evidence_id: str,
     observed_at: str = "2026-08-12T01:01:00Z",
 ) -> dict:
+    identity = EntityIdentity.external(
+        domain="web-service", external_key=f"fixture:{name}"
+    )
     return {
         "record_type": "entity",
         "entity_id": entity_id,
+        "identity": identity.to_contract(),
         "entity_type": "Service",
         "domain": "web-service",
         "name": name,
@@ -51,6 +56,12 @@ def graph_entity(
         "last_seen_at": observed_at,
         "evidence_ids": [evidence_id],
     }
+
+
+def graph_entity_id(name: str) -> str:
+    return EntityIdentity.external(
+        domain="web-service", external_key=f"fixture:{name}"
+    ).entity_id
 
 
 def graph_snapshot(
@@ -107,6 +118,7 @@ def kubernetes_evidence() -> tuple[dict, dict]:
             kind="kubernetes-event",
             observed_at="2026-08-12T01:05:00Z",
             subject={
+                "cluster_id": "gcp-dev-01",
                 "api_version": "v1",
                 "kind": "Pod",
                 "namespace": "online-boutique",
@@ -136,6 +148,7 @@ def kubernetes_evidence() -> tuple[dict, dict]:
             kind="resource-state",
             observed_at="2026-08-12T01:05:02Z",
             subject={
+                "cluster_id": "gcp-dev-01",
                 "api_version": "v1",
                 "kind": "ConfigMap",
                 "namespace": "online-boutique",
@@ -185,9 +198,20 @@ class StateGraphRepositoryTests(unittest.TestCase):
     def test_in_memory_adapter_satisfies_the_repository_port(self) -> None:
         self.assertIsInstance(InMemoryStateGraphRepository(), StateGraphRepository)
 
+    def test_entity_id_must_be_derived_from_versioned_identity(self) -> None:
+        record = graph_entity(
+            graph_entity_id("checkout-api"),
+            name="checkout-api",
+            evidence_id="ev-stategraph-identity-0001",
+        )
+        record["entity_id"] = "ent-stategraph-mismatched-0001"
+
+        with self.assertRaisesRegex(ContractViolation, "does not match EntityIdentity"):
+            InMemoryStateGraphRepository().upsert_entity(record)
+
     def test_graph_storage_rejects_content_that_still_needs_redaction(self) -> None:
         repository = InMemoryStateGraphRepository()
-        entity_id = "ent-stategraph-service-a0001"
+        entity_id = graph_entity_id("checkout-api")
         repository.upsert_entity(
             graph_entity(
                 entity_id,
@@ -208,7 +232,7 @@ class StateGraphRepositoryTests(unittest.TestCase):
 
     def test_consecutive_equal_snapshots_merge_then_changed_state_closes_interval(self) -> None:
         repository = InMemoryStateGraphRepository()
-        entity_id = "ent-stategraph-service-a0001"
+        entity_id = graph_entity_id("checkout-api")
         repository.upsert_entity(
             graph_entity(
                 entity_id,
@@ -250,8 +274,8 @@ class StateGraphRepositoryTests(unittest.TestCase):
 
     def test_relation_observation_extends_and_explicit_disappearance_closes_it(self) -> None:
         repository = InMemoryStateGraphRepository()
-        source_id = "ent-stategraph-service-a0001"
-        destination_id = "ent-stategraph-database-b001"
+        source_id = graph_entity_id("checkout-api")
+        destination_id = graph_entity_id("orders-db")
         repository.upsert_entity(
             graph_entity(
                 source_id,
