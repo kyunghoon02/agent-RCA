@@ -32,6 +32,14 @@ class KubernetesEvidenceProjector:
         }
     )
 
+    def supports(self, evidence: Mapping[str, Any]) -> bool:
+        """Return whether this projector owns the normalized Evidence kind."""
+
+        return (
+            evidence.get("source") == "kubernetes"
+            and evidence.get("kind") in self.supported_kinds
+        )
+
     def project(self, evidence: Mapping[str, Any]) -> GraphProjection:
         validate_contract("evidence-item.schema.json", evidence)
         if evidence["source"] != "kubernetes":

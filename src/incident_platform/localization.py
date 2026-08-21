@@ -1,13 +1,202 @@
-"""Evidence-gated adaptive expansion around bounded Graph localization."""
+"""Incident localization orchestration and bounded adaptive Graph expansion."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Mapping, Optional, Protocol, Sequence, Tuple
+from datetime import datetime, timezone
+from typing import Any, List, Mapping, Optional, Protocol, Sequence, Tuple
 
-from .errors import ContractViolation
-from .stategraph import GraphLocalizer, InvestigationScope
+from .errors import ContractViolation, InvalidTransition
+from .evidence import format_time, parse_time
+from .repository import IncidentRepository
+from .stategraph import (
+    GraphLocalizer,
+    GraphProjection,
+    InvestigationScope,
+    StateGraphRepository,
+)
+
+
+class EvidenceProjector(Protocol):
+    """Translate one owned Evidence kind into domain-neutral Graph records."""
+
+    def supports(self, evidence: Mapping[str, Any]) -> bool:
+        ...
+
+    def project(self, evidence: Mapping[str, Any]) -> GraphProjection:
+        ...
+
+
+@dataclass(frozen=True)
+class IncidentLocalizationRun:
+    """Persisted Context and projection summary for one Incident."""
+
+    context: Mapping[str, Any]
+    projected_evidence_ids: Tuple[str, ...]
+    projected_record_count: int
+    incident: Mapping[str, Any]
+
+
+class IncidentLocalizationService:
+    """Project stored Evidence and advance one Incident to ANALYZING.
+
+    Seed resolution is intentionally outside this service. The caller must pass
+    an already bounded InvestigationScope whose Entity IDs came from an approved
+    resolver or another deterministic source.
+    """
+
+    def __init__(
+        self,
+        incident_repository: IncidentRepository,
+        stategraph_repository: StateGraphRepository,
+        projectors: Sequence[EvidenceProjector],
+    ) -> None:
+        if not projectors:
+            raise ValueError("at least one EvidenceProjector is required")
+        self._incident_repository = incident_repository
+        self._stategraph_repository = stategraph_repository
+        self._projectors = tuple(projectors)
+        self._localizer = GraphLocalizer(stategraph_repository)
+
+    def localize_incident(
+        self,
+        incident_id: str,
+        *,
+        scope: InvestigationScope,
+        frozen_at: Optional[datetime] = None,
+    ) -> IncidentLocalizationRun:
+        now = frozen_at or datetime.now(timezone.utc)
+        format_time(now)
+        incident = self._incident_repository.get(incident_id)
+        if incident["status"] != "LOCALIZING":
+            raise InvalidTransition(
+                "Incident localization requires LOCALIZING, "
+                f"found {incident['status']}"
+            )
+        self._validate_scope(incident, scope, now)
+
+        try:
+            evidence = self._incident_repository.list_evidence(incident_id)
+            records, projected_evidence_ids = self._project(evidence)
+            if not records:
+                raise ContractViolation(
+                    "Incident localization found no projectable Evidence"
+                )
+            self._stategraph_repository.ingest(records)
+            context = self._localizer.build_context(
+                scope,
+                evidence,
+                frozen_at=now,
+                collector_failures=self._collector_failures(incident),
+            )
+            self._incident_repository.store_context(context)
+            analyzing = self._incident_repository.transition(
+                incident_id,
+                expected_status="LOCALIZING",
+                next_status="ANALYZING",
+                occurred_at=now,
+            )
+        except Exception:
+            self._mark_failed_without_masking(incident_id, now)
+            raise
+
+        return IncidentLocalizationRun(
+            context=context,
+            projected_evidence_ids=projected_evidence_ids,
+            projected_record_count=len(records),
+            incident=analyzing,
+        )
+
+    def _project(
+        self,
+        evidence: Sequence[Mapping[str, Any]],
+    ) -> Tuple[Tuple[Mapping[str, Any], ...], Tuple[str, ...]]:
+        records: List[Mapping[str, Any]] = []
+        projected_evidence_ids = []
+        for item in evidence:
+            owners = [projector for projector in self._projectors if projector.supports(item)]
+            if len(owners) > 1:
+                raise ContractViolation(
+                    "multiple Projectors claim Evidence " f"{item.get('evidence_id')}"
+                )
+            if not owners:
+                continue
+            projection = owners[0].project(item)
+            if not isinstance(projection, GraphProjection):
+                raise TypeError("EvidenceProjector must return GraphProjection")
+            records.extend(projection.records)
+            projected_evidence_ids.append(item["evidence_id"])
+        return tuple(records), tuple(dict.fromkeys(projected_evidence_ids))
+
+    @staticmethod
+    def _validate_scope(
+        incident: Mapping[str, Any],
+        scope: InvestigationScope,
+        frozen_at: datetime,
+    ) -> None:
+        if scope.incident_id != incident["incident_id"]:
+            raise ContractViolation(
+                "InvestigationScope incident_id does not match the target Incident"
+            )
+        scope_start = parse_time(scope.window.start, "InvestigationScope.time_window.start")
+        scope_end = parse_time(scope.window.end, "InvestigationScope.time_window.end")
+        baseline_start = parse_time(
+            incident["window"]["baseline_start"],
+            "Incident.window.baseline_start",
+        )
+        if scope_start < baseline_start:
+            raise ContractViolation(
+                "InvestigationScope starts before the Incident baseline window"
+            )
+        if scope_end > frozen_at.astimezone(timezone.utc):
+            raise ContractViolation(
+                "InvestigationScope ends after the Context freeze time"
+            )
+        known_end = (
+            incident["window"]["recovery_end"]
+            or incident["window"]["incident_end"]
+        )
+        if known_end is not None and scope_end > parse_time(
+            known_end, "Incident.window.end"
+        ):
+            raise ContractViolation(
+                "InvestigationScope ends after the known Incident window"
+            )
+
+    @staticmethod
+    def _collector_failures(
+        incident: Mapping[str, Any],
+    ) -> Tuple[Mapping[str, str], ...]:
+        failures = []
+        for status in incident["collector_statuses"]:
+            if status["status"] not in {"PARTIAL", "FAILED", "TIMED_OUT", "SKIPPED"}:
+                continue
+            error = status.get("error")
+            failures.append(
+                {
+                    "collector": status["collector"],
+                    "error": error
+                    if isinstance(error, str) and error
+                    else f"collector ended with {status['status']}",
+                }
+            )
+        return tuple(failures)
+
+    def _mark_failed_without_masking(
+        self,
+        incident_id: str,
+        occurred_at: datetime,
+    ) -> None:
+        try:
+            self._incident_repository.transition(
+                incident_id,
+                expected_status="LOCALIZING",
+                next_status="FAILED",
+                occurred_at=occurred_at,
+            )
+        except Exception:
+            # Preserve the projection/localization/persistence exception.
+            pass
 
 
 @dataclass(frozen=True)

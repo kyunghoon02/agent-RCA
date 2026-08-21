@@ -129,14 +129,14 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 
 ## 현재 구현 상태
 
-> 기준일: 2026-08-20. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
+> 기준일: 2026-08-21. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
-| KRCA scorer, StateGraph, localization, adaptive fallback | fixture와 in-memory 구현 | API feature provider와 persistent Graph 미연결 |
+| KRCA scorer, StateGraph Port, Incident localization, adaptive fallback | 명시적 seed 기반 fixture 구현 | API feature provider, Entity resolver와 persistent Graph 미연결 |
 | Operational Knowledge와 Retriever | schema/contract 및 Git 문서 경계 정의 | Retriever runtime 미구현 |
 | Agent RCA와 LLM tool-calling | 목표 state, budget, Evidence Gate 경계 정의 | 미구현·미연결 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |

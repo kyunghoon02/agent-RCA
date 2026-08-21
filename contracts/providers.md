@@ -123,27 +123,29 @@ diff_revisions(deployment, namespace, from_revision, to_revision)
 MVP에서는 Kubernetes Deployment/ReplicaSet 상태만 사용한다. GitHub와 Argo CD
 이력은 2차 provider다.
 
-### GraphRepository
+### StateGraphRepository
 
 ```text
-upsert_entity(entity)
-append_or_extend_snapshot(snapshot)
-append_or_extend_relation(relation_interval)
-upsert_event_aggregate(event_aggregate)
-resolve_seed_entities(correlation_keys, domain, limit)
-find_statepaths(investigation_scope)
-pin_incident_history(incident_id, record_ids, expires_at)
-garbage_collect(now, batch_size)
+ingest(graph_records)
+find_state_paths(investigation_scope)
 ```
 
-`append_or_extend`는 연속된 동일 상태/관계만 병합한다. Reasoning 계층은 Graph
-query language를 직접 생성하지 않고 repository method만 사용한다. Core record는
-domain-neutral하며 Kubernetes와 다른 서비스 의미는 Evidence projector가 변환한다.
+현재 Port는 Evidence projection 저장과 bounded localization에 필요한 최소 연산만
+노출한다. `ingest` 구현은 Entity를 먼저 upsert하고 연속된 동일 상태/관계만 병합해야
+한다. Reasoning 계층은 Graph query language를 직접 생성하지 않고 repository method만
+사용한다. Core record는 domain-neutral하며 Kubernetes와 다른 서비스 의미는 Evidence
+projector가 변환한다.
+
+seed resolution, Incident history pin과 garbage collection은 resolver 및 persistent
+backend 단계에서 별도 capability로 확장한다. 아직 구현되지 않은 capability를 현재
+Port의 runtime 보장으로 표현하지 않는다.
 
 | 단계 | 구현 |
 |---|---|
-| fixture test | in-memory repository |
-| GCP/kubeadm runtime | capability/topology 확인 뒤 backend 고정 |
+| Port | `StateGraphRepository` Protocol |
+| fixture test | `InMemoryStateGraphRepository` adapter |
+| Incident 연결 | `IncidentLocalizationService`가 Projector, Port와 Context 저장 연결 |
+| GCP/kubeadm runtime | capability/topology 확인 뒤 persistent adapter 고정 |
 
 ### IncidentRepository
 

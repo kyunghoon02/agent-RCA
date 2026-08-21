@@ -9,7 +9,18 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    runtime_checkable,
+)
 
 from .contracts import validate_contract
 from .errors import ContractViolation
@@ -146,6 +157,22 @@ class GraphLocalization:
     evidence_ids: Tuple[str, ...]
     recent_change_evidence_ids: Tuple[str, ...]
     entity_coverage: float
+
+
+@runtime_checkable
+class StateGraphRepository(Protocol):
+    """Storage port required by projection and bounded Graph localization.
+
+    Persistent adapters may use a Graph database, a relational database, or
+    another store internally. Callers depend only on these bounded operations
+    and never issue backend-specific query language directly.
+    """
+
+    def ingest(self, records: Sequence[Mapping[str, Any]]) -> None:
+        ...
+
+    def find_state_paths(self, scope: InvestigationScope) -> GraphLocalization:
+        ...
 
 
 class InMemoryStateGraphRepository:
@@ -593,7 +620,7 @@ class InMemoryStateGraphRepository:
 class GraphLocalizer:
     """Freeze a bounded Graph localization result into a Context Package."""
 
-    def __init__(self, repository: InMemoryStateGraphRepository) -> None:
+    def __init__(self, repository: StateGraphRepository) -> None:
         self._repository = repository
 
     def build_context(

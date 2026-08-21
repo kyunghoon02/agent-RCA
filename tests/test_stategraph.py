@@ -18,6 +18,7 @@ from incident_platform.stategraph import (
     GraphLocalizer,
     InMemoryStateGraphRepository,
     InvestigationScope,
+    StateGraphRepository,
     stable_graph_id,
     state_content_hash,
 )
@@ -181,6 +182,9 @@ class InvestigationScopeTests(unittest.TestCase):
 
 
 class StateGraphRepositoryTests(unittest.TestCase):
+    def test_in_memory_adapter_satisfies_the_repository_port(self) -> None:
+        self.assertIsInstance(InMemoryStateGraphRepository(), StateGraphRepository)
+
     def test_graph_storage_rejects_content_that_still_needs_redaction(self) -> None:
         repository = InMemoryStateGraphRepository()
         entity_id = "ent-stategraph-service-a0001"
