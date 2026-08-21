@@ -61,6 +61,32 @@ series reference다.
 selector, time window, sample/response byte limit을 강제하고 resource별 summary를
 반환한다. 실제 Prometheus endpoint와 배포 query spec은 아직 연결하지 않았다.
 
+### PrometheusAPIFeatureProvider
+
+```text
+collect(
+  allowlisted_api_dependencies,
+  failure_rate_query,
+  latency_query,
+  qps_query,
+  latency_baseline_query,
+  time_window,
+  edge/query/sample_budget
+)
+```
+
+API dependency는 Agent가 만드는 문자열이 아니라 versioned `APIDependencySpec`으로
+주입한다. Provider는 namespace/service/operation label exact match, 단일 series,
+time window, edge/query/sample limit을 강제한다. 호출 전에 예상 query 수가 budget을
+넘는지 확인하고, 원본 sample 대신 계산 feature와 계산 구간·선택 lag·reason code만
+`metric-summary` Evidence로 반환한다.
+
+`APIEdgeEvidenceProjector`는 `HAS_DATA`인 contract-valid Evidence만
+`APIEdgeSignal`로 바꾼다. 필수 series 누락, sample truncation과 정렬 표본 부족은
+`INSUFFICIENT_DATA` Evidence로 남고 KRCA signal이 되지 않는다. 현재 구현은 fixture
+Prometheus client와 allowlisted dependency 기준이며 실제 Online Boutique metric명,
+operation label과 live dependency source는 아직 검증하지 않았다.
+
 ### LogsProvider
 
 ```text

@@ -136,7 +136,7 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
-| KRCA scorer, StateGraph Port, Entity resolver, Incident localization, adaptive fallback | exact/time-bounded resolved-seed fixture 구현 | API feature provider와 persistent Graph 미연결 |
+| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 구현 | live PromQL/dependency config와 persistent Graph 미연결 |
 | Operational Knowledge와 Retriever | schema/contract 및 Git 문서 경계 정의 | Retriever runtime 미구현 |
 | Agent RCA와 LLM tool-calling | 목표 state, budget, Evidence Gate 경계 정의 | 미구현·미연결 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
@@ -173,6 +173,21 @@ cluster, namespace, exact service name, Incident time window와 결과 상한을
 
 KRCA-style API Drilldown은 호출 edge마다 failure-rate propagation과 latency signal 중
 더 강한 값을 사용한다.
+
+```text
+allowlisted API dependency + bounded PromQL range queries
+→ dynamic window / max-lag correlation / p-value / latency features
+→ hashed metric-summary Evidence
+→ APIEdgeSignal
+→ KRCA Top-N services
+→ exact Entity resolution
+→ multi-seed InvestigationScope
+```
+
+Feature Provider는 query/edge/sample budget을 호출 전에 검사하고 namespace, service,
+operation label이 scope와 정확히 일치하는 단일 series만 허용한다. 원본 sample은
+Evidence나 StateGraph에 저장하지 않는다. 필수 series 누락, truncation 또는 정렬 표본
+부족은 완전한 `APIEdgeSignal`로 승격하지 않고 fallback 대상으로 남긴다.
 
 ```text
 Score(P, C) = max(FailureRateScore(P, C), LatencyScore(P, C))

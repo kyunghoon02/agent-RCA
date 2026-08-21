@@ -10,11 +10,19 @@ from .prometheus import (
     PrometheusMetricProvider,
     PrometheusQuerySpec,
 )
+from .krca_metrics import (
+    APIDependencySpec,
+    PrometheusAPIFeatureProvider,
+    PrometheusAPIFeatureQuerySpec,
+)
 
 __all__ = [
     "KubernetesHTTPAPI",
     "KubernetesResourceSpec",
     "KubernetesStateProvider",
+    "APIDependencySpec",
+    "PrometheusAPIFeatureProvider",
+    "PrometheusAPIFeatureQuerySpec",
     "PrometheusHTTPAPI",
     "PrometheusMetricProvider",
     "PrometheusQuerySpec",

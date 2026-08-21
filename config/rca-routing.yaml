@@ -28,6 +28,15 @@ krca_api_drilldown:
     - latency_fluctuation_contribution
     - latency_correlation
     - evidence_ids
+  feature_extraction:
+    implementation_status: adapter-fixture-runtime-unverified
+    aligned_timestamp_policy: exact-intersection
+    minimum_aligned_samples: 4
+    dynamic_window_shortfall: fallback-full-bounded-window-with-reason
+    correlation_p_value: pearson-student-t-two-sided
+    component_clipping: zero-to-one
+    zero_denominator: zero-component-with-reason
+    missing_or_truncated_series: insufficient-data-no-signal
   on_missing_observability: adaptive_fallback_or_abstain
   on_budget_exhaustion: adaptive_fallback_or_abstain
 

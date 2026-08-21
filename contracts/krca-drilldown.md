@@ -125,8 +125,21 @@ edge_score = max(failure_score, latency_score)
 fault evaluation 전에는 운영 threshold나 SLO로 간주하지 않는다.
 
 논문 본문만으로는 `A`와 `F`의 clipping 또는 rescaling, 0인 QPS/변동량 분모,
-missing sample 처리 정책이 완전히 정의되지 않는다. Metric feature provider를 실제로
-구현할 때 이 정책을 고정하고 Ground Truth와 분리된 fault fixture로 재조정해야 한다.
+missing sample 처리 정책이 완전히 정의되지 않는다. 이 프로젝트의 초기 adapter는
+다음 보수적 정책을 고정했다.
+
+- 모든 필수 series의 timestamp 교집합만 사용하고 최소 4개 aligned sample을 요구한다.
+- Parent failure-rate 1차 차분의 마지막 부호 변화 이후를 dynamic window로 사용한다.
+  남은 표본이 4개 미만이면 reason code를 남기고 전체 bounded window로 fallback한다.
+- 최대 5 sample lag에서 가장 큰 Pearson correlation을 선택한다.
+- failure correlation의 양측 p-value는 Student t 분포로 계산한다.
+- anomaly와 fluctuation contribution은 `[0, 1]`로 clip한다.
+- Parent QPS 또는 Parent latency variation 분모가 0이면 contribution을 0으로 만들고
+  reason code를 남긴다.
+- 필수 series 누락, truncation 또는 aligned sample 부족이면 feature Evidence는
+  `INSUFFICIENT_DATA`이며 `APIEdgeSignal`을 생성하지 않는다.
+
+위 정책과 threshold는 Ground Truth와 분리된 fault fixture 결과로 재조정해야 한다.
 
 ## 탐색과 fallback
 
@@ -153,18 +166,19 @@ StateGraph의 탐색 seed, depth와 entity budget만 제한적으로 확장한�
 | 식 3의 latency weight 계산 | Core 구현·fixture 검증 |
 | p-value significance gate | Core 구현·fixture 검증 |
 | threshold 기반 재귀 traversal과 service Top-N | Core 구현·fixture 검증 |
-| 식 2의 dynamic window와 max-lag Pearson 계산 | 입력 contract만 존재 |
-| 식 4의 multi-look-back latency baseline 계산 | 입력 contract만 존재 |
-| 식 5의 QPS·latency fluctuation 계산 | 입력 contract만 존재 |
+| 식 2의 dynamic window, max-lag Pearson와 p-value | adapter 구현·fixture 검증 |
+| 식 4의 anomaly 계산 | supplied baseline series 기반 adapter 구현·fixture 검증 |
+| 식 4의 live multi-look-back baseline PromQL | query template/runtime 미검증 |
+| 식 5의 QPS·latency fluctuation 계산 | adapter 구현·fixture 검증 |
+| feature Evidence → Top-N → Entity seed | in-memory 연결 fixture 검증 |
 
 따라서 현재 fixture 검증은 scoring과 traversal code의 결정성을 증명하지만, 실제
 Prometheus 시계열에서 feature가 올바르게 생성된다는 runtime proof는 아니다.
 
 ## Runtime 미구현 경계
 
-- API별 failure-rate/latency 시계열 feature provider
-- API dependency graph discovery와 versioning
-- Top-N service를 StateGraph Entity ID로 변환하는 resolver
+- live API metric/operation label과 baseline PromQL 검증
+- API dependency graph discovery, versioning과 `APIDependencySpec` 공급 adapter
 - Agent assessment와 adaptive 재수집 loop
 - KRCA skeleton graph와 memory-augmented multi-agent의 전체 재현
 

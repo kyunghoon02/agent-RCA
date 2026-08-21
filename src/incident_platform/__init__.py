@@ -27,12 +27,24 @@ from .fast_path import FastPathRun, IncidentFastPathService
 from .repository import InMemoryIncidentRepository
 from .postgresql import PostgreSQLIncidentRepository, apply_migrations
 from .providers import (
+    APIDependencySpec,
     KubernetesHTTPAPI,
     KubernetesResourceSpec,
     KubernetesStateProvider,
     PrometheusHTTPAPI,
+    PrometheusAPIFeatureProvider,
+    PrometheusAPIFeatureQuerySpec,
     PrometheusMetricProvider,
     PrometheusQuerySpec,
+)
+from .krca_pipeline import (
+    APIEdgeEvidenceProjector,
+    EvidenceBackedKRCADrilldownService,
+    KRCAMetricLocalizationRun,
+    KRCATopServiceLocalizationRun,
+    KRCATopServiceLocalizationService,
+    KRCATopServiceResolutionRun,
+    KRCATopServiceScopeResolver,
 )
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
 from .stategraph import (
@@ -86,6 +98,8 @@ __all__ = [
     "AlertmanagerWebhookWSGI",
     "APIEdgeSignal",
     "APIRef",
+    "APIDependencySpec",
+    "APIEdgeEvidenceProjector",
     "AdaptiveLocalizationRound",
     "AdaptiveLocalizationRun",
     "AdaptiveScopeController",
@@ -97,6 +111,7 @@ __all__ = [
     "DeterministicDecision",
     "DeterministicRCAEngine",
     "EvidenceBuilder",
+    "EvidenceBackedKRCADrilldownService",
     "EvidenceDraft",
     "EvidenceProjector",
     "EvidenceWindow",
@@ -132,11 +147,18 @@ __all__ = [
     "KRCADrilldownRun",
     "KRCADrilldownScorer",
     "KRCAScoredEdge",
+    "KRCAMetricLocalizationRun",
+    "KRCATopServiceLocalizationRun",
+    "KRCATopServiceLocalizationService",
+    "KRCATopServiceResolutionRun",
+    "KRCATopServiceScopeResolver",
     "LocalizationAssessment",
     "LocalizationAssessor",
     "ProviderBatch",
     "PostgreSQLIncidentRepository",
     "PrometheusHTTPAPI",
+    "PrometheusAPIFeatureProvider",
+    "PrometheusAPIFeatureQuerySpec",
     "PrometheusMetricProvider",
     "PrometheusQuerySpec",
     "ResourceScope",
