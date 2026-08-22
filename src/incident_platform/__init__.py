@@ -1,5 +1,16 @@
 """Cloud-neutral core for the Incident Response and Agent RCA Platform."""
 
+from .agent_rca import (
+    AgentInvocation,
+    AgentModelRun,
+    AgentRCADraft,
+    AgentRCAPolicy,
+    AgentRCAService,
+    AgentRCAServiceRun,
+    AgentToolRuntime,
+    EvidenceGate,
+    OpenAIAgentsSDKRunner,
+)
 from .errors import ContractViolation, InvalidAlert, InvalidTransition
 from .collectors import CollectorOrchestrator, CollectorSpec, IncidentCollectionService
 from .deterministic import DeterministicDecision, DeterministicRCAEngine
@@ -92,6 +103,13 @@ from .krca import (
 from .projectors import KubernetesEvidenceProjector
 
 __all__ = [
+    "AgentInvocation",
+    "AgentModelRun",
+    "AgentRCADraft",
+    "AgentRCAPolicy",
+    "AgentRCAService",
+    "AgentRCAServiceRun",
+    "AgentToolRuntime",
     "AlertmanagerIngestionService",
     "AlertmanagerHTTPReceiver",
     "AlertmanagerNormalizer",
@@ -111,6 +129,7 @@ __all__ = [
     "DeterministicDecision",
     "DeterministicRCAEngine",
     "EvidenceBuilder",
+    "EvidenceGate",
     "EvidenceBackedKRCADrilldownService",
     "EvidenceDraft",
     "EvidenceProjector",
@@ -156,6 +175,7 @@ __all__ = [
     "LocalizationAssessor",
     "ProviderBatch",
     "PostgreSQLIncidentRepository",
+    "OpenAIAgentsSDKRunner",
     "PrometheusHTTPAPI",
     "PrometheusAPIFeatureProvider",
     "PrometheusAPIFeatureQuerySpec",

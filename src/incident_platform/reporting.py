@@ -307,6 +307,7 @@ class FastPathReportBuilder:
                 "supporting_evidence_ids": list(
                     _unique(decision.supporting_evidence_ids)
                 ),
+                "reference_document_ids": [],
             }
 
         failures = context["collector_failures"]
@@ -391,6 +392,7 @@ class FastPathReportBuilder:
                         _unique(decision.supporting_evidence_ids)
                     ),
                     "contradicting_evidence_ids": [],
+                    "reference_document_ids": [],
                     "missing_evidence": [],
                 }
             ]
@@ -416,6 +418,7 @@ class FastPathReportBuilder:
                         _evaluation_evidence_ids(evaluation)
                     ),
                     "contradicting_evidence_ids": [],
+                    "reference_document_ids": [],
                     "missing_evidence": list(decision.missing_requirements),
                 }
                 for rank, evaluation in enumerate(competing, start=1)
@@ -442,6 +445,7 @@ class FastPathReportBuilder:
                         _evaluation_evidence_ids(evaluation)
                     ),
                     "contradicting_evidence_ids": [],
+                    "reference_document_ids": [],
                     "missing_evidence": list(evaluation.missing_requirements),
                 }
                 for rank, evaluation in enumerate(insufficient, start=1)
@@ -456,6 +460,7 @@ class FastPathReportBuilder:
                 "status": "unresolved",
                 "supporting_evidence_ids": [],
                 "contradicting_evidence_ids": [],
+                "reference_document_ids": [],
                 "missing_evidence": list(decision.missing_requirements),
             }
         ]
@@ -516,6 +521,19 @@ def _markdown_list(values: Sequence[str], *, empty: str = "None") -> list[str]:
     return [f"- {_markdown_text(value)}" for value in values]
 
 
+def _markdown_entity(entity: Mapping[str, Any]) -> str:
+    if "entity_id" in entity:
+        return "/".join(
+            _markdown_text(entity[key])
+            for key in ("domain", "entity_type", "name")
+        )
+    namespace = entity.get("namespace") or "cluster"
+    return "/".join(
+        _markdown_text(value)
+        for value in (entity["kind"], namespace, entity["name"])
+    )
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     """Render a schema-valid RCA Report as safe, stable Markdown."""
 
@@ -540,12 +558,13 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             [
                 _markdown_text(root["summary"]),
                 "",
-                f"Affected entity: `{_markdown_text(entity['kind'])}/"
-                f"{_markdown_text(entity['namespace'])}/"
-                f"{_markdown_text(entity['name'])}`",
+                f"Affected entity: `{_markdown_entity(entity)}`",
                 "",
                 "Supporting Evidence:",
                 *_markdown_list(root["supporting_evidence_ids"]),
+                "",
+                "Operational References:",
+                *_markdown_list(root["reference_document_ids"]),
             ]
         )
 
@@ -570,6 +589,14 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                     ", ".join(
                         f"`{_markdown_text(item)}`"
                         for item in hypothesis["contradicting_evidence_ids"]
+                    )
+                    or "None"
+                ),
+                "- Operational References: "
+                + (
+                    ", ".join(
+                        f"`{_markdown_text(item)}`"
+                        for item in hypothesis["reference_document_ids"]
                     )
                     or "None"
                 ),

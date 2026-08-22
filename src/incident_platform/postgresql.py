@@ -488,6 +488,66 @@ class PostgreSQLIncidentRepository:
                     raise KeyError(f"unknown report: {report_id}")
                 return row[0]
 
+    def store_agent_run(self, audit: Mapping[str, Any]) -> None:
+        candidate = copy.deepcopy(dict(audit))
+        validate_contract("agent-run-audit.schema.json", candidate)
+        incident_id = candidate["incident_id"]
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._locked_incident(cursor, incident_id)
+                cursor.execute(
+                    "SELECT incident_id FROM context_packages WHERE context_id = %s",
+                    (candidate["context_id"],),
+                )
+                row = cursor.fetchone()
+                if row is None or row[0] != incident_id:
+                    raise InvalidTransition(
+                        "Agent Run references an unknown or foreign Context Package"
+                    )
+                cursor.execute(
+                    """
+                    INSERT INTO agent_runs (
+                        agent_run_id, incident_id, context_id, status,
+                        started_at, completed_at, document
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (agent_run_id) DO NOTHING
+                    RETURNING agent_run_id
+                    """,
+                    (
+                        candidate["agent_run_id"],
+                        incident_id,
+                        candidate["context_id"],
+                        candidate["status"],
+                        candidate["started_at"],
+                        candidate["completed_at"],
+                        _json(candidate),
+                    ),
+                )
+                if cursor.fetchone() is not None:
+                    return
+                cursor.execute(
+                    "SELECT document FROM agent_runs WHERE agent_run_id = %s",
+                    (candidate["agent_run_id"],),
+                )
+                row = cursor.fetchone()
+                if row is None or _decode_document(row[0]) != candidate:
+                    raise InvalidTransition(
+                        "agent_run_id collision with different content: "
+                        f"{candidate['agent_run_id']}"
+                    )
+
+    def get_agent_run(self, agent_run_id: str) -> Dict[str, Any]:
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT document FROM agent_runs WHERE agent_run_id = %s",
+                    (agent_run_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise KeyError(f"unknown Agent Run: {agent_run_id}")
+                return _decode_document(row[0])
+
     def list_audit_events(self, incident_id: str) -> List[AuditEvent]:
         with _connection(self._connection_factory) as connection:
             with connection.cursor() as cursor:

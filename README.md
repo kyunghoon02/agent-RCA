@@ -46,10 +46,12 @@ sequenceDiagram
     LS-->>AO: Frozen Context
     AO->>KR: Retrieve scoped references
     KR-->>AO: Versioned Top-K knowledge
-    opt Ambiguous Incident
-        AO->>ES: Allowlisted read-only tool calls
-        ES-->>AO: Additional Evidence
-        AO->>AO: Conditional external LLM reasoning
+    AO->>AO: Invoke one bounded external LLM Agent
+    loop At most 12 read-only tool calls
+        AO->>IC: inspect_evidence(evidence_id)
+        IC-->>AO: Context-scoped normalized Evidence
+        AO->>KR: inspect_reference(reference_document_id)
+        KR-->>AO: This-run bounded excerpt
     end
     AO->>EG: Hypotheses and citations
     alt Evidence is sufficient and consistent
@@ -138,8 +140,8 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
 | KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | live PromQL/dependency config, continuous projection과 cluster Graph 미연결 |
-| Operational Knowledge와 Retriever | hash-pinned Git index, localized Entity+lexical bounded retrieval 및 audit 구현 | Agent message/tool loop 미연결 |
-| Agent RCA와 LLM tool-calling | 목표 state, budget, Evidence Gate 경계 정의 | 미구현·미연결 |
+| Operational Knowledge와 Retriever | hash-pinned Git index, localized Entity+lexical bounded retrieval, audit와 Agent reference tool 연결 | live corpus/runtime 미배포 |
+| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | target boundary와 readiness gate 정의 | `plan/apply`, bootstrap과 fault runtime 미검증 |
 
@@ -213,6 +215,15 @@ Git index의 approved/version/time/hash metadata와 lexical term을 함께 대�
 timeout과 repository failure를 서로 다른 audit 상태로 남긴다. 반환값은
 `RetrievedReference`라서 `evidence_id`가 없고 그 자체로 원인을 증명할 수 없다.
 
+Agent runtime은 Graph-localized Context와 Evidence/Reference ID catalog만 LLM에 전달한다.
+LLM은 `inspect_evidence(evidence_id)`와
+`inspect_reference(reference_document_id)`만 호출할 수 있고 shell, web, file, Kubernetes
+write/admin tool은 등록하지 않는다. SDK가 생성한 구조화 draft는 곧바로 Report가 되지
+않는다. deterministic Evidence Gate가 Context 밖 ID, 검사하지 않은 citation, Context 밖
+Entity, reference-only 결론, 낮은 completeness, collector failure와 budget 초과를 거부한
+뒤에만 Agent Run audit와 RCA Report를 저장하고 `ANALYZING -> REPORTED`로 전이한다.
+실패 시에는 가능한 범위에서 content-free audit를 남기고 `FAILED`로 전이한다.
+
 상세 scoring, feature provider 책임과 fixture 기본값은
 [KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph와 adaptive
 localization 결정은 [ADR-0005](docs/adr/0005-domain-neutral-stategraph-core.md)와
@@ -224,6 +235,7 @@ localization 결정은 [ADR-0005](docs/adr/0005-domain-neutral-stategraph-core.m
 ```bash
 make bootstrap-dev
 make validate-core
+make smoke-agent-rca
 make gcp-readiness
 kubectl kustomize platform/online-boutique
 ```
@@ -232,6 +244,11 @@ kubectl kustomize platform/online-boutique
 Collector concurrency·timeout·retry·partial failure, Evidence redaction/hash,
 deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval fixture를
 확인한다.
+
+`make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
+fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
+`credit_balance_exhausted` 429를 반환해 live 성공은 증명하지 못했다. 키 값과 model
+input은 출력하지 않으며, 사용 가능한 API credit가 준비되면 같은 명령으로 재검증한다.
 
 `POSTGRES_TEST_DSN`이 없으면 live PostgreSQL contract test 한 건을 건너뛴다. 승인된
 테스트 DSN을 제공하면 random schema만 생성·검증·제거하며 공유 DB를 truncate하지
@@ -267,5 +284,6 @@ tools/               정적 검증 도구
 - [GCP self-managed Kubernetes ADR](docs/adr/0008-gcp-kubeadm-runtime-boundary.md)
 - [Knowledge와 Incident Memory ADR](docs/adr/0009-knowledge-and-memory-boundary.md)
 - [Neo4j StateGraph Persistence ADR](docs/adr/0010-neo4j-stategraph-persistence.md)
+- [Bounded OpenAI Agent Runtime ADR](docs/adr/0011-bounded-openai-agent-runtime.md)
 - [GCP/Cluster Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
 - [GCP/kubeadm Implementation Plan](docs/roadmap/gcp-plan.md)

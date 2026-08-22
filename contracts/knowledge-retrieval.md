@@ -1,6 +1,6 @@
 # Operational Knowledge와 Incident Memory Retrieval Contract
 
-> 상태: Git index와 bounded Retriever 구현; Agent runtime 미연결
+> 상태: Git index, bounded Retriever와 Agent reference tool 연결 구현
 >
 > 목적: Agent가 참고 지식과 runtime Evidence를 혼동하지 않도록 입력, retrieval과
 > citation 경계를 고정한다.
@@ -125,9 +125,12 @@ hash-pinned Git corpus, `GitReferenceDocumentRepository`, `BoundedKnowledgeRetri
 stale only, timeout, repository failure를 구분한다.
 
 RetrievedReference는 `evidence_id`를 가지지 않으며 현재 Incident에 관한 사실을 새로
-만들지 않는다. Graph-localized Context와 reference를 LLM message/tool loop에 조립하는
-Agent runtime, Evidence Gate의 Agent 출력 검증, Factual/Experiential Memory와 runtime
-evaluation은 아직 구현되지 않았다.
+만들지 않는다. Agent는 이 retrieval run에 포함된 문서 ID만
+`inspect_reference(reference_document_id)`로 열 수 있다. Evidence Gate는 실제로 검사한
+Reference만 별도 `reference_document_ids`로 인용하게 하고, Reference를 runtime Evidence
+수나 distinct Evidence source 수에 포함하지 않는다. Agent message/tool loop와 Gate의
+fixture contract는 구현했지만 API credit 부족으로 live model 성공은 아직 검증하지
+못했다. Factual/Experiential Memory와 runtime evaluation도 아직 보류한다.
 
 ## Reference
 

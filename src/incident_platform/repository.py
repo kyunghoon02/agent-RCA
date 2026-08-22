@@ -116,6 +116,12 @@ class IncidentRepository(Protocol):
     def get_report_markdown(self, report_id: str) -> str:
         ...
 
+    def store_agent_run(self, audit: Mapping[str, Any]) -> None:
+        ...
+
+    def get_agent_run(self, agent_run_id: str) -> Dict[str, Any]:
+        ...
+
 
 def context_evidence_ids(context: Mapping[str, Any]) -> Set[str]:
     """Return every Evidence reference carried by one Context Package."""
@@ -155,6 +161,7 @@ class InMemoryIncidentRepository:
         self._contexts: Dict[str, Dict[str, Any]] = {}
         self._reports: Dict[str, Dict[str, Any]] = {}
         self._report_markdown: Dict[str, str] = {}
+        self._agent_runs: Dict[str, Dict[str, Any]] = {}
         self._lock = RLock()
 
     def create_or_get_by_deduplication_key(
@@ -377,6 +384,32 @@ class InMemoryIncidentRepository:
                 return self._report_markdown[report_id]
             except KeyError as error:
                 raise KeyError(f"unknown report: {report_id}") from error
+
+    def store_agent_run(self, audit: Mapping[str, Any]) -> None:
+        candidate = copy.deepcopy(dict(audit))
+        validate_contract("agent-run-audit.schema.json", candidate)
+        incident_id = candidate["incident_id"]
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            context = self._contexts.get(candidate["context_id"])
+            if context is None or context["incident_id"] != incident_id:
+                raise InvalidTransition(
+                    "Agent Run references an unknown or foreign Context Package"
+                )
+            agent_run_id = candidate["agent_run_id"]
+            previous = self._agent_runs.get(agent_run_id)
+            if previous is not None and previous != candidate:
+                raise InvalidTransition(
+                    f"agent_run_id collision with different content: {agent_run_id}"
+                )
+            self._agent_runs[agent_run_id] = candidate
+
+    def get_agent_run(self, agent_run_id: str) -> Dict[str, Any]:
+        with self._lock:
+            try:
+                return copy.deepcopy(self._agent_runs[agent_run_id])
+            except KeyError as error:
+                raise KeyError(f"unknown Agent Run: {agent_run_id}") from error
 
     def record_alert_resolution(
         self,

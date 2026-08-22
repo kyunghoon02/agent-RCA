@@ -1,6 +1,6 @@
 DEV_PYTHON ?= python3.12
 
-.PHONY: bootstrap-dev validate-phase0 test-core validate-core gcp-readiness \
+.PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca gcp-readiness \
 	render-online-boutique terraform-fmt \
 	terraform-validate
 
@@ -15,6 +15,9 @@ test-core:
 	PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
 validate-core: validate-phase0 test-core
+
+smoke-agent-rca:
+	PYTHONPATH=src:. .venv/bin/python tools/smoke_agent_rca.py
 
 gcp-readiness:
 	.venv/bin/python tools/check_gcp_readiness.py

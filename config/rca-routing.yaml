@@ -73,7 +73,7 @@ adaptive_localization:
   on_budget_exhaustion: abstain_with_best_hypotheses
 
 knowledge_retrieval:
-  status: git-index-and-bounded-retriever-implemented-agent-unconnected
+  status: git-index-bounded-retriever-and-agent-reference-tool-implemented
   allowed_review_status:
     - approved
   allowed_document_types:
@@ -104,6 +104,21 @@ knowledge_retrieval:
   incident_memory:
     enabled: false
     activation_requirement: verified-rca-corpus-and-evaluation-baseline
+
+agent_runtime:
+  implementation: openai-agents-sdk-single-agent
+  tools:
+    - inspect_evidence
+    - inspect_reference
+  sdk_tracing_enabled: false
+  sdk_sensitive_error_logging_enabled: false
+  local_audit_content_policy: ids-status-usage-and-hashes-only
+  budget:
+    max_turns: 6
+    max_llm_calls: 6
+    max_tool_calls: 12
+    max_output_tokens: 2000
+    max_wall_time_seconds: 60
 
 fast_path:
   when_all:

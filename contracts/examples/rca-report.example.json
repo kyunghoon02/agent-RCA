@@ -18,7 +18,8 @@
     },
     "supporting_evidence_ids": [
       "ev-configmap-0001"
-    ]
+    ],
+    "reference_document_ids": []
   },
   "hypotheses": [
     {
@@ -38,6 +39,7 @@
         "ev-configmap-0001"
       ],
       "contradicting_evidence_ids": [],
+      "reference_document_ids": [],
       "missing_evidence": []
     }
   ],

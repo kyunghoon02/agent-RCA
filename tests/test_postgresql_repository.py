@@ -20,6 +20,7 @@ from contract_suites import FIXED_TIME, IncidentRepositoryContract, contract_req
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "db" / "migrations" / "001_initial.sql"
+AGENT_RUN_MIGRATION = ROOT / "db" / "migrations" / "002_agent_runs.sql"
 
 
 def contract_incident() -> dict:
@@ -94,6 +95,12 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "database unavailable"):
             repository.get("inc-does-not-exist")
 
+    def test_agent_run_migration_adds_auditable_runtime_persistence(self) -> None:
+        sql = AGENT_RUN_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE agent_runs", sql)
+        self.assertIn("context_id TEXT NOT NULL REFERENCES context_packages", sql)
+        self.assertIn("document JSONB NOT NULL", sql)
+
 
 @unittest.skipUnless(
     os.environ.get("POSTGRES_TEST_DSN"),
@@ -124,7 +131,7 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
                 sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(cls._schema))
             )
         applied = apply_migrations(cls.connection_factory)
-        if applied != ["001_initial.sql"]:
+        if applied != ["001_initial.sql", "002_agent_runs.sql"]:
             raise AssertionError(f"unexpected applied migrations: {applied}")
         if apply_migrations(cls.connection_factory) != []:
             raise AssertionError("PostgreSQL migrations are not idempotent")

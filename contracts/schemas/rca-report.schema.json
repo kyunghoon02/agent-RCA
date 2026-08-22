@@ -64,7 +64,8 @@
           "required": [
             "summary",
             "entity",
-            "supporting_evidence_ids"
+            "supporting_evidence_ids",
+            "reference_document_ids"
           ],
           "properties": {
             "summary": {
@@ -80,6 +81,14 @@
                 "type": "string"
               },
               "minItems": 1,
+              "uniqueItems": true
+            },
+            "reference_document_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^ref-[a-z0-9][a-z0-9-]{7,63}$"
+              },
               "uniqueItems": true
             }
           }
@@ -100,6 +109,7 @@
           "status",
           "supporting_evidence_ids",
           "contradicting_evidence_ids",
+          "reference_document_ids",
           "missing_evidence"
         ],
         "properties": {
@@ -138,6 +148,14 @@
             "type": "array",
             "items": {
               "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "reference_document_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^ref-[a-z0-9][a-z0-9-]{7,63}$"
             },
             "uniqueItems": true
           },

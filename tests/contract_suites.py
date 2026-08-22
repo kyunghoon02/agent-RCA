@@ -95,6 +95,45 @@ class IncidentRepositoryContract:
             repository.get_report_markdown(artifacts.report["report_id"]),
             artifacts.markdown,
         )
+        agent_audit = {
+            "schema_version": "1.0.0",
+            "agent_run_id": "arun-contract-fixture-0001",
+            "incident_id": incident_id,
+            "context_id": artifacts.context["context_id"],
+            "knowledge_audit_id": "kaud-contract-fixture-0001",
+            "knowledge_status": "NO_MATCH",
+            "model": "contract-test-model",
+            "status": "MODEL_FAILED",
+            "reason_code": "MODEL_EXECUTION_FAILED",
+            "started_at": "2026-08-12T01:05:00Z",
+            "completed_at": "2026-08-12T01:05:01Z",
+            "budget": {
+                "max_turns": 6,
+                "max_llm_calls": 6,
+                "max_tool_calls": 12,
+                "max_output_tokens": 2000,
+                "max_wall_time_ms": 60000,
+            },
+            "usage": {
+                "llm_calls": 0,
+                "tool_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "wall_time_ms": 1000,
+            },
+            "tool_events": [],
+            "retrieved_reference_ids": [],
+            "inspected_evidence_ids": [],
+            "inspected_reference_document_ids": [],
+            "cited_evidence_ids": [],
+            "cited_reference_document_ids": [],
+        }
+        repository.store_agent_run(agent_audit)
+        repository.store_agent_run(agent_audit)
+        test_case.assertEqual(
+            repository.get_agent_run(agent_audit["agent_run_id"]), agent_audit
+        )
 
         resolved = repository.record_alert_resolution(
             incident_id,
