@@ -11,7 +11,7 @@ rule과 citation validation은 별도 주 경로가 아니라 Orchestrator 내�
 
 ## 목표 아키텍처
 
-![Agent RCA cloud-neutral logical architecture with a Kubernetes reference runtime](docs/assets/agent-rca-target-architecture.svg)
+![Agent RCA cloud-neutral logical architecture with a Kubernetes reference runtime](assets/agent-rca-target-architecture.svg)
 
 > Cloud-neutral logical architecture이며, single-node kubeadm Kubernetes는 현재
 > reference runtime이다.
@@ -248,10 +248,8 @@ Entity, reference-only 결론, 낮은 completeness, collector failure와 budget 
 실패 시에는 가능한 범위에서 content-free audit를 남기고 `FAILED`로 전이한다.
 
 상세 scoring, feature provider 책임과 fixture 기본값은
-[KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph와 adaptive
-localization 결정은 [ADR-0005](docs/adr/0005-domain-neutral-stategraph-core.md)와
-[ADR-0006](docs/adr/0006-evidence-gated-adaptive-localization.md), persistent 저장 결정은
-[ADR-0010](docs/adr/0010-neo4j-stategraph-persistence.md)에 기록한다.
+[KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph record 구조는
+[StateGraph Model](contracts/graph/stategraph-model.yaml)에 기록한다.
 
 ## 검증
 
@@ -297,7 +295,7 @@ config/              프로젝트 범위, GCP/cluster readiness, RCA routing 정
 contracts/           Incident, Evidence, Graph, RCA 및 provider 계약
 db/migrations/       core PostgreSQL schema migration
 db/vector_migrations/ opt-in pgvector Knowledge schema
-docs/                아키텍처, ADR, runbook, 진행 기록
+assets/              README 공개 이미지
 evaluation/          평가 사전등록과 Ground Truth 격리 정책
 infra/terraform/     GCP VPC, IAM과 Compute Engine provisioning 경계
 knowledge/           versioned operational reference와 retrieval index
@@ -307,22 +305,15 @@ tests/               deterministic fixture와 core unit test
 tools/               정적 검증 도구
 ```
 
-## 상세 문서
+## 주요 공개 자료
 
-- [Project Scope](docs/scope/project-scope.md)
-- [Implemented Core Flow](docs/architecture/implemented-core-flow.md)
 - [Provider Contract](contracts/providers.md)
+- [KRCA-style API Drilldown Contract](contracts/krca-drilldown.md)
+- [StateGraph Model](contracts/graph/stategraph-model.yaml)
 - [Knowledge Retrieval Contract](contracts/knowledge-retrieval.md)
 - [Knowledge Retrieval Evaluation](evaluation/knowledge-retrieval/README.md)
 - [Read-only Viewer Query Contract](contracts/viewer.md)
-- [GCP self-managed Kubernetes ADR](docs/adr/0008-gcp-kubeadm-runtime-boundary.md)
-- [Knowledge와 Incident Memory ADR](docs/adr/0009-knowledge-and-memory-boundary.md)
-- [Neo4j StateGraph Persistence ADR](docs/adr/0010-neo4j-stategraph-persistence.md)
-- [Bounded OpenAI Agent Runtime ADR](docs/adr/0011-bounded-openai-agent-runtime.md)
-- [Deferred Go Provider Gateway ADR](docs/adr/0012-defer-go-provider-gateway.md)
-- [pgvector Hybrid Knowledge Retrieval ADR](docs/adr/0013-pgvector-hybrid-knowledge-retrieval.md)
-- [GCP/Cluster Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
-- [GCP/kubeadm Implementation Plan](docs/roadmap/gcp-plan.md)
+- [Agent RCA Runtime Scope](config/project-scope.yaml)
+- [Evaluation Preregistration](evaluation/preregistration.yaml)
 - [Ansible kubeadm bootstrap](automation/ansible/README.md)
-- [Ansible kubeadm bootstrap ADR](docs/adr/0014-ansible-kubeadm-bootstrap.md)
-- [GCP kubeadm/Cilium runtime record](docs/runtime/gcp-kubeadm-cilium-2026-08-22.md)
+- [Terraform GCP foundation](infra/terraform/README.md)
