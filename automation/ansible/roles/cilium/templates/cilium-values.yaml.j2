@@ -18,9 +18,17 @@ operator:
   replicas: 1
   prometheus:
     enabled: true
+    serviceMonitor:
+      enabled: {{ (prometheus_service_monitor_crd.rc == 0) | lower }}
+      labels:
+        release: monitoring
 
 prometheus:
   enabled: true
+  serviceMonitor:
+    enabled: {{ (prometheus_service_monitor_crd.rc == 0) | lower }}
+    labels:
+      release: monitoring
 
 hubble:
   enabled: true
@@ -35,6 +43,10 @@ hubble:
       type: ClusterIP
     prometheus:
       enabled: true
+      serviceMonitor:
+        enabled: {{ (prometheus_service_monitor_crd.rc == 0) | lower }}
+        labels:
+          release: monitoring
   ui:
     enabled: false
   metrics:
@@ -46,3 +58,15 @@ hubble:
       - flow
       - port-distribution
       - icmp
+    serviceMonitor:
+      enabled: {{ (prometheus_service_monitor_crd.rc == 0) | lower }}
+      labels:
+        release: monitoring
+
+envoy:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: {{ (prometheus_service_monitor_crd.rc == 0) | lower }}
+      labels:
+        release: monitoring

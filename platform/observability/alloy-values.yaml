@@ -1,0 +1,91 @@
+alloy:
+  configMap:
+    create: true
+    content: |
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+
+        rule {
+          target_label = "cluster_id"
+          replacement  = "agent-rca-dev"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.write.local.receiver]
+      }
+
+      loki.write "local" {
+        endpoint {
+          url = "http://loki-gateway.observability.svc.cluster.local/loki/api/v1/push"
+        }
+      }
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+controller:
+  type: deployment
+  replicas: 1
+
+rbac:
+  create: true
+  rules:
+    - apiGroups:
+        - ""
+      resources:
+        - namespaces
+        - pods
+        - pods/log
+      verbs:
+        - get
+        - list
+        - watch
+  # Alloy 1.11.1 appends clusterRules directly after rules and renders an empty
+  # value as invalid YAML. This duplicate subset grants no permission beyond
+  # the pod read access above while keeping the chart output valid.
+  clusterRules:
+    - apiGroups:
+        - ""
+      resources:
+        - pods
+      verbs:
+        - get
+
+service:
+  enabled: true
+  type: ClusterIP
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: monitoring

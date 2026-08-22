@@ -1,0 +1,135 @@
+crds:
+  enabled: true
+
+defaultRules:
+  create: true
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+
+kubeControllerManager:
+  enabled: false
+
+kubeEtcd:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+alertmanager:
+  enabled: true
+  ingress:
+    enabled: false
+  service:
+    type: ClusterIP
+  alertmanagerSpec:
+    replicas: 1
+    retention: 120h
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 300m
+        memory: 512Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: agent-rca-local
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+
+grafana:
+  enabled: true
+  ingress:
+    enabled: false
+  service:
+    type: ClusterIP
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: agent-rca-local
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.observability.svc.cluster.local
+      isDefault: false
+      editable: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+prometheus:
+  enabled: true
+  ingress:
+    enabled: false
+  service:
+    type: ClusterIP
+  prometheusSpec:
+    replicas: 1
+    retention: 7d
+    retentionSize: 12GiB
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    walCompression: true
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 3Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: agent-rca-local
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 15Gi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

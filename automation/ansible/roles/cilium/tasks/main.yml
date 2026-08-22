@@ -110,6 +110,14 @@
     group: root
     mode: "0755"
 
+- name: Check whether the Prometheus Operator ServiceMonitor CRD exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get customresourcedefinition servicemonitors.monitoring.coreos.com
+  register: prometheus_service_monitor_crd
+  changed_when: false
+  failed_when: false
+
 - name: Render the Cilium Helm values
   ansible.builtin.template:
     src: cilium-values.yaml.j2

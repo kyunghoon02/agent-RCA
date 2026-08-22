@@ -1,0 +1,177 @@
+---
+- name: Wait for the local path provisioner
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/local-path-provisioner
+    --namespace {{ local_path_namespace }}
+    --timeout={{ observability_wait_timeout }}
+  changed_when: false
+
+- name: Wait for observability pods to become Ready
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    wait pod --namespace {{ observability_namespace }}
+    --selector app.kubernetes.io/instance={{ item }}
+    --for=condition=Ready
+    --timeout={{ observability_wait_timeout }}
+  loop:
+    - "{{ kube_prometheus_release_name }}"
+    - "{{ loki_release_name }}"
+    - "{{ alloy_release_name }}"
+  changed_when: false
+
+- name: Read observability persistent volume claims
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get persistentvolumeclaim --namespace {{ observability_namespace }}
+    --output json
+  register: observability_pvcs
+  changed_when: false
+
+- name: Require all observability persistent volume claims to be Bound
+  ansible.builtin.assert:
+    that:
+      - (observability_pvcs.stdout | from_json)['items'] | length == 4
+      - >-
+        (observability_pvcs.stdout | from_json)['items']
+        | rejectattr('status.phase', 'equalto', 'Bound') | list | length == 0
+    fail_msg: Observability PVCs are missing or are not all Bound.
+
+- name: Read all cluster services
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service --all-namespaces --output json
+  register: cluster_services
+  changed_when: false
+
+- name: Reject publicly exposed service types
+  ansible.builtin.assert:
+    that:
+      - >-
+        (cluster_services.stdout | from_json)['items']
+        | rejectattr('spec.type', 'equalto', 'ClusterIP') | list | length == 0
+    fail_msg: A NodePort, LoadBalancer, or ExternalName service is present.
+
+- name: Read all ingresses
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get ingress --all-namespaces --output json
+  register: cluster_ingresses
+  changed_when: false
+
+- name: Reject public ingress resources
+  ansible.builtin.assert:
+    that:
+      - (cluster_ingresses.stdout | from_json)['items'] | length == 0
+    fail_msg: An Ingress exists even though this environment is private-only.
+
+- name: Verify Prometheus readiness through the Kubernetes API proxy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ observability_namespace
+    }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/-/ready
+  register: prometheus_readiness
+  changed_when: false
+  failed_when: "'Prometheus Server is Ready' not in prometheus_readiness.stdout"
+
+- name: Verify Alertmanager readiness through the Kubernetes API proxy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ observability_namespace
+    }}/services/http:monitoring-kube-prometheus-alertmanager:9093/proxy/-/ready
+  register: alertmanager_readiness
+  changed_when: false
+  failed_when: "'OK' not in alertmanager_readiness.stdout"
+
+- name: Verify Grafana health through the Kubernetes API proxy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ observability_namespace
+    }}/services/http:monitoring-grafana:80/proxy/api/health
+  register: grafana_health
+  changed_when: false
+  failed_when: "'ok' not in grafana_health.stdout"
+
+- name: Verify Loki readiness through the Kubernetes API proxy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ observability_namespace
+    }}/services/http:loki:3100/proxy/ready
+  register: loki_readiness
+  changed_when: false
+  failed_when: "'ready' not in loki_readiness.stdout"
+
+- name: Wait for Prometheus to discover Cilium and Hubble targets
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    '/api/v1/namespaces/{{ observability_namespace
+    }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/targets'
+  register: prometheus_targets
+  retries: 12
+  delay: 10
+  until:
+    - "'cilium' in prometheus_targets.stdout"
+    - "'hubble' in prometheus_targets.stdout"
+  changed_when: false
+
+- name: Query Cilium and Hubble up metrics
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=up%7Bjob%3D~%22.%2A%28cilium%7Chubble%29.%2A%22%7D
+  register: prometheus_network_up
+  retries: 12
+  delay: 10
+  until: >-
+    (prometheus_network_up.stdout | from_json)['data']['result'] | length >= 5
+  changed_when: false
+
+- name: Require healthy Cilium and Hubble metric targets
+  ansible.builtin.assert:
+    that:
+      - >-
+        (prometheus_network_up.stdout | from_json)['data']['result'] | length >= 5
+      - item['value'][1] == '1'
+    fail_msg: A Cilium or Hubble Prometheus target is missing or unhealthy.
+  loop: >-
+    {{ (prometheus_network_up.stdout | from_json)['data']['result'] }}
+  loop_control:
+    label: "{{ item['metric']['job'] }}"
+
+- name: Query one recent kube-system log stream from Loki
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:loki:3100/proxy/loki/api/v1/query_range?query=%7Bnamespace%3D%22kube-system%22%7D&limit=1&direction=backward
+  register: loki_kube_system_logs
+  retries: 12
+  delay: 10
+  until: >-
+    (loki_kube_system_logs.stdout | from_json)['data']['result'] | length > 0
+  changed_when: false
+
+- name: Require normalized cluster and namespace labels on Loki logs
+  ansible.builtin.assert:
+    that:
+      - >-
+        (loki_kube_system_logs.stdout | from_json)['data']['result'][0]
+        ['stream']['cluster_id'] == cluster_name
+      - >-
+        (loki_kube_system_logs.stdout | from_json)['data']['result'][0]
+        ['stream']['namespace'] == 'kube-system'
+      - >-
+        (loki_kube_system_logs.stdout | from_json)['data']['result'][0]
+        ['values'] | length > 0
+    fail_msg: Loki did not return a normalized kube-system log stream.

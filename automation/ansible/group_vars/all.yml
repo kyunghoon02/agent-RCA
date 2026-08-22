@@ -36,3 +36,27 @@ hubble_cli_linux_amd64_sha256: >-
 
 cluster_wait_timeout: 10m
 kubernetes_certificate_minimum_residual_seconds: 2592000
+
+observability_namespace: observability
+observability_remote_values_directory: /etc/agent-rca/observability
+observability_wait_timeout: 15m
+
+local_path_release_name: local-path-provisioner
+local_path_namespace: local-path-storage
+local_path_chart_ref: oci://ghcr.io/rancher/local-path-provisioner/charts/local-path-provisioner
+local_path_chart_version: "0.0.36"
+local_path_storage_class: agent-rca-local
+
+kube_prometheus_release_name: monitoring
+kube_prometheus_chart_ref: oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
+kube_prometheus_chart_version: "88.5.3"
+
+loki_release_name: loki
+loki_chart_ref: oci://ghcr.io/grafana-community/helm-charts/loki
+loki_chart_version: "18.11.0"
+
+alloy_release_name: alloy
+alloy_chart_repository_name: grafana
+alloy_chart_repository_url: https://grafana.github.io/helm-charts
+alloy_chart_ref: grafana/alloy
+alloy_chart_version: "1.11.1"

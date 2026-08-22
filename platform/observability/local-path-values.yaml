@@ -1,0 +1,43 @@
+fullnameOverride: local-path-provisioner
+
+image:
+  repository: docker.io/rancher/local-path-provisioner
+  tag: v0.0.36
+  pullPolicy: IfNotPresent
+
+helperImage:
+  repository: docker.io/library/busybox
+  tag: "1.37.0"
+
+storageClass:
+  create: true
+  provisionerName: agent-rca.io/local-path
+  defaultClass: false
+  defaultVolumeType: hostPath
+  name: agent-rca-local
+  reclaimPolicy: Retain
+  volumeBindingMode: WaitForFirstConsumer
+
+nodePathMap:
+  - node: DEFAULT_PATH_FOR_NON_LISTED_NODES
+    paths:
+      - /var/lib/agent-rca/local-path
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+helperPod:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+debug: false

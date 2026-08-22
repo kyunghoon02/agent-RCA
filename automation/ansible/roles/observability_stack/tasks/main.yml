@@ -1,0 +1,178 @@
+---
+- name: Create the remote observability values directory
+  ansible.builtin.file:
+    path: "{{ observability_remote_values_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy pinned observability values to the node
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../platform/observability/{{ item }}-values.yaml"
+    dest: "{{ observability_remote_values_directory }}/{{ item }}-values.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - local-path
+    - kube-prometheus-stack
+    - loki
+    - alloy
+  register: observability_values
+
+- name: Check whether the observability namespace exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get namespace {{ observability_namespace }}
+  register: observability_namespace_status
+  changed_when: false
+  failed_when: false
+
+- name: Create the observability namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ observability_namespace }}
+  when: observability_namespace_status.rc != 0
+  changed_when: true
+
+- name: Reconcile the observability namespace labels
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    label namespace {{ observability_namespace }}
+    app.kubernetes.io/part-of=agent-rca
+    app.kubernetes.io/managed-by=ansible
+    --overwrite
+  register: observability_namespace_labels
+  changed_when: "'not labeled' not in observability_namespace_labels.stdout"
+
+- name: Check whether the local-path namespace exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get namespace {{ local_path_namespace }}
+  register: local_path_namespace_status
+  changed_when: false
+  failed_when: false
+
+- name: Create the local-path namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ local_path_namespace }}
+  when: local_path_namespace_status.rc != 0
+  changed_when: true
+
+- name: Inspect the local-path-provisioner release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    list --namespace {{ local_path_namespace }}
+    --filter ^{{ local_path_release_name }}$ --output json
+  register: local_path_release
+  changed_when: false
+
+- name: Install or reconcile local-path-provisioner
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    upgrade --install {{ local_path_release_name }} {{ local_path_chart_ref }}
+    --version {{ local_path_chart_version }}
+    --namespace {{ local_path_namespace }}
+    --values {{ observability_remote_values_directory }}/local-path-values.yaml
+    --atomic --wait --timeout {{ observability_wait_timeout }}
+  when: >-
+    (local_path_release.stdout | from_json | length == 0)
+    or (local_path_chart_version not in local_path_release.stdout)
+    or (observability_values.results
+        | selectattr('item', 'equalto', 'local-path')
+        | map(attribute='changed') | first)
+  changed_when: true
+
+- name: Verify the local storage reclaim boundary
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get storageclass {{ local_path_storage_class }}
+    --output jsonpath={.reclaimPolicy}
+  register: local_path_reclaim_policy
+  changed_when: false
+  failed_when: local_path_reclaim_policy.stdout != 'Retain'
+
+- name: Inspect the kube-prometheus-stack release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    list --namespace {{ observability_namespace }}
+    --filter ^{{ kube_prometheus_release_name }}$ --output json
+  register: kube_prometheus_release
+  changed_when: false
+
+- name: Install or reconcile kube-prometheus-stack
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    upgrade --install {{ kube_prometheus_release_name }} {{ kube_prometheus_chart_ref }}
+    --version {{ kube_prometheus_chart_version }}
+    --namespace {{ observability_namespace }}
+    --values {{ observability_remote_values_directory }}/kube-prometheus-stack-values.yaml
+    --atomic --wait --timeout {{ observability_wait_timeout }}
+  when: >-
+    (kube_prometheus_release.stdout | from_json | length == 0)
+    or (kube_prometheus_chart_version not in kube_prometheus_release.stdout)
+    or (observability_values.results
+        | selectattr('item', 'equalto', 'kube-prometheus-stack')
+        | map(attribute='changed') | first)
+  changed_when: true
+
+- name: Inspect the Loki release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    list --namespace {{ observability_namespace }}
+    --filter ^{{ loki_release_name }}$ --output json
+  register: loki_release
+  changed_when: false
+
+- name: Install or reconcile Loki
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    upgrade --install {{ loki_release_name }} {{ loki_chart_ref }}
+    --version {{ loki_chart_version }}
+    --namespace {{ observability_namespace }}
+    --values {{ observability_remote_values_directory }}/loki-values.yaml
+    --atomic --wait --timeout {{ observability_wait_timeout }}
+  when: >-
+    (loki_release.stdout | from_json | length == 0)
+    or (loki_chart_version not in loki_release.stdout)
+    or (observability_values.results
+        | selectattr('item', 'equalto', 'loki')
+        | map(attribute='changed') | first)
+  changed_when: true
+
+- name: Add the Grafana Helm repository
+  ansible.builtin.command: >-
+    helm repo add {{ alloy_chart_repository_name }} {{ alloy_chart_repository_url }}
+    --force-update
+  register: grafana_helm_repository
+  changed_when: false
+
+- name: Update the Grafana Helm repository index
+  ansible.builtin.command: helm repo update {{ alloy_chart_repository_name }}
+  changed_when: false
+
+- name: Inspect the Alloy release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    list --namespace {{ observability_namespace }}
+    --filter ^{{ alloy_release_name }}$ --output json
+  register: alloy_release
+  changed_when: false
+
+- name: Install or reconcile Alloy
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    upgrade --install {{ alloy_release_name }} {{ alloy_chart_ref }}
+    --version {{ alloy_chart_version }}
+    --namespace {{ observability_namespace }}
+    --values {{ observability_remote_values_directory }}/alloy-values.yaml
+    --atomic --wait --timeout {{ observability_wait_timeout }}
+  when: >-
+    (alloy_release.stdout | from_json | length == 0)
+    or (alloy_chart_version not in alloy_release.stdout)
+    or (observability_values.results
+        | selectattr('item', 'equalto', 'alloy')
+        | map(attribute='changed') | first)
+  changed_when: true

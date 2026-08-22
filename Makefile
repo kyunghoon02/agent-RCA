@@ -7,7 +7,8 @@ ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
 	sync-knowledge-vectors evaluate-knowledge-retrieval gcp-readiness \
 	render-online-boutique terraform-fmt terraform-validate \
 	bootstrap-ansible ansible-syntax ansible-ping bootstrap-kubernetes \
-	verify-kubernetes
+	verify-kubernetes render-observability deploy-observability \
+	verify-observability
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -36,6 +37,25 @@ gcp-readiness:
 render-online-boutique:
 	kubectl kustomize platform/online-boutique
 
+render-observability:
+	helm template local-path-provisioner \
+		oci://ghcr.io/rancher/local-path-provisioner/charts/local-path-provisioner \
+		--version 0.0.36 --namespace local-path-storage \
+		--values platform/observability/local-path-values.yaml >/dev/null
+	helm template monitoring \
+		oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack \
+		--version 88.5.3 --namespace observability \
+		--values platform/observability/kube-prometheus-stack-values.yaml >/dev/null
+	helm template loki \
+		oci://ghcr.io/grafana-community/helm-charts/loki \
+		--version 18.11.0 --namespace observability \
+		--values platform/observability/loki-values.yaml >/dev/null
+	helm repo add grafana https://grafana.github.io/helm-charts --force-update >/dev/null
+	helm repo update grafana >/dev/null
+	helm template alloy grafana/alloy \
+		--version 1.11.1 --namespace observability \
+		--values platform/observability/alloy-values.yaml >/dev/null
+
 terraform-fmt:
 	terraform fmt -check -recursive infra/terraform
 
@@ -54,6 +74,12 @@ ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/verify.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/deploy-observability.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/verify-observability.yml
 
 ansible-ping:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible \
@@ -66,3 +92,13 @@ bootstrap-kubernetes:
 verify-kubernetes:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) automation/ansible/playbooks/verify.yml
+
+deploy-observability:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/deploy-observability.yml
+
+verify-observability:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/verify-observability.yml

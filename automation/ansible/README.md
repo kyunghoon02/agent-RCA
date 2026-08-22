@@ -3,7 +3,8 @@
 This layer configures the already-provisioned Compute Engine VM. Terraform
 continues to own the GCP network, firewall, identity, VM, disk and address; this
 Ansible layer owns host prerequisites, containerd, pinned Kubernetes packages,
-single-node `kubeadm init`, Cilium/Hubble and runtime verification.
+single-node `kubeadm init`, Cilium/Hubble, the development observability stack
+and runtime verification.
 
 It intentionally does not run `kubeadm reset`, distribute kubeconfig off the VM,
 open firewall rules, or deploy Online Boutique and Agent RCA workloads.
@@ -29,6 +30,9 @@ make ansible-syntax
 make ansible-ping
 make bootstrap-kubernetes
 make verify-kubernetes
+make render-observability
+make deploy-observability
+make verify-observability
 ```
 
 The bootstrap is intentionally fail-fast on a host other than Ubuntu 24.04
@@ -45,3 +49,14 @@ certificate, or a certificate with less than 30 days remaining.
 
 Ansible package tasks wait for the apt/dpkg lock. Never delete dpkg lock files;
 if unattended upgrades are active, let them finish and rerun the playbook.
+
+The observability playbook installs pinned Helm releases for local-path storage,
+kube-prometheus-stack, Loki in monolithic mode and Alloy. It then reconciles
+Cilium/Hubble ServiceMonitors. Verification requires four Bound PVCs, only
+ClusterIP services, no Ingress, healthy Prometheus/Alertmanager/Grafana/Loki
+endpoints, Cilium/Hubble `up=1` targets and one normalized Kubernetes log stream
+from Loki. A normal rerun does not create new Helm revisions.
+
+This is a single-node development storage boundary. `Retain` protects a PV from
+automatic deletion with its claim or release, but the data still resides on the
+VM boot disk and is neither highly available nor backed up.

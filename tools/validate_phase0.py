@@ -364,6 +364,37 @@ def validate_versions_and_manifests() -> None:
     if versions.get("helm", {}).get("version") != "v3.21.4":
         raise ValidationFailure("platform Helm version boundary drifted")
 
+    expected_observability = {
+        "namespace": "observability",
+        "local_path_provisioner": {
+            "chart_ref": "oci://ghcr.io/rancher/local-path-provisioner/charts/local-path-provisioner",
+            "chart_version": "0.0.36",
+            "chart_digest": "sha256:ae31255346657674a47b99619a16fa12bf38e1e6ef51e2df12b0825fdb1fa80c",
+            "storage_class": "agent-rca-local",
+            "reclaim_policy": "Retain",
+        },
+        "kube_prometheus_stack": {
+            "chart_ref": "oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack",
+            "chart_version": "88.5.3",
+            "retention": "7d",
+            "retention_size": "12GiB",
+        },
+        "loki": {
+            "chart_ref": "oci://ghcr.io/grafana-community/helm-charts/loki",
+            "chart_version": "18.11.0",
+            "deployment_mode": "Monolithic",
+            "retention": "72h",
+        },
+        "alloy": {
+            "chart_ref": "grafana/alloy",
+            "chart_repository": "https://grafana.github.io/helm-charts",
+            "chart_version": "1.11.1",
+            "controller_type": "deployment",
+        },
+    }
+    if versions.get("observability") != expected_observability:
+        raise ValidationFailure("observability version and storage boundary drifted")
+
     ansible_versions = load_yaml_documents(
         ROOT / "automation" / "ansible" / "group_vars" / "all.yml"
     )[0]
@@ -376,6 +407,17 @@ def validate_versions_and_manifests() -> None:
         "cilium_chart_version": versions["cilium"]["chart_version"],
         "cilium_cli_version": versions["cilium"]["cli_version"],
         "hubble_cli_version": versions["hubble"]["cli_version"],
+        "observability_namespace": versions["observability"]["namespace"],
+        "local_path_chart_ref": versions["observability"]["local_path_provisioner"]["chart_ref"],
+        "local_path_chart_version": versions["observability"]["local_path_provisioner"]["chart_version"],
+        "local_path_storage_class": versions["observability"]["local_path_provisioner"]["storage_class"],
+        "kube_prometheus_chart_ref": versions["observability"]["kube_prometheus_stack"]["chart_ref"],
+        "kube_prometheus_chart_version": versions["observability"]["kube_prometheus_stack"]["chart_version"],
+        "loki_chart_ref": versions["observability"]["loki"]["chart_ref"],
+        "loki_chart_version": versions["observability"]["loki"]["chart_version"],
+        "alloy_chart_ref": versions["observability"]["alloy"]["chart_ref"],
+        "alloy_chart_repository_url": versions["observability"]["alloy"]["chart_repository"],
+        "alloy_chart_version": versions["observability"]["alloy"]["chart_version"],
     }
     for key, expected in expected_ansible_versions.items():
         if ansible_versions.get(key) != expected:
@@ -395,7 +437,7 @@ def validate_versions_and_manifests() -> None:
     scope = load_yaml_documents(ROOT / "config" / "project-scope.yaml")[0]
     expected_scope_target = {
         **expected_execution_target,
-        "provisioning_status": "gcp-foundation-applied-kubernetes-unverified",
+        "provisioning_status": "gcp-foundation-applied-kubernetes-observability-verified",
         "compute_service": "compute-engine",
         "kubernetes_service": "self-managed",
         "kubernetes_distribution": "upstream",
@@ -515,6 +557,90 @@ def validate_versions_and_manifests() -> None:
         raise ValidationFailure("project scope and version pin disagree on release tag")
     if scope["target"]["commit_sha"] != versions["online_boutique"]["commit_sha"]:
         raise ValidationFailure("project scope and version pin disagree on commit SHA")
+
+    validate_observability_values()
+
+
+def validate_observability_values() -> None:
+    directory = ROOT / "platform" / "observability"
+    local_path = load_yaml_documents(directory / "local-path-values.yaml")[0]
+    prometheus = load_yaml_documents(
+        directory / "kube-prometheus-stack-values.yaml"
+    )[0]
+    loki = load_yaml_documents(directory / "loki-values.yaml")[0]
+    alloy = load_yaml_documents(directory / "alloy-values.yaml")[0]
+
+    storage_class = local_path.get("storageClass", {})
+    if (
+        storage_class.get("name") != "agent-rca-local"
+        or storage_class.get("defaultClass") is not False
+        or storage_class.get("reclaimPolicy") != "Retain"
+        or storage_class.get("volumeBindingMode") != "WaitForFirstConsumer"
+    ):
+        raise ValidationFailure("local observability StorageClass boundary drifted")
+
+    prometheus_spec = prometheus.get("prometheus", {}).get("prometheusSpec", {})
+    if (
+        prometheus_spec.get("retention") != "7d"
+        or prometheus_spec.get("retentionSize") != "12GiB"
+        or prometheus_spec.get("storageSpec", {})
+        .get("volumeClaimTemplate", {})
+        .get("spec", {})
+        .get("resources", {})
+        .get("requests", {})
+        .get("storage")
+        != "15Gi"
+    ):
+        raise ValidationFailure("Prometheus retention or storage boundary drifted")
+    for component in ("prometheus", "alertmanager", "grafana"):
+        values = prometheus.get(component, {})
+        if values.get("ingress", {}).get("enabled") is not False:
+            raise ValidationFailure(f"{component} Ingress must remain disabled")
+        if values.get("service", {}).get("type") != "ClusterIP":
+            raise ValidationFailure(f"{component} Service must remain ClusterIP")
+
+    if (
+        loki.get("deploymentMode") != "Monolithic"
+        or loki.get("loki", {}).get("auth_enabled") is not False
+        or loki.get("loki", {}).get("limits_config", {}).get("retention_period")
+        != "72h"
+        or loki.get("singleBinary", {}).get("replicas") != 1
+        or loki.get("gateway", {}).get("service", {}).get("type") != "ClusterIP"
+    ):
+        raise ValidationFailure("Loki monolithic/private retention boundary drifted")
+
+    if (
+        alloy.get("controller", {}).get("type") != "deployment"
+        or alloy.get("controller", {}).get("replicas") != 1
+        or alloy.get("service", {}).get("type") != "ClusterIP"
+    ):
+        raise ValidationFailure("Alloy deployment/private service boundary drifted")
+    alloy_config = alloy.get("alloy", {}).get("configMap", {}).get("content", "")
+    if (
+        'loki.source.kubernetes "pods"' not in alloy_config
+        or 'replacement  = "agent-rca-dev"' not in alloy_config
+    ):
+        raise ValidationFailure("Alloy Kubernetes log normalization drifted")
+    for rule in alloy.get("rbac", {}).get("rules", []):
+        resources = set(rule.get("resources", []))
+        verbs = set(rule.get("verbs", []))
+        if "secrets" in resources or verbs - {"get", "list", "watch"}:
+            raise ValidationFailure("Alloy RBAC exceeds the read-only log boundary")
+
+    cilium_template = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "cilium"
+        / "templates"
+        / "cilium-values.yaml.j2"
+    ).read_text(encoding="utf-8")
+    if (
+        cilium_template.count("serviceMonitor:") < 5
+        or "prometheus_service_monitor_crd.rc == 0" not in cilium_template
+    ):
+        raise ValidationFailure("Cilium/Hubble ServiceMonitor gate drifted")
 
 
 def validate_policy_configs() -> None:
@@ -675,6 +801,7 @@ def main() -> None:
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
+    print("- private single-node observability versions, retention, storage, and RBAC are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 

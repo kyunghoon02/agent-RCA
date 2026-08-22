@@ -9,7 +9,7 @@ target:
 execution_target:
   cloud: gcp
   location: asia-northeast3
-  provisioning_status: gcp-foundation-applied-kubernetes-unverified
+  provisioning_status: gcp-foundation-applied-kubernetes-observability-verified
   compute_service: compute-engine
   kubernetes_service: self-managed
   kubernetes_distribution: upstream

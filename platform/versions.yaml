@@ -46,6 +46,30 @@ cilium:
 hubble:
   cli_version: "v1.19.3"
 
+observability:
+  namespace: observability
+  local_path_provisioner:
+    chart_ref: oci://ghcr.io/rancher/local-path-provisioner/charts/local-path-provisioner
+    chart_version: "0.0.36"
+    chart_digest: sha256:ae31255346657674a47b99619a16fa12bf38e1e6ef51e2df12b0825fdb1fa80c
+    storage_class: agent-rca-local
+    reclaim_policy: Retain
+  kube_prometheus_stack:
+    chart_ref: oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
+    chart_version: "88.5.3"
+    retention: 7d
+    retention_size: 12GiB
+  loki:
+    chart_ref: oci://ghcr.io/grafana-community/helm-charts/loki
+    chart_version: "18.11.0"
+    deployment_mode: Monolithic
+    retention: 72h
+  alloy:
+    chart_ref: grafana/alloy
+    chart_repository: https://grafana.github.io/helm-charts
+    chart_version: "1.11.1"
+    controller_type: deployment
+
 online_boutique:
   repository: "https://github.com/GoogleCloudPlatform/microservices-demo.git"
   release_tag: "v0.10.6"
