@@ -8,8 +8,8 @@ target:
 
 execution_target:
   cloud: gcp
-  location: input-required
-  provisioning_status: design-ready-runtime-unverified
+  location: asia-northeast3
+  provisioning_status: gcp-foundation-applied-kubernetes-unverified
   compute_service: compute-engine
   kubernetes_service: self-managed
   kubernetes_distribution: upstream

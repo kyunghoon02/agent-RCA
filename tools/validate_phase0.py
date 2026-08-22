@@ -318,7 +318,7 @@ def validate_versions_and_manifests() -> None:
     versions = load_yaml_documents(ROOT / "platform" / "versions.yaml")[0]
     expected_execution_target = {
         "cloud": "gcp",
-        "location": "input-required",
+        "location": "asia-northeast3",
     }
     if versions.get("execution_target") != expected_execution_target:
         raise ValidationFailure("platform version boundary must target GCP")
@@ -342,7 +342,7 @@ def validate_versions_and_manifests() -> None:
     scope = load_yaml_documents(ROOT / "config" / "project-scope.yaml")[0]
     expected_scope_target = {
         **expected_execution_target,
-        "provisioning_status": "design-ready-runtime-unverified",
+        "provisioning_status": "gcp-foundation-applied-kubernetes-unverified",
         "compute_service": "compute-engine",
         "kubernetes_service": "self-managed",
         "kubernetes_distribution": "upstream",

@@ -3,11 +3,11 @@ schema_version: "1.0.0"
 terraform:
   cli_minimum: "1.14.0"
   provider: hashicorp/google
-  provider_version: pending-terraform-root
+  provider_version: "7.45.0"
 
 execution_target:
   cloud: gcp
-  location: input-required
+  location: asia-northeast3
 
 kubernetes:
   service: self-managed

@@ -1,0 +1,16 @@
+project_id = "replace-with-gcp-project-id"
+
+region = "asia-northeast3"
+zone   = "asia-northeast3-a"
+
+machine_type     = "e2-standard-4"
+boot_disk_size_gb = 100
+
+enable_external_ip = true
+
+# Replace with the operator's current public IPv4 /32. Never use 0.0.0.0/0.
+ssh_source_ranges            = ["203.0.113.10/32"]
+kubernetes_api_source_ranges = ["203.0.113.10/32"]
+
+enable_firewall_logging = false
+deletion_protection     = false

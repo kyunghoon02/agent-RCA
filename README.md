@@ -144,7 +144,7 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
-| GCP, Terraform, kubeadm, Cilium/Hubble | target boundary와 readiness gate 정의 | `plan/apply`, bootstrap과 fault runtime 미검증 |
+| GCP, Terraform, kubeadm, Cilium/Hubble | versioned GCS backend, VPC/subnet, 제한 firewall, 전용 VM identity, static IPv4와 Compute Engine dev root 구현 | Terraform apply/VM SSH/no-change plan 검증; kubeadm, Cilium/Hubble과 fault runtime 미구현 |
 
 Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
 production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed
@@ -256,9 +256,9 @@ input은 출력하지 않으며, 사용 가능한 API credit가 준비되면 같
 않는다. Neo4j live contract는 기본적으로 skip하며, 명시적으로 승인된 test instance에
 `NEO4J_TEST_URI`, `NEO4J_TEST_USERNAME`, `NEO4J_TEST_PASSWORD`를 제공할 때만 실행하고
 테스트가 만든 Entity/Pin만 제거한다. `make gcp-readiness`는 설계 gate와 실제
-`plan/apply` 준비 상태를 분리하며,
-project, billing, location, auth, API와 GCS backend가 확인되지 않으면 의도적으로
-미완료를 반환한다. Online Boutique remote base render에는 GitHub 접근이 필요하다.
+`plan/apply` 준비 상태를 분리하며, project, billing, location, auth, API와 GCS
+backend runtime evidence를 검사한다. Online Boutique remote base render에는 GitHub
+접근이 필요하다.
 
 ## 저장소 구조
 

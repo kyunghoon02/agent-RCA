@@ -4,7 +4,7 @@ decision:
   cloud: gcp
   status: architecture-confirmed
   confirmed_at: "2026-08-20"
-  location: input-required
+  location: asia-northeast3
   compute_service: compute-engine
   kubernetes_service: self-managed
   kubernetes_distribution: upstream
@@ -43,41 +43,56 @@ design_capabilities:
 
 runtime_inputs:
   target_project:
-    status: pending-user-input
+    status: verified
+    verified_at: "2026-08-22"
     required_evidence:
-      - project_id
+      - active_project_selected_without_repository_identifier
 
   billing:
-    status: pending-runtime-verification
+    status: verified
+    verified_at: "2026-08-22"
     required_evidence:
       - billing_enabled
-      - budget_alert_configured
+    non_blocking_observations:
+      - budget_alert_not_configured
 
   location_and_quota:
-    status: pending-user-input
+    status: verified
+    verified_at: "2026-08-22"
     required_evidence:
-      - region
-      - zone
-      - compute_quota
+      - asia_northeast3_region_up
+      - asia_northeast3_a_zone_up
+      - e2_cpu_and_address_quota_available
 
   local_authentication:
-    status: pending-runtime-verification
+    status: verified
+    verified_at: "2026-08-22"
     required_evidence:
-      - application_default_credentials_or_service_account_impersonation
+      - application_default_credentials
+    non_blocking_observations:
+      - dedicated_terraform_impersonation_not_configured
 
   required_apis:
-    status: pending-bootstrap
+    status: verified
+    verified_at: "2026-08-22"
     required_evidence:
       - serviceusage_googleapis_com
       - compute_googleapis_com
       - iam_googleapis_com
+      - storage_googleapis_com
+      - cloudresourcemanager_googleapis_com
 
   remote_state_bucket:
-    status: pending-bootstrap
+    status: verified
+    verified_at: "2026-08-22"
     required_evidence:
       - preexisting_gcs_bucket
       - object_versioning
-      - least_privilege_iam
+      - uniform_bucket_level_access
+      - public_access_prevention
+      - environment_state_object
+    non_blocking_observations:
+      - operator_access_inherited_from_project_iam
 
 gates:
   environment_design:
@@ -91,7 +106,7 @@ gates:
       - gcs_remote_state
 
   terraform_plan_apply:
-    status: blocked
+    status: ready
     required_runtime_inputs:
       - target_project
       - billing

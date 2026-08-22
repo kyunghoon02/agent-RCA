@@ -26,9 +26,8 @@ render-online-boutique:
 	kubectl kustomize platform/online-boutique
 
 terraform-fmt:
-	@echo "Active GCP Terraform root is not implemented yet."
-	@exit 2
+	terraform fmt -check -recursive infra/terraform
 
 terraform-validate:
-	@echo "Active GCP Terraform root is not implemented yet."
-	@exit 2
+	terraform -chdir=infra/terraform/environments/dev init -backend=false -input=false
+	terraform -chdir=infra/terraform/environments/dev validate
