@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:knowledge-retrieval-audit",
+  "title": "Operational Knowledge Retrieval Audit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "audit_id",
+    "request_id",
+    "incident_id",
+    "context_id",
+    "status",
+    "reason_code",
+    "requested_at",
+    "completed_at",
+    "scanned_documents",
+    "returned_reference_ids",
+    "excluded_counts",
+    "budget"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "audit_id": {
+      "type": "string",
+      "pattern": "^kaud-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^kreq-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "context_id": {
+      "type": "string",
+      "pattern": "^ctx-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "status": {
+      "enum": [
+        "SUCCEEDED",
+        "NO_MATCH",
+        "STALE_ONLY",
+        "TIMED_OUT",
+        "FAILED"
+      ]
+    },
+    "reason_code": {
+      "enum": [
+        "MATCHES_FOUND",
+        "NO_SCOPED_MATCH",
+        "ONLY_STALE_MATCHES",
+        "TIME_BUDGET_EXHAUSTED",
+        "REPOSITORY_UNAVAILABLE",
+        "INDEX_BUDGET_EXCEEDED"
+      ]
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scanned_documents": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 500
+    },
+    "returned_reference_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^kret-[a-z0-9][a-z0-9-]{7,63}$"
+      },
+      "maxItems": 5,
+      "uniqueItems": true
+    },
+    "excluded_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "top_k",
+        "character_limit",
+        "characters_used",
+        "timeout_seconds"
+      ],
+      "properties": {
+        "top_k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "character_limit": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 12000
+        },
+        "characters_used": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12000
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 5
+        }
+      }
+    }
+  }
+}

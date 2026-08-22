@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:retrieved-reference",
+  "title": "Bounded Operational Knowledge Retrieval Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "retrieval_id",
+    "request_id",
+    "reference_document_id",
+    "source_class",
+    "document_type",
+    "title",
+    "source_path_or_uri",
+    "document_version",
+    "content_hash",
+    "matched_entity_keys",
+    "retrieval_method",
+    "rank",
+    "bounded_excerpt"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "retrieval_id": {
+      "type": "string",
+      "pattern": "^kret-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^kreq-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "reference_document_id": {
+      "type": "string",
+      "pattern": "^ref-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "source_class": {
+      "const": "operational-knowledge"
+    },
+    "document_type": {
+      "enum": [
+        "architecture",
+        "service-catalog",
+        "runbook",
+        "slo",
+        "tool-guide"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_path_or_uri": {
+      "type": "string",
+      "minLength": 1
+    },
+    "document_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "matched_entity_keys": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{1,31}:[^\\s]{1,128}$"
+      },
+      "minItems": 1,
+      "maxItems": 10000,
+      "uniqueItems": true
+    },
+    "retrieval_method": {
+      "const": "entity-key+lexical"
+    },
+    "rank": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "bounded_excerpt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+    }
+  }
+}

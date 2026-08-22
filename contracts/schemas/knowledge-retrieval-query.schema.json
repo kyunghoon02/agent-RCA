@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:knowledge-retrieval-query",
+  "title": "Bounded Operational Knowledge Retrieval Query",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "incident_id",
+    "context_id",
+    "investigation_scope",
+    "localized_entity_keys",
+    "allowed_document_types",
+    "query_terms",
+    "top_k",
+    "character_budget",
+    "timeout_seconds",
+    "requested_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^kreq-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "context_id": {
+      "type": "string",
+      "pattern": "^ctx-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "investigation_scope": {
+      "$ref": "urn:agent-rca:schema:investigation-scope"
+    },
+    "localized_entity_keys": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{1,31}:[^\\s]{1,128}$"
+      },
+      "minItems": 1,
+      "maxItems": 10000,
+      "uniqueItems": true
+    },
+    "allowed_document_types": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "architecture",
+          "service-catalog",
+          "runbook",
+          "slo",
+          "tool-guide"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "query_terms": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "top_k": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "character_budget": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 12000
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 5
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

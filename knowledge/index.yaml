@@ -1,0 +1,35 @@
+schema_version: "1.0.0"
+documents:
+  - schema_version: "1.0.0"
+    reference_document_id: ref-incident-investigation-boundaries-0001
+    document_type: tool-guide
+    title: Incident Investigation Boundaries
+    source_class: operational-knowledge
+    source_kind: git-path
+    source_path_or_uri: documents/incident-investigation-boundaries.md
+    version: "1.0.0"
+    valid_from: "2026-08-01T00:00:00Z"
+    valid_to: null
+    entity_keys:
+      - domain:kubernetes
+      - domain:web-service
+    content_hash: sha256:cced7699dbe5d8492a3c65eb392bc2e87ebcde6313cdb0b2bc79e4269bd2bd10
+    review_status: approved
+    sensitivity: internal
+  - schema_version: "1.0.0"
+    reference_document_id: ref-kubernetes-workload-triage-0001
+    document_type: runbook
+    title: Kubernetes Workload Triage
+    source_class: operational-knowledge
+    source_kind: git-path
+    source_path_or_uri: documents/kubernetes-workload-triage.md
+    version: "1.0.0"
+    valid_from: "2026-08-01T00:00:00Z"
+    valid_to: null
+    entity_keys:
+      - domain:kubernetes
+      - entity-type:configmap
+      - entity-type:pod
+    content_hash: sha256:006dbfc0ea0abec8cc3db9bb058760a138fb06490ffcfec9825b8f25e5cec326
+    review_status: approved
+    sensitivity: internal

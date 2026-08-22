@@ -477,6 +477,12 @@ def validate_policy_configs() -> None:
         raise ValidationFailure("Knowledge retrieval exceeds the MVP document cap")
     if retrieval["bounds"]["max_characters"] > 12000:
         raise ValidationFailure("Knowledge retrieval exceeds the MVP character cap")
+    if retrieval["bounds"]["max_query_terms"] > 16:
+        raise ValidationFailure("Knowledge retrieval exceeds the query-term cap")
+    if retrieval["bounds"]["max_timeout_seconds"] > 5:
+        raise ValidationFailure("Knowledge retrieval exceeds the timeout cap")
+    if retrieval["bounds"]["max_index_documents"] > 500:
+        raise ValidationFailure("Knowledge retrieval exceeds the index scan cap")
     if retrieval["evidence_separation"]["references_are_evidence"]:
         raise ValidationFailure("Operational references must not become runtime Evidence")
     if not retrieval["evidence_separation"]["require_evidence_id_for_root_cause"]:

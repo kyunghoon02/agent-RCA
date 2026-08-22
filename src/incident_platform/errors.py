@@ -27,3 +27,7 @@ class RetryableProviderError(ProviderError):
 
 class PermanentProviderError(ProviderError):
     """A provider request is invalid or cannot succeed by retrying."""
+
+
+class KnowledgeRepositoryError(IncidentPlatformError):
+    """An approved Operational Knowledge repository cannot serve a query."""

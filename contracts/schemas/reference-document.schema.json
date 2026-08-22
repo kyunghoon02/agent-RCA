@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:reference-document",
+  "title": "Versioned Operational Knowledge Reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "reference_document_id",
+    "document_type",
+    "title",
+    "source_class",
+    "source_kind",
+    "source_path_or_uri",
+    "version",
+    "valid_from",
+    "valid_to",
+    "entity_keys",
+    "content_hash",
+    "review_status",
+    "sensitivity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "reference_document_id": {
+      "type": "string",
+      "pattern": "^ref-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "document_type": {
+      "enum": [
+        "architecture",
+        "service-catalog",
+        "runbook",
+        "slo",
+        "tool-guide"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "source_class": {
+      "const": "operational-knowledge"
+    },
+    "source_kind": {
+      "const": "git-path"
+    },
+    "source_path_or_uri": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "valid_from": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_to": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "entity_keys": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{1,31}:[^\\s]{1,128}$"
+      },
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "review_status": {
+      "enum": [
+        "approved",
+        "draft",
+        "retired"
+      ]
+    },
+    "sensitivity": {
+      "enum": [
+        "public",
+        "internal"
+      ]
+    }
+  }
+}

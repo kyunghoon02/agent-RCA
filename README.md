@@ -130,7 +130,7 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 
 ## 현재 구현 상태
 
-> 기준일: 2026-08-21. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
+> 기준일: 2026-08-22. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
@@ -138,7 +138,7 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
 | KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | live PromQL/dependency config, continuous projection과 cluster Graph 미연결 |
-| Operational Knowledge와 Retriever | schema/contract 및 Git 문서 경계 정의 | Retriever runtime 미구현 |
+| Operational Knowledge와 Retriever | hash-pinned Git index, localized Entity+lexical bounded retrieval 및 audit 구현 | Agent message/tool loop 미연결 |
 | Agent RCA와 LLM tool-calling | 목표 state, budget, Evidence Gate 경계 정의 | 미구현·미연결 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | target boundary와 readiness gate 정의 | `plan/apply`, bootstrap과 fault runtime 미검증 |
@@ -206,6 +206,13 @@ node와 temporal relationship로 저장한다. exact lookup과 bounded BFS는
 만들 수 없다. 일반 closed history는 72시간, Frozen Context에 포함된 Entity와 조사
 시간창은 30일 pin으로 보존하고 open interval은 TTL만으로 삭제하지 않는다.
 
+Operational Knowledge도 StateGraph 내부에 저장하지 않는다. Retriever는 Frozen Context의
+Graph Entity에서 `domain`, `entity-type`, `name`, scope와 entity ID key를 파생하고,
+Git index의 approved/version/time/hash metadata와 lexical term을 함께 대조한다. 최대 5개,
+12,000자, query term 16개, 5초, index 500개 상한을 넘을 수 없으며 no match, stale only,
+timeout과 repository failure를 서로 다른 audit 상태로 남긴다. 반환값은
+`RetrievedReference`라서 `evidence_id`가 없고 그 자체로 원인을 증명할 수 없다.
+
 상세 scoring, feature provider 책임과 fixture 기본값은
 [KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph와 adaptive
 localization 결정은 [ADR-0005](docs/adr/0005-domain-neutral-stategraph-core.md)와
@@ -223,7 +230,8 @@ kubectl kustomize platform/online-boutique
 
 `make validate-core`는 schema contract, Alertmanager HTTP 경계, Incident lifecycle,
 Collector concurrency·timeout·retry·partial failure, Evidence redaction/hash,
-deterministic RCA, StateGraph와 KRCA/localization fixture를 확인한다.
+deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval fixture를
+확인한다.
 
 `POSTGRES_TEST_DSN`이 없으면 live PostgreSQL contract test 한 건을 건너뛴다. 승인된
 테스트 DSN을 제공하면 random schema만 생성·검증·제거하며 공유 DB를 truncate하지

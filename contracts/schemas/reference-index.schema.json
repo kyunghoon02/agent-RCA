@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:reference-index",
+  "title": "Git Operational Knowledge Index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "documents"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:agent-rca:schema:reference-document"
+      },
+      "maxItems": 500
+    }
+  }
+}

@@ -73,7 +73,7 @@ adaptive_localization:
   on_budget_exhaustion: abstain_with_best_hypotheses
 
 knowledge_retrieval:
-  status: design-contract-runtime-unimplemented
+  status: git-index-and-bounded-retriever-implemented-agent-unconnected
   allowed_review_status:
     - approved
   allowed_document_types:
@@ -90,6 +90,9 @@ knowledge_retrieval:
   bounds:
     max_documents: 5
     max_characters: 12000
+    max_query_terms: 16
+    max_timeout_seconds: 5
+    max_index_documents: 500
   evidence_separation:
     references_are_evidence: false
     require_evidence_id_for_root_cause: true
