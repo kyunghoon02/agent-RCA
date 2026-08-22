@@ -1,0 +1,51 @@
+---
+- name: Verify the Kubernetes API readiness endpoint
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
+  register: api_readiness
+  changed_when: false
+  failed_when: api_readiness.stdout | trim != 'ok'
+
+- name: Wait for every node to become Ready
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    wait --for=condition=Ready nodes --all --timeout={{ cluster_wait_timeout }}
+  changed_when: false
+
+- name: Wait for CoreDNS rollout
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    --namespace kube-system rollout status deployment/coredns
+    --timeout={{ cluster_wait_timeout }}
+  changed_when: false
+
+- name: Verify Cilium and Hubble component status
+  ansible.builtin.command: >-
+    cilium status
+    --kubeconfig /etc/kubernetes/admin.conf
+    --wait
+    --wait-duration {{ cluster_wait_timeout }}
+  changed_when: false
+
+- name: Verify the Hubble metrics endpoint through the Kubernetes API proxy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get --raw=/api/v1/namespaces/kube-system/services/hubble-metrics:9965/proxy/metrics
+  register: hubble_metrics
+  changed_when: false
+  failed_when: "'hubble_' not in hubble_metrics.stdout"
+
+- name: Run a read-only Hubble status query
+  ansible.builtin.command: hubble status --port-forward
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: false
+
+- name: Read one recent Hubble flow when available
+  ansible.builtin.command: >-
+    hubble observe --port-forward --last 1 --output compact
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: hubble_recent_flow
+  changed_when: false
+  failed_when: hubble_recent_flow.rc != 0

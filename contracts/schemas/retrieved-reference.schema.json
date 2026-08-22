@@ -75,7 +75,11 @@
       "uniqueItems": true
     },
     "retrieval_method": {
-      "const": "entity-key+lexical"
+      "enum": [
+        "entity-key+lexical",
+        "entity-key+vector",
+        "entity-key+lexical+vector-rrf"
+      ]
     },
     "rank": {
       "type": "integer",

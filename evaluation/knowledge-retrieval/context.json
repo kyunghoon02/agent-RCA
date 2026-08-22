@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0.0",
+  "context_id": "ctx-knowledge-benchmark-0001",
+  "incident_id": "inc-knowledge-benchmark-0001",
+  "frozen_at": "2026-08-22T00:59:00Z",
+  "source_entity": {
+    "entity_id": "ent-pod-checkoutservice-benchmark-0001",
+    "entity_type": "Pod",
+    "domain": "kubernetes",
+    "name": "checkoutservice-benchmark",
+    "scope": {
+      "cluster_id": "benchmark-cluster",
+      "namespace": "online-boutique"
+    },
+    "external_ref": "k8s://online-boutique/Pod/checkoutservice-benchmark",
+    "exists": true
+  },
+  "scope": {
+    "incident_id": "inc-knowledge-benchmark-0001",
+    "seed_entity_ids": [
+      "ent-pod-checkoutservice-benchmark-0001"
+    ],
+    "domains": [
+      "kubernetes"
+    ],
+    "correlation_keys": {},
+    "relation_types": [
+      "REFERENCES"
+    ],
+    "time_window": {
+      "start": "2026-08-22T00:50:00Z",
+      "end": "2026-08-22T00:59:00Z"
+    },
+    "max_entities": 2,
+    "max_depth": 1
+  },
+  "state_paths": [
+    {
+      "path_id": "path-knowledge-benchmark-0001",
+      "entities": [
+        {
+          "entity_id": "ent-pod-checkoutservice-benchmark-0001",
+          "entity_type": "Pod",
+          "domain": "kubernetes",
+          "name": "checkoutservice-benchmark",
+          "scope": {
+            "cluster_id": "benchmark-cluster",
+            "namespace": "online-boutique"
+          },
+          "external_ref": "k8s://online-boutique/Pod/checkoutservice-benchmark",
+          "exists": true
+        },
+        {
+          "entity_id": "ent-configmap-checkout-benchmark-0001",
+          "entity_type": "ConfigMap",
+          "domain": "kubernetes",
+          "name": "checkout-settings",
+          "scope": {
+            "cluster_id": "benchmark-cluster",
+            "namespace": "online-boutique"
+          },
+          "external_ref": "k8s://online-boutique/ConfigMap/checkout-settings",
+          "exists": false
+        }
+      ],
+      "relations": [
+        "REFERENCES"
+      ],
+      "evidence_ids": [
+        "ev-knowledge-benchmark-0001"
+      ]
+    }
+  ],
+  "evidence_ids": [
+    "ev-knowledge-benchmark-0001"
+  ],
+  "recent_change_evidence_ids": [],
+  "missing_evidence": [],
+  "collector_failures": [],
+  "localization": {
+    "strategy": "stategraph",
+    "candidate_entities_before": 2,
+    "candidate_entities_after": 2,
+    "context_completeness": 1.0
+  }
+}

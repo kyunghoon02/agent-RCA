@@ -16,6 +16,7 @@ from incident_platform.knowledge import (
     GitReferenceDocumentRepository,
     KnowledgeRetrievalPolicy,
     ReferenceDocument,
+    SemanticSearchHit,
 )
 
 
@@ -141,6 +142,16 @@ class AdvancingClock:
         return self.value
 
 
+class StaticSemanticIndex:
+    def __init__(self, hits: tuple[SemanticSearchHit, ...]) -> None:
+        self.hits = hits
+        self.calls = []
+
+    def search(self, query_text, *, candidates, limit):
+        self.calls.append((query_text, candidates, limit))
+        return self.hits
+
+
 def retriever(repository: object, **kwargs: object) -> BoundedKnowledgeRetriever:
     return BoundedKnowledgeRetriever(
         repository,  # type: ignore[arg-type]
@@ -153,7 +164,14 @@ class GitReferenceDocumentRepositoryTests(unittest.TestCase):
     def test_repository_loads_the_hash_pinned_operational_corpus(self) -> None:
         documents = GitReferenceDocumentRepository().list_documents(limit=500)
 
-        self.assertEqual(len(documents), 2)
+        self.assertGreaterEqual(len(documents), 2)
+        self.assertTrue(
+            {
+                "ref-incident-investigation-boundaries-0001",
+                "ref-kubernetes-workload-triage-0001",
+            }
+            <= {item.metadata["reference_document_id"] for item in documents}
+        )
         self.assertTrue(all(item.metadata["review_status"] == "approved" for item in documents))
 
     def test_repository_rejects_a_content_hash_mismatch(self) -> None:
@@ -312,6 +330,129 @@ class BoundedKnowledgeRetrieverTests(unittest.TestCase):
 
         self.assertEqual(run.audit["status"], "NO_MATCH")
         self.assertEqual(run.audit["excluded_counts"], {"draft": 1})
+
+    def test_hybrid_retrieval_adds_semantic_matches_without_weakening_scope(self) -> None:
+        content = "A container was terminated after exceeding its memory allocation."
+        document = ReferenceDocument(reference_metadata(content), content)
+        hit = SemanticSearchHit(
+            reference_document_id=document.metadata["reference_document_id"],
+            content_hash=document.metadata["content_hash"],
+            score=0.91,
+        )
+        semantic = StaticSemanticIndex((hit,))
+
+        lexical_run = retriever(StaticRepository((document,))).retrieve(
+            localized_context(),
+            request_id="kreq-knowledge-lexical-0001",
+            allowed_document_types=("runbook",),
+            query_terms=("pod ran out of ram",),
+            requested_at=REQUESTED_AT,
+        )
+        hybrid_run = retriever(
+            StaticRepository((document,)),
+            semantic_index=semantic,
+            retrieval_method="entity-key+lexical+vector-rrf",
+        ).retrieve(
+            localized_context(),
+            request_id="kreq-knowledge-hybrid-0001",
+            allowed_document_types=("runbook",),
+            query_terms=("pod ran out of ram",),
+            requested_at=REQUESTED_AT,
+        )
+
+        self.assertEqual(lexical_run.audit["status"], "NO_MATCH")
+        self.assertEqual(hybrid_run.audit["status"], "SUCCEEDED")
+        self.assertEqual(
+            hybrid_run.references[0]["retrieval_method"],
+            "entity-key+lexical+vector-rrf",
+        )
+        self.assertEqual(hybrid_run.audit["retrieval_method"], hybrid_run.query["retrieval_method"])
+        _, candidates, _ = semantic.calls[0]
+        self.assertEqual(
+            [(item.reference_document_id, item.content_hash) for item in candidates],
+            [(document.metadata["reference_document_id"], document.metadata["content_hash"])],
+        )
+
+    def test_hybrid_retrieval_uses_rrf_instead_of_comparing_raw_scores(self) -> None:
+        lexical_content = "ConfigMap ConfigMap troubleshooting"
+        semantic_content = "Configuration dependency diagnostics"
+        lexical_metadata = reference_metadata(lexical_content)
+        semantic_metadata = reference_metadata(semantic_content)
+        lexical_metadata["reference_document_id"] = "ref-lexical-runbook-document-0001"
+        semantic_metadata["reference_document_id"] = "ref-semantic-runbook-document-0001"
+        lexical_document = ReferenceDocument(lexical_metadata, lexical_content)
+        semantic_document = ReferenceDocument(semantic_metadata, semantic_content)
+        semantic = StaticSemanticIndex(
+            (
+                SemanticSearchHit(
+                    semantic_document.metadata["reference_document_id"],
+                    semantic_document.metadata["content_hash"],
+                    0.99,
+                ),
+                SemanticSearchHit(
+                    lexical_document.metadata["reference_document_id"],
+                    lexical_document.metadata["content_hash"],
+                    0.40,
+                ),
+            )
+        )
+
+        run = retriever(
+            StaticRepository((semantic_document, lexical_document)),
+            semantic_index=semantic,
+            retrieval_method="entity-key+lexical+vector-rrf",
+        ).retrieve(
+            localized_context(),
+            request_id="kreq-knowledge-hybrid-0002",
+            allowed_document_types=("runbook",),
+            query_terms=("ConfigMap",),
+            top_k=2,
+            requested_at=REQUESTED_AT,
+        )
+
+        self.assertEqual(
+            [item["reference_document_id"] for item in run.references],
+            [
+                "ref-lexical-runbook-document-0001",
+                "ref-semantic-runbook-document-0001",
+            ],
+        )
+
+    def test_semantic_index_cannot_return_unapproved_or_stale_hashes(self) -> None:
+        content = "approved Kubernetes guidance"
+        approved = ReferenceDocument(reference_metadata(content), content)
+        draft_content = "draft Kubernetes guidance"
+        draft = ReferenceDocument(
+            reference_metadata(draft_content, review_status="draft"),
+            draft_content,
+        )
+        semantic = StaticSemanticIndex(
+            (
+                SemanticSearchHit(
+                    approved.metadata["reference_document_id"],
+                    f"sha256:{'0' * 64}",
+                    0.99,
+                ),
+            )
+        )
+
+        run = retriever(
+            StaticRepository((approved, draft)),
+            semantic_index=semantic,
+            retrieval_method="entity-key+vector",
+        ).retrieve(
+            localized_context(),
+            request_id="kreq-knowledge-vector-0001",
+            allowed_document_types=("runbook",),
+            query_terms=("guidance",),
+            requested_at=REQUESTED_AT,
+        )
+
+        self.assertEqual(run.audit["status"], "FAILED")
+        self.assertEqual(run.audit["reason_code"], "REPOSITORY_UNAVAILABLE")
+        _, candidates, _ = semantic.calls[0]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].content_hash, approved.metadata["content_hash"])
 
 
 class KnowledgeRetrievalPolicyTests(unittest.TestCase):

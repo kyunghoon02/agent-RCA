@@ -1,0 +1,71 @@
+---
+- name: Install the pinned containerd package
+  ansible.builtin.apt:
+    name: "containerd={{ containerd_deb_version }}"
+    state: present
+    allow_downgrade: true
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Hold the containerd package
+  ansible.builtin.dpkg_selections:
+    name: containerd
+    selection: hold
+
+- name: Create the containerd configuration directory
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the pinned containerd default configuration
+  ansible.builtin.command: containerd config default
+  register: containerd_default_config
+  changed_when: false
+
+- name: Build the systemd cgroup containerd configuration
+  ansible.builtin.set_fact:
+    containerd_rendered_config: >-
+      {{ containerd_default_config.stdout
+         | regex_replace('SystemdCgroup = false', 'SystemdCgroup = true')
+         | regex_replace('disabled_plugins = \["cri"\]\n', '') }}
+
+- name: Validate the generated containerd configuration
+  ansible.builtin.assert:
+    that:
+      - "'SystemdCgroup = true' in containerd_rendered_config"
+      - "'disabled_plugins = [\"cri\"]' not in containerd_rendered_config"
+    fail_msg: Failed to produce a CRI-enabled systemd cgroup containerd configuration.
+
+- name: Install the containerd configuration
+  ansible.builtin.copy:
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ containerd_rendered_config }}\n"
+  notify: Restart containerd
+
+- name: Apply the containerd configuration before kubeadm
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start containerd
+  ansible.builtin.systemd_service:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: Verify the CRI socket exists
+  ansible.builtin.stat:
+    path: /run/containerd/containerd.sock
+  register: containerd_socket
+
+- name: Reject a missing containerd CRI socket
+  ansible.builtin.assert:
+    that:
+      - containerd_socket.stat.exists
+      - containerd_socket.stat.issock
+    fail_msg: containerd is running without the expected CRI socket.

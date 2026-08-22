@@ -10,6 +10,7 @@
     "request_id",
     "incident_id",
     "context_id",
+    "retrieval_method",
     "status",
     "reason_code",
     "requested_at",
@@ -38,6 +39,13 @@
     "context_id": {
       "type": "string",
       "pattern": "^ctx-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "retrieval_method": {
+      "enum": [
+        "entity-key+lexical",
+        "entity-key+vector",
+        "entity-key+lexical+vector-rrf"
+      ]
     },
     "status": {
       "enum": [

@@ -13,6 +13,7 @@
     "localized_entity_keys",
     "allowed_document_types",
     "query_terms",
+    "retrieval_method",
     "top_k",
     "character_budget",
     "timeout_seconds",
@@ -71,6 +72,13 @@
       "minItems": 1,
       "maxItems": 16,
       "uniqueItems": true
+    },
+    "retrieval_method": {
+      "enum": [
+        "entity-key+lexical",
+        "entity-key+vector",
+        "entity-key+lexical+vector-rrf"
+      ]
     },
     "top_k": {
       "type": "integer",

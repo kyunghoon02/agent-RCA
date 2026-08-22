@@ -1,0 +1,75 @@
+---
+- name: Check whether kubeadm already initialized the cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_admin_conf
+
+- name: Create the Kubernetes configuration directory
+  ansible.builtin.file:
+    path: /etc/kubernetes
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the kubeadm init configuration
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: /etc/kubernetes/kubeadm-init.yaml
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Validate the kubeadm init configuration
+  ansible.builtin.command: kubeadm config validate --config /etc/kubernetes/kubeadm-init.yaml
+  changed_when: false
+
+- name: Pull control-plane images before initialization
+  ansible.builtin.command: >-
+    kubeadm config images pull
+    --config /etc/kubernetes/kubeadm-init.yaml
+  when: not kubeadm_admin_conf.stat.exists
+  changed_when: true
+
+- name: Initialize the single control plane
+  ansible.builtin.command: kubeadm init --config /etc/kubernetes/kubeadm-init.yaml
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+- name: Read the cluster administrator account
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ kubernetes_admin_user }}"
+
+- name: Set the cluster administrator home
+  ansible.builtin.set_fact:
+    kubernetes_admin_home: >-
+      {{ ansible_facts['getent_passwd'][kubernetes_admin_user][4] }}
+    kubernetes_admin_group: >-
+      {{ ansible_facts['getent_passwd'][kubernetes_admin_user][2] }}
+
+- name: Create the administrator kubeconfig directory
+  ansible.builtin.file:
+    path: "{{ kubernetes_admin_home }}/.kube"
+    state: directory
+    owner: "{{ kubernetes_admin_user }}"
+    group: "{{ kubernetes_admin_group }}"
+    mode: "0700"
+
+- name: Install the administrator kubeconfig on the VM
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ kubernetes_admin_home }}/.kube/config"
+    remote_src: true
+    owner: "{{ kubernetes_admin_user }}"
+    group: "{{ kubernetes_admin_group }}"
+    mode: "0600"
+
+- name: Wait for the local Kubernetes API readiness endpoint
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
+  register: kubernetes_api_ready
+  retries: 30
+  delay: 5
+  until: kubernetes_api_ready.rc == 0 and kubernetes_api_ready.stdout | trim == 'ok'
+  changed_when: false

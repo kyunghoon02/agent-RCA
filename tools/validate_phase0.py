@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -338,6 +339,58 @@ def validate_versions_and_manifests() -> None:
         )
     if versions["terraform"].get("provider") != "hashicorp/google":
         raise ValidationFailure("Terraform provider must be hashicorp/google")
+
+    expected_runtime_versions = {
+        "host": {
+            "distribution": "ubuntu",
+            "release": "24.04",
+            "architecture": "amd64",
+        },
+        "ansible": {"core_version": "2.20.7"},
+        "containerd": {"package_version": "2.2.1-0ubuntu1~24.04.3"},
+        "kubernetes_release": {
+            "minor": "v1.36",
+            "version": "v1.36.4",
+            "deb_version": "1.36.4-1.1",
+        },
+        "cilium": {"chart_version": "1.20.1", "cli_version": "v0.19.7"},
+        "hubble": {"cli_version": "v1.19.3"},
+    }
+    for boundary, expected in expected_runtime_versions.items():
+        if versions.get(boundary) != expected:
+            raise ValidationFailure(
+                f"platform runtime version boundary drifted for {boundary}"
+            )
+    if versions.get("helm", {}).get("version") != "v3.21.4":
+        raise ValidationFailure("platform Helm version boundary drifted")
+
+    ansible_versions = load_yaml_documents(
+        ROOT / "automation" / "ansible" / "group_vars" / "all.yml"
+    )[0]
+    expected_ansible_versions = {
+        "containerd_deb_version": versions["containerd"]["package_version"],
+        "kubernetes_minor": versions["kubernetes_release"]["minor"],
+        "kubernetes_version": versions["kubernetes_release"]["version"],
+        "kubernetes_deb_version": versions["kubernetes_release"]["deb_version"],
+        "helm_version": versions["helm"]["version"],
+        "cilium_chart_version": versions["cilium"]["chart_version"],
+        "cilium_cli_version": versions["cilium"]["cli_version"],
+        "hubble_cli_version": versions["hubble"]["cli_version"],
+    }
+    for key, expected in expected_ansible_versions.items():
+        if ansible_versions.get(key) != expected:
+            raise ValidationFailure(
+                f"Ansible runtime pin {key} must match platform/versions.yaml"
+            )
+    checksum_keys = (
+        "kubernetes_package_key_sha256",
+        "helm_linux_amd64_sha256",
+        "cilium_cli_linux_amd64_sha256",
+        "hubble_cli_linux_amd64_sha256",
+    )
+    for key in checksum_keys:
+        if not re.fullmatch(r"[0-9a-f]{64}", ansible_versions.get(key, "")):
+            raise ValidationFailure(f"Ansible download checksum is invalid for {key}")
 
     scope = load_yaml_documents(ROOT / "config" / "project-scope.yaml")[0]
     expected_scope_target = {

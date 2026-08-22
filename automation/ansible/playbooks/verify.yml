@@ -1,0 +1,10 @@
+---
+- name: Verify the Agent RCA single-node Kubernetes cluster
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - role: cluster_verify

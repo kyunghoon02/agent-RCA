@@ -1,0 +1,14 @@
+---
+- name: Inspect the control-plane scheduling taint
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get nodes -o jsonpath={.items[*].spec.taints[*].key}
+  register: node_taint_keys
+  changed_when: false
+
+- name: Allow workloads on the single control-plane node
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    taint nodes --all node-role.kubernetes.io/control-plane-
+  when: "'node-role.kubernetes.io/control-plane' in node_taint_keys.stdout"
+  changed_when: true

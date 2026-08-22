@@ -1,0 +1,37 @@
+cluster_name: agent-rca-dev
+
+supported_distribution: Ubuntu
+supported_distribution_version: "24.04"
+supported_architecture: x86_64
+
+containerd_deb_version: "2.2.1-0ubuntu1~24.04.3"
+containerd_cri_socket: unix:///run/containerd/containerd.sock
+
+kubernetes_minor: v1.36
+kubernetes_version: v1.36.4
+kubernetes_deb_version: 1.36.4-1.1
+kubernetes_package_key_sha256: >-
+  7627818cf7bae52f9008c93e8b1f961f53dea11d40891778de216fb1b43be54d
+kubernetes_node_ip: "{{ ansible_facts['default_ipv4']['address'] }}"
+kubernetes_admin_user: "{{ ansible_user }}"
+kubernetes_pod_subnet: 10.244.0.0/16
+kubernetes_service_subnet: 10.96.0.0/12
+kubernetes_dns_domain: cluster.local
+kubernetes_api_bind_port: 6443
+kubernetes_api_extra_sans:
+  - 127.0.0.1
+
+helm_version: v3.21.4
+helm_linux_amd64_sha256: >-
+  61f88ab166748cb19604d7884cb100ae9ccb13804ddeb98e08af167eacbb6a14
+
+cilium_chart_ref: oci://quay.io/cilium/charts/cilium
+cilium_chart_version: 1.20.1
+cilium_cli_version: v0.19.7
+cilium_cli_linux_amd64_sha256: >-
+  cd15e0983bf0acc7946cd05d453d1e58376ea92dec2642e745212df2b07d8852
+hubble_cli_version: v1.19.3
+hubble_cli_linux_amd64_sha256: >-
+  e0e555001a46921ff2501ddc874ed1f4c68ba20cdb00cf4ea8263be4395eb008
+
+cluster_wait_timeout: 10m

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,13 @@ DEFAULT_INDEX_PATH = DEFAULT_KNOWLEDGE_ROOT / "index.yaml"
 
 DOCUMENT_TYPES = frozenset(
     {"architecture", "service-catalog", "runbook", "slo", "tool-guide"}
+)
+RETRIEVAL_METHODS = frozenset(
+    {
+        "entity-key+lexical",
+        "entity-key+vector",
+        "entity-key+lexical+vector-rrf",
+    }
 )
 PROHIBITED_SOURCE_PATH_PARTS = frozenset(
     {
@@ -73,6 +81,47 @@ class ReferenceDocumentRepository(Protocol):
     """Storage-neutral source of versioned Operational Knowledge documents."""
 
     def list_documents(self, *, limit: int) -> Tuple[ReferenceDocument, ...]:
+        ...
+
+
+@dataclass(frozen=True)
+class SemanticSearchCandidate:
+    """Hash-pinned document identity allowed to enter semantic ranking."""
+
+    reference_document_id: str
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"ref-[a-z0-9][a-z0-9-]{7,63}", self.reference_document_id):
+            raise ContractViolation("semantic candidate has an invalid ReferenceDocument ID")
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", self.content_hash):
+            raise ContractViolation("semantic candidate has an invalid content hash")
+
+
+@dataclass(frozen=True)
+class SemanticSearchHit:
+    """One semantic rank returned by a bounded vector index."""
+
+    reference_document_id: str
+    content_hash: str
+    score: float
+
+    def __post_init__(self) -> None:
+        SemanticSearchCandidate(self.reference_document_id, self.content_hash)
+        if not math.isfinite(float(self.score)):
+            raise ContractViolation("semantic search score must be finite")
+
+
+class SemanticKnowledgeIndex(Protocol):
+    """Vector-search port; implementations never decide document eligibility."""
+
+    def search(
+        self,
+        query_text: str,
+        *,
+        candidates: Sequence[SemanticSearchCandidate],
+        limit: int,
+    ) -> Tuple[SemanticSearchHit, ...]:
         ...
 
 
@@ -242,11 +291,19 @@ class BoundedKnowledgeRetriever:
         self,
         repository: ReferenceDocumentRepository,
         *,
+        semantic_index: Optional[SemanticKnowledgeIndex] = None,
+        retrieval_method: str = "entity-key+lexical",
         policy: Optional[KnowledgeRetrievalPolicy] = None,
         monotonic_clock: Callable[[], float] = monotonic,
         utc_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._repository = repository
+        if retrieval_method not in RETRIEVAL_METHODS:
+            raise ValueError(f"unsupported Knowledge retrieval method: {retrieval_method}")
+        if retrieval_method != "entity-key+lexical" and semantic_index is None:
+            raise ValueError("vector and hybrid retrieval require a semantic index")
+        self._semantic_index = semantic_index
+        self._retrieval_method = retrieval_method
         self._policy = policy or KnowledgeRetrievalPolicy()
         self._monotonic = monotonic_clock
         self._utc_now = utc_now
@@ -302,7 +359,7 @@ class BoundedKnowledgeRetriever:
                 excluded_counts={},
             )
 
-        candidates: List[Tuple[int, ReferenceDocument, Tuple[str, ...]]] = []
+        eligible: List[Tuple[ReferenceDocument, Tuple[str, ...], int, int]] = []
         excluded: Dict[str, int] = {}
         stale_matches = 0
         localized_keys = set(query["localized_entity_keys"])
@@ -328,9 +385,6 @@ class BoundedKnowledgeRetriever:
                 self._increment(excluded, "entity_scope")
                 continue
             lexical_score = self._lexical_score(document, query["query_terms"])
-            if lexical_score == 0:
-                self._increment(excluded, "lexical")
-                continue
             if metadata["review_status"] != "approved":
                 self._increment(excluded, metadata["review_status"])
                 continue
@@ -344,13 +398,35 @@ class BoundedKnowledgeRetriever:
             if valid_to_value is not None and parse_time(
                 valid_to_value, "ReferenceDocument.valid_to"
             ) < context_time:
-                stale_matches += 1
+                if lexical_score > 0:
+                    stale_matches += 1
                 self._increment(excluded, "expired")
                 continue
-            score = lexical_score + sum(
+            entity_score = sum(
                 self._entity_key_weight(key) for key in matched_keys
             )
-            candidates.append((score, document, matched_keys))
+            eligible.append((document, matched_keys, lexical_score, entity_score))
+
+        try:
+            candidates = self._rank_candidates(query, eligible, excluded)
+        except KnowledgeRepositoryError:
+            return self._run(
+                query,
+                references=(),
+                status="FAILED",
+                reason_code="REPOSITORY_UNAVAILABLE",
+                scanned_documents=len(documents),
+                excluded_counts=excluded,
+            )
+        if self._monotonic() > deadline:
+            return self._run(
+                query,
+                references=(),
+                status="TIMED_OUT",
+                reason_code="TIME_BUDGET_EXHAUSTED",
+                scanned_documents=len(documents),
+                excluded_counts=excluded,
+            )
 
         if not candidates:
             status = "STALE_ONLY" if stale_matches else "NO_MATCH"
@@ -364,14 +440,12 @@ class BoundedKnowledgeRetriever:
                 excluded_counts=excluded,
             )
 
-        candidates.sort(
-            key=lambda item: (
-                -item[0],
-                item[1].metadata["reference_document_id"],
-            )
-        )
         selected = candidates[: query["top_k"]]
-        references = self._build_references(query, selected)
+        references = self._build_references(
+            query,
+            selected,
+            retrieval_method=self._retrieval_method,
+        )
         return self._run(
             query,
             references=references,
@@ -441,6 +515,7 @@ class BoundedKnowledgeRetriever:
             "localized_entity_keys": list(entity_keys),
             "allowed_document_types": list(document_types),
             "query_terms": list(terms),
+            "retrieval_method": self._retrieval_method,
             "top_k": top_k,
             "character_budget": character_budget,
             "timeout_seconds": timeout_seconds,
@@ -517,10 +592,114 @@ class BoundedKnowledgeRetriever:
             return 10
         return 5
 
+    def _rank_candidates(
+        self,
+        query: Mapping[str, Any],
+        eligible: Sequence[Tuple[ReferenceDocument, Tuple[str, ...], int, int]],
+        excluded: Dict[str, int],
+    ) -> List[Tuple[float, ReferenceDocument, Tuple[str, ...]]]:
+        lexical = [
+            (lexical_score + entity_score, document, matched_keys)
+            for document, matched_keys, lexical_score, entity_score in eligible
+            if lexical_score > 0
+        ]
+        lexical.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].metadata["reference_document_id"],
+            )
+        )
+        if self._retrieval_method == "entity-key+lexical":
+            for _, _, lexical_score, _ in eligible:
+                if lexical_score == 0:
+                    self._increment(excluded, "lexical")
+            return lexical
+
+        semantic = self._semantic_candidates(query, eligible)
+        if self._retrieval_method == "entity-key+vector":
+            return semantic
+        return self._reciprocal_rank_fusion(lexical, semantic)
+
+    def _semantic_candidates(
+        self,
+        query: Mapping[str, Any],
+        eligible: Sequence[Tuple[ReferenceDocument, Tuple[str, ...], int, int]],
+    ) -> List[Tuple[float, ReferenceDocument, Tuple[str, ...]]]:
+        if not eligible:
+            return []
+        if self._semantic_index is None:
+            raise KnowledgeRepositoryError("semantic Knowledge index is unavailable")
+        allowed = {
+            document.metadata["reference_document_id"]: (
+                document.metadata["content_hash"],
+                document,
+                matched_keys,
+            )
+            for document, matched_keys, _, _ in eligible
+        }
+        hits = self._semantic_index.search(
+            " ".join(query["query_terms"]),
+            candidates=tuple(
+                SemanticSearchCandidate(
+                    reference_document_id=reference_id,
+                    content_hash=value[0],
+                )
+                for reference_id, value in sorted(allowed.items())
+            ),
+            limit=min(self._policy.max_index_documents, max(query["top_k"] * 4, 20)),
+        )
+        seen: set[str] = set()
+        ranked: List[Tuple[float, ReferenceDocument, Tuple[str, ...]]] = []
+        for hit in hits:
+            allowed_value = allowed.get(hit.reference_document_id)
+            if allowed_value is None or allowed_value[0] != hit.content_hash:
+                raise KnowledgeRepositoryError(
+                    "semantic Knowledge index returned an out-of-scope or stale document"
+                )
+            if hit.reference_document_id in seen:
+                raise KnowledgeRepositoryError(
+                    "semantic Knowledge index returned a duplicate document"
+                )
+            seen.add(hit.reference_document_id)
+            ranked.append((float(hit.score), allowed_value[1], allowed_value[2]))
+        ranked.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].metadata["reference_document_id"],
+            )
+        )
+        return ranked
+
+    @staticmethod
+    def _reciprocal_rank_fusion(
+        lexical: Sequence[Tuple[float, ReferenceDocument, Tuple[str, ...]]],
+        semantic: Sequence[Tuple[float, ReferenceDocument, Tuple[str, ...]]],
+        *,
+        rank_constant: int = 60,
+    ) -> List[Tuple[float, ReferenceDocument, Tuple[str, ...]]]:
+        fused: Dict[str, Tuple[float, ReferenceDocument, Tuple[str, ...]]] = {}
+        for ranking in (lexical, semantic):
+            for rank, (_, document, matched_keys) in enumerate(ranking, start=1):
+                reference_id = document.metadata["reference_document_id"]
+                previous = fused.get(reference_id)
+                score = 1.0 / (rank_constant + rank)
+                if previous is not None:
+                    score += previous[0]
+                fused[reference_id] = (score, document, matched_keys)
+        return sorted(
+            fused.values(),
+            key=lambda item: (
+                -item[0],
+                item[1].metadata["reference_document_id"],
+            ),
+        )
+
     def _build_references(
         self,
         query: Mapping[str, Any],
-        selected: Sequence[Tuple[int, ReferenceDocument, Tuple[str, ...]]],
+        selected: Sequence[Tuple[float, ReferenceDocument, Tuple[str, ...]]],
+        *,
+        retrieval_method: str,
     ) -> Tuple[Mapping[str, Any], ...]:
         remaining = query["character_budget"]
         references = []
@@ -546,6 +725,7 @@ class BoundedKnowledgeRetriever:
                         "reference_document_id": metadata["reference_document_id"],
                         "version": metadata["version"],
                         "content_hash": metadata["content_hash"],
+                        "retrieval_method": retrieval_method,
                     },
                 ),
                 "request_id": query["request_id"],
@@ -557,7 +737,7 @@ class BoundedKnowledgeRetriever:
                 "document_version": metadata["version"],
                 "content_hash": metadata["content_hash"],
                 "matched_entity_keys": list(matched_keys),
-                "retrieval_method": "entity-key+lexical",
+                "retrieval_method": retrieval_method,
                 "rank": offset + 1,
                 "bounded_excerpt": excerpt,
             }
@@ -602,12 +782,14 @@ class BoundedKnowledgeRetriever:
                     "request_id": query["request_id"],
                     "status": status,
                     "reason_code": reason_code,
+                    "retrieval_method": query["retrieval_method"],
                     "retrieval_ids": retrieval_ids,
                 },
             ),
             "request_id": query["request_id"],
             "incident_id": query["incident_id"],
             "context_id": query["context_id"],
+            "retrieval_method": query["retrieval_method"],
             "status": status,
             "reason_code": reason_code,
             "requested_at": query["requested_at"],

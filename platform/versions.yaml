@@ -9,6 +9,22 @@ execution_target:
   cloud: gcp
   location: asia-northeast3
 
+host:
+  distribution: ubuntu
+  release: "24.04"
+  architecture: amd64
+
+ansible:
+  core_version: "2.20.7"
+
+containerd:
+  package_version: "2.2.1-0ubuntu1~24.04.3"
+
+kubernetes_release:
+  minor: "v1.36"
+  version: "v1.36.4"
+  deb_version: "1.36.4-1.1"
+
 kubernetes:
   service: self-managed
   distribution: upstream
@@ -21,6 +37,14 @@ kubernetes:
 
 helm:
   minimum_version: "3.13.0"
+  version: "v3.21.4"
+
+cilium:
+  chart_version: "1.20.1"
+  cli_version: "v0.19.7"
+
+hubble:
+  cli_version: "v1.19.3"
 
 online_boutique:
   repository: "https://github.com/GoogleCloudPlatform/microservices-demo.git"

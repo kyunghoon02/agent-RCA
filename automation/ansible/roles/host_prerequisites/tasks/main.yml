@@ -1,0 +1,82 @@
+---
+- name: Assert the supported host boundary
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == supported_distribution
+      - ansible_facts.distribution_version == supported_distribution_version
+      - ansible_facts.architecture == supported_architecture
+      - ansible_facts.service_mgr == 'systemd'
+    fail_msg: >-
+      This bootstrap supports only Ubuntu {{ supported_distribution_version }}
+      {{ supported_architecture }} with systemd.
+
+- name: Check that cgroup v2 is active
+  ansible.builtin.stat:
+    path: /sys/fs/cgroup/cgroup.controllers
+  register: cgroup_v2
+
+- name: Reject hosts without cgroup v2
+  ansible.builtin.assert:
+    that:
+      - cgroup_v2.stat.exists
+    fail_msg: The Kubernetes runtime contract requires cgroup v2.
+
+- name: Install host prerequisite packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - conntrack
+      - curl
+      - ethtool
+      - gpg
+      - ipset
+      - socat
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Disable active swap
+  ansible.builtin.command: swapoff --all
+  when: ansible_facts.swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Disable swap entries in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#\n]+\s+\S+\s+swap\s+\S+.*)$'
+    replace: '# \1'
+
+- name: Persist Kubernetes kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+
+- name: Load the overlay module
+  ansible.builtin.command: modprobe overlay
+  changed_when: false
+
+- name: Load the bridge netfilter module
+  ansible.builtin.command: modprobe br_netfilter
+  changed_when: false
+
+- name: Persist Kubernetes networking sysctls
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes-cri.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward = 1
+  notify: Reload sysctl settings
+
+- name: Apply host prerequisite handlers before runtime installation
+  ansible.builtin.meta: flush_handlers

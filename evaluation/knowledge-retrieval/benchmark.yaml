@@ -1,0 +1,48 @@
+schema_version: "1.0.0"
+benchmark_id: knowledge-retrieval-pilot-0001
+description: >-
+  Pilot queries over the initial two-document corpus. These cases validate the
+  comparison harness; they are not sufficient for a portfolio accuracy claim.
+context_path: context.json
+requested_at: "2026-08-22T01:00:00Z"
+top_k: 1
+allowed_document_types:
+  - runbook
+  - tool-guide
+cases:
+  - case_id: direct-failed-mount
+    query_terms: [FailedMount, ConfigMap]
+    relevant_reference_ids: [ref-kubernetes-workload-triage-0001]
+  - case_id: direct-oom-killed
+    query_terms: [OOMKilled, memory metric]
+    relevant_reference_ids: [ref-kubernetes-workload-triage-0001]
+  - case_id: direct-image-pull
+    query_terms: [image pull failures]
+    relevant_reference_ids: [ref-kubernetes-workload-triage-0001]
+  - case_id: paraphrase-missing-settings
+    query_terms: [application configuration volume cannot be attached]
+    relevant_reference_ids: [ref-kubernetes-workload-triage-0001]
+  - case_id: paraphrase-memory-termination
+    query_terms: [process was killed after memory use exceeded allocation]
+    relevant_reference_ids: [ref-kubernetes-workload-triage-0001]
+  - case_id: paraphrase-image-download
+    query_terms: [container cannot download its image]
+    relevant_reference_ids: [ref-kubernetes-workload-triage-0001]
+  - case_id: direct-abstain
+    query_terms: [ABSTAIN, budget]
+    relevant_reference_ids: [ref-incident-investigation-boundaries-0001]
+  - case_id: direct-ground-truth
+    query_terms: [Ground Truth, fault injection]
+    relevant_reference_ids: [ref-incident-investigation-boundaries-0001]
+  - case_id: direct-provenance
+    query_terms: [Evidence ID, source provenance]
+    relevant_reference_ids: [ref-incident-investigation-boundaries-0001]
+  - case_id: paraphrase-stop-guessing
+    query_terms: [stop instead of guessing when facts disagree]
+    relevant_reference_ids: [ref-incident-investigation-boundaries-0001]
+  - case_id: paraphrase-hide-benchmark-answer
+    query_terms: [keep benchmark answers hidden from the investigator]
+    relevant_reference_ids: [ref-incident-investigation-boundaries-0001]
+  - case_id: paraphrase-reference-not-proof
+    query_terms: [operational manuals cannot prove the live outage]
+    relevant_reference_ids: [ref-incident-investigation-boundaries-0001]

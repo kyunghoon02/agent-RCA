@@ -1,0 +1,48 @@
+# Managed by Ansible. Chart={{ cilium_chart_ref }} Version={{ cilium_chart_version }}
+kubeProxyReplacement: false
+
+ipam:
+  mode: kubernetes
+
+routingMode: tunnel
+tunnelProtocol: vxlan
+enableIPv4Masquerade: true
+
+ipv6:
+  enabled: false
+
+cni:
+  exclusive: true
+
+operator:
+  replicas: 1
+  prometheus:
+    enabled: true
+
+prometheus:
+  enabled: true
+
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+    replicas: 1
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+    service:
+      type: ClusterIP
+    prometheus:
+      enabled: true
+  ui:
+    enabled: false
+  metrics:
+    enableOpenMetrics: true
+    enabled:
+      - dns:query;ignoreAAAA
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp

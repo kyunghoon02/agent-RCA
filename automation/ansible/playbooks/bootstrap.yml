@@ -1,0 +1,16 @@
+---
+- name: Bootstrap the Agent RCA single-node Kubernetes cluster
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - role: host_prerequisites
+    - role: containerd
+    - role: kubernetes_packages
+    - role: kubeadm_control_plane
+    - role: cilium
+    - role: single_node
+    - role: cluster_verify

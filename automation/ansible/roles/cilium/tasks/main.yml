@@ -1,0 +1,148 @@
+---
+- name: Create the bootstrap download cache
+  ansible.builtin.file:
+    path: /var/cache/agent-rca
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the Helm installation directory
+  ansible.builtin.file:
+    path: "/opt/helm/{{ helm_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the pinned Helm archive
+  ansible.builtin.get_url:
+    url: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    dest: "/var/cache/agent-rca/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ helm_linux_amd64_sha256 }}"
+
+- name: Extract the pinned Helm archive
+  ansible.builtin.unarchive:
+    src: "/var/cache/agent-rca/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    dest: "/opt/helm/{{ helm_version }}"
+    remote_src: true
+    creates: "/opt/helm/{{ helm_version }}/linux-amd64/helm"
+
+- name: Install the pinned Helm binary
+  ansible.builtin.copy:
+    src: "/opt/helm/{{ helm_version }}/linux-amd64/helm"
+    dest: /usr/local/bin/helm
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the Cilium CLI installation directory
+  ansible.builtin.file:
+    path: "/opt/cilium-cli/{{ cilium_cli_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the pinned Cilium CLI archive
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/cilium/cilium-cli/releases/download/{{ cilium_cli_version
+      }}/cilium-linux-amd64.tar.gz
+    dest: "/var/cache/agent-rca/cilium-{{ cilium_cli_version }}-linux-amd64.tar.gz"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ cilium_cli_linux_amd64_sha256 }}"
+
+- name: Extract the pinned Cilium CLI archive
+  ansible.builtin.unarchive:
+    src: "/var/cache/agent-rca/cilium-{{ cilium_cli_version }}-linux-amd64.tar.gz"
+    dest: "/opt/cilium-cli/{{ cilium_cli_version }}"
+    remote_src: true
+    creates: "/opt/cilium-cli/{{ cilium_cli_version }}/cilium"
+
+- name: Install the pinned Cilium CLI binary
+  ansible.builtin.copy:
+    src: "/opt/cilium-cli/{{ cilium_cli_version }}/cilium"
+    dest: /usr/local/bin/cilium
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the Hubble CLI installation directory
+  ansible.builtin.file:
+    path: "/opt/hubble-cli/{{ hubble_cli_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the pinned Hubble CLI archive
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/cilium/hubble/releases/download/{{ hubble_cli_version
+      }}/hubble-linux-amd64.tar.gz
+    dest: "/var/cache/agent-rca/hubble-{{ hubble_cli_version }}-linux-amd64.tar.gz"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ hubble_cli_linux_amd64_sha256 }}"
+
+- name: Extract the pinned Hubble CLI archive
+  ansible.builtin.unarchive:
+    src: "/var/cache/agent-rca/hubble-{{ hubble_cli_version }}-linux-amd64.tar.gz"
+    dest: "/opt/hubble-cli/{{ hubble_cli_version }}"
+    remote_src: true
+    creates: "/opt/hubble-cli/{{ hubble_cli_version }}/hubble"
+
+- name: Install the pinned Hubble CLI binary
+  ansible.builtin.copy:
+    src: "/opt/hubble-cli/{{ hubble_cli_version }}/hubble"
+    dest: /usr/local/bin/hubble
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the Cilium Helm values
+  ansible.builtin.template:
+    src: cilium-values.yaml.j2
+    dest: /etc/kubernetes/cilium-values.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  register: cilium_values
+
+- name: Inspect the current Cilium Helm release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    status cilium --namespace kube-system
+  register: cilium_helm_status
+  changed_when: false
+  failed_when: false
+
+- name: Install or reconcile Cilium and Hubble
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    upgrade --install cilium {{ cilium_chart_ref }}
+    --version {{ cilium_chart_version }}
+    --namespace kube-system
+    --values /etc/kubernetes/cilium-values.yaml
+    --wait
+    --timeout {{ cluster_wait_timeout }}
+  when: cilium_helm_status.rc != 0 or cilium_values.changed
+  changed_when: true
+
+- name: Wait for Cilium readiness
+  ansible.builtin.command: >-
+    cilium status
+    --kubeconfig /etc/kubernetes/admin.conf
+    --wait
+    --wait-duration {{ cluster_wait_timeout }}
+  changed_when: false

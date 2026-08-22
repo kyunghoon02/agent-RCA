@@ -102,6 +102,14 @@ from .krca import (
 )
 from .projectors import KubernetesEvidenceProjector
 from .viewer import IncidentViewerQueryService, ViewerQueryPolicy, ViewerRepository
+from .vector_knowledge import (
+    KnowledgeVectorPolicy,
+    KnowledgeVectorSyncResult,
+    OpenAIEmbeddingProvider,
+    PostgreSQLVectorKnowledgeIndex,
+    apply_vector_migrations,
+    chunk_markdown,
+)
 
 __all__ = [
     "AgentInvocation",
@@ -162,6 +170,8 @@ __all__ = [
     "KubernetesEvidenceProjector",
     "KubernetesResourceSpec",
     "KubernetesStateProvider",
+    "KnowledgeVectorPolicy",
+    "KnowledgeVectorSyncResult",
     "KRCACandidate",
     "KRCADrilldownLocalizer",
     "KRCADrilldownPolicy",
@@ -177,7 +187,9 @@ __all__ = [
     "LocalizationAssessor",
     "ProviderBatch",
     "PostgreSQLIncidentRepository",
+    "PostgreSQLVectorKnowledgeIndex",
     "OpenAIAgentsSDKRunner",
+    "OpenAIEmbeddingProvider",
     "PrometheusHTTPAPI",
     "PrometheusAPIFeatureProvider",
     "PrometheusAPIFeatureQuerySpec",
@@ -190,6 +202,8 @@ __all__ = [
     "StateGraphRepository",
     "ServiceToEntityResolver",
     "apply_migrations",
+    "apply_vector_migrations",
+    "chunk_markdown",
     "render_markdown",
     "stable_graph_id",
     "state_content_hash",

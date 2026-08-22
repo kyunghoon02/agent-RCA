@@ -94,15 +94,17 @@ seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Fro
 - dataplane and network evidence: Cilium CNI와 Hubble
 - observability: Prometheus, Alertmanager, Loki와 Kubernetes API/Event
 - graph: Neo4j Community 기반 temporal StateGraph
+- operational knowledge index: Git source + PostgreSQL/pgvector derived index
 - reference workload: Google Online Boutique `v0.10.6`
 - state: versioning을 활성화한 사전 생성 GCS Terraform backend
 - identity: 전용 최소 권한 VM service account
 - RCA permission: Kubernetes와 observability source에 대한 bounded read-only access
 
 Terraform은 VPC, subnet, firewall, IAM과 Compute Engine lifecycle까지만 소유한다.
-containerd, kubeadm, Cilium/Hubble과 workload 배포는 별도 bootstrap/deployment 계층이
-담당한다. Reference runtime은 교체할 수 있으며 RCA core와 Evidence contract는 GCP나
-특정 workload ontology에 종속되지 않는다.
+Ansible은 containerd와 kubeadm host/cluster bootstrap을 소유하고, Ansible이 실행하는
+고정 Helm release가 Cilium/Hubble을 설치한다. workload 배포는 그 다음 Kubernetes
+deployment 계층이 담당한다. Reference runtime은 교체할 수 있으며 RCA core와
+Evidence contract는 GCP나 특정 workload ontology에 종속되지 않는다.
 
 ## Evaluation Strategy
 
@@ -130,6 +132,24 @@ Evidence는 A/B/C/D variant에 재사용하며 root-cause accuracy, Evidence pre
 `ABSTAIN` correctness, latency, tool/LLM cost와 반복 재현성을 비교한다. Fault manifest와
 Ground Truth는 Agent runtime에서 계속 격리한다.
 
+### Knowledge Retrieval Ablation
+
+Operational Knowledge 검색은 기존 `entity-key+lexical`을 baseline으로 유지하고 동일한
+Frozen Context/query/corpus에서 `entity-key+vector`와
+`entity-key+lexical+vector-rrf`를 비교한다. 승인 상태, 유효 기간, Entity 범위와 content
+hash는 세 variant에서 동일한 hard filter로 고정하며 Vector 검색은 eligible 문서의
+순위만 바꾼다.
+
+| Variant | 목적 | 측정값 |
+|---|---|---|
+| Lexical | 기존 deterministic baseline | Hit@K, Recall@K, MRR@K, nDCG@K, p95 latency |
+| Vector | semantic retrieval ablation | 동일 |
+| Hybrid RRF | exact term과 semantic paraphrase 결합 | 동일 + lexical 대비 absolute delta |
+
+현재 포함된 2개 문서/12개 query benchmark는 평가 pipeline pilot이며 정확도 개선
+성과값이 아니다. 승인 문서 20개와 frozen query 30개 이상으로 확장한 뒤 생성되는
+corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수치로 승격한다.
+
 ## 현재 구현 상태
 
 > 기준일: 2026-08-22. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
@@ -140,11 +160,11 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
 | KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | live PromQL/dependency config, continuous projection과 cluster Graph 미연결 |
-| Operational Knowledge와 Retriever | hash-pinned Git index, localized Entity+lexical bounded retrieval, audit와 Agent reference tool 연결 | live corpus/runtime 미배포 |
+| Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
-| GCP, Terraform, kubeadm, Cilium/Hubble | versioned GCS backend, VPC/subnet, 제한 firewall, 전용 VM identity, static IPv4와 Compute Engine dev root 구현 | Terraform apply/VM SSH/no-change plan 검증; kubeadm, Cilium/Hubble과 fault runtime 미구현 |
+| GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Kubernetes v1.36.4 single-node가 Ready이며 Cilium/Hubble과 read-only flow 조회 검증; reboot/destroy와 fault runtime 미검증 |
 
 Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
 production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed
@@ -211,10 +231,12 @@ node와 temporal relationship로 저장한다. exact lookup과 bounded BFS는
 
 Operational Knowledge도 StateGraph 내부에 저장하지 않는다. Retriever는 Frozen Context의
 Graph Entity에서 `domain`, `entity-type`, `name`, scope와 entity ID key를 파생하고,
-Git index의 approved/version/time/hash metadata와 lexical term을 함께 대조한다. 최대 5개,
-12,000자, query term 16개, 5초, index 500개 상한을 넘을 수 없으며 no match, stale only,
-timeout과 repository failure를 서로 다른 audit 상태로 남긴다. 반환값은
-`RetrievedReference`라서 `evidence_id`가 없고 그 자체로 원인을 증명할 수 없다.
+Git index의 approved/version/time/hash metadata를 hard filter로 적용한다. 기존 lexical
+baseline과 pgvector semantic rank를 각각 보존하고 Hybrid에서는 raw score를 더하지 않고
+RRF로 결합한다. 최대 5개, 12,000자, query term 16개, 5초, index 500개 상한을 넘을 수
+없으며 no match, stale only, timeout과 repository failure를 서로 다른 audit 상태로 남긴다.
+반환값은 `RetrievedReference`라서 `evidence_id`가 없고 검색 방식과 무관하게 그 자체로
+원인을 증명할 수 없다.
 
 Agent runtime은 Graph-localized Context와 Evidence/Reference ID catalog만 LLM에 전달한다.
 LLM은 `inspect_evidence(evidence_id)`와
@@ -237,6 +259,8 @@ localization 결정은 [ADR-0005](docs/adr/0005-domain-neutral-stategraph-core.m
 make bootstrap-dev
 make validate-core
 make smoke-agent-rca
+make sync-knowledge-vectors
+make evaluate-knowledge-retrieval
 make gcp-readiness
 kubectl kustomize platform/online-boutique
 ```
@@ -250,6 +274,12 @@ deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval 
 fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
 `credit_balance_exhausted` 429를 반환해 live 성공은 증명하지 못했다. 키 값과 model
 input은 출력하지 않으며, 사용 가능한 API credit가 준비되면 같은 명령으로 재검증한다.
+
+`make sync-knowledge-vectors`는 승인된 Git corpus를 bounded chunk로 나누고 opt-in
+pgvector migration/index에 hash와 embedding model을 함께 저장한다. 이어서
+`make evaluate-knowledge-retrieval`이 lexical/vector/Hybrid를 같은 frozen benchmark로
+비교한다. 두 명령은 `POSTGRES_DSN`과 embedding API가 필요하며 현재 저장소에서는 live
+성공 또는 정확도 향상 수치를 아직 주장하지 않는다.
 
 `POSTGRES_TEST_DSN`이 없으면 live PostgreSQL contract test 한 건을 건너뛴다. 승인된
 테스트 DSN을 제공하면 random schema만 생성·검증·제거하며 공유 DB를 truncate하지
@@ -265,7 +295,8 @@ backend runtime evidence를 검사한다. Online Boutique remote base render에�
 ```text
 config/              프로젝트 범위, GCP/cluster readiness, RCA routing 정책
 contracts/           Incident, Evidence, Graph, RCA 및 provider 계약
-db/migrations/       PostgreSQL schema migration
+db/migrations/       core PostgreSQL schema migration
+db/vector_migrations/ opt-in pgvector Knowledge schema
 docs/                아키텍처, ADR, runbook, 진행 기록
 evaluation/          평가 사전등록과 Ground Truth 격리 정책
 infra/terraform/     GCP VPC, IAM과 Compute Engine provisioning 경계
@@ -282,11 +313,16 @@ tools/               정적 검증 도구
 - [Implemented Core Flow](docs/architecture/implemented-core-flow.md)
 - [Provider Contract](contracts/providers.md)
 - [Knowledge Retrieval Contract](contracts/knowledge-retrieval.md)
+- [Knowledge Retrieval Evaluation](evaluation/knowledge-retrieval/README.md)
 - [Read-only Viewer Query Contract](contracts/viewer.md)
 - [GCP self-managed Kubernetes ADR](docs/adr/0008-gcp-kubeadm-runtime-boundary.md)
 - [Knowledge와 Incident Memory ADR](docs/adr/0009-knowledge-and-memory-boundary.md)
 - [Neo4j StateGraph Persistence ADR](docs/adr/0010-neo4j-stategraph-persistence.md)
 - [Bounded OpenAI Agent Runtime ADR](docs/adr/0011-bounded-openai-agent-runtime.md)
 - [Deferred Go Provider Gateway ADR](docs/adr/0012-defer-go-provider-gateway.md)
+- [pgvector Hybrid Knowledge Retrieval ADR](docs/adr/0013-pgvector-hybrid-knowledge-retrieval.md)
 - [GCP/Cluster Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
 - [GCP/kubeadm Implementation Plan](docs/roadmap/gcp-plan.md)
+- [Ansible kubeadm bootstrap](automation/ansible/README.md)
+- [Ansible kubeadm bootstrap ADR](docs/adr/0014-ansible-kubeadm-bootstrap.md)
+- [GCP kubeadm/Cilium runtime record](docs/runtime/gcp-kubeadm-cilium-2026-08-22.md)
