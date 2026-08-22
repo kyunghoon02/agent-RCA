@@ -40,7 +40,8 @@ not reset or reinitialize the cluster. Cilium reconciliation runs only when its
 Helm release is absent or the managed values file changes. The verification
 playbook performs read-only Kubernetes, Cilium and Hubble checks; its local
 Hubble CLI creates and cleans up a per-query port-forward that is never exposed
-publicly.
+publicly. Verification also rejects a degraded systemd state, a missing kubeadm
+certificate, or a certificate with less than 30 days remaining.
 
 Ansible package tasks wait for the apt/dpkg lock. Never delete dpkg lock files;
 if unattended upgrades are active, let them finish and rerun the playbook.

@@ -1,4 +1,29 @@
 ---
+- name: Verify the host reached the running systemd state
+  ansible.builtin.command: systemctl is-system-running
+  changed_when: false
+
+- name: Read kubeadm certificate expiration state
+  ansible.builtin.command: kubeadm certs check-expiration -o json
+  register: kubeadm_certificate_expiration
+  changed_when: false
+
+- name: Require present Kubernetes certificates with minimum residual lifetime
+  ansible.builtin.assert:
+    that:
+      - not (item.missing | bool)
+      - (item.residualTime | int) >= kubernetes_certificate_minimum_residual_seconds
+    fail_msg: >-
+      Kubernetes certificate {{ item.name }} is missing or has less than
+      {{ kubernetes_certificate_minimum_residual_seconds }} seconds remaining.
+  loop: >-
+    {{
+      (kubeadm_certificate_expiration.stdout | from_json).certificates
+      + (kubeadm_certificate_expiration.stdout | from_json).certificateAuthorities
+    }}
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: Verify the Kubernetes API readiness endpoint
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz

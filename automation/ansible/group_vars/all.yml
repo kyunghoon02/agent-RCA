@@ -35,3 +35,4 @@ hubble_cli_linux_amd64_sha256: >-
   e0e555001a46921ff2501ddc874ed1f4c68ba20cdb00cf4ea8263be4395eb008
 
 cluster_wait_timeout: 10m
+kubernetes_certificate_minimum_residual_seconds: 2592000
