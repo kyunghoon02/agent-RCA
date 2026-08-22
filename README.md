@@ -142,6 +142,7 @@ Ground Truth는 Agent runtime에서 계속 격리한다.
 | KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | live PromQL/dependency config, continuous projection과 cluster Graph 미연결 |
 | Operational Knowledge와 Retriever | hash-pinned Git index, localized Entity+lexical bounded retrieval, audit와 Agent reference tool 연결 | live corpus/runtime 미배포 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
+| Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | target boundary와 readiness gate 정의 | `plan/apply`, bootstrap과 fault runtime 미검증 |
 
@@ -243,7 +244,7 @@ kubectl kustomize platform/online-boutique
 `make validate-core`는 schema contract, Alertmanager HTTP 경계, Incident lifecycle,
 Collector concurrency·timeout·retry·partial failure, Evidence redaction/hash,
 deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval fixture를
-확인한다.
+비롯해 Agent Evidence Gate와 read-only Viewer query fixture를 확인한다.
 
 `make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
 fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
@@ -281,9 +282,11 @@ tools/               정적 검증 도구
 - [Implemented Core Flow](docs/architecture/implemented-core-flow.md)
 - [Provider Contract](contracts/providers.md)
 - [Knowledge Retrieval Contract](contracts/knowledge-retrieval.md)
+- [Read-only Viewer Query Contract](contracts/viewer.md)
 - [GCP self-managed Kubernetes ADR](docs/adr/0008-gcp-kubeadm-runtime-boundary.md)
 - [Knowledge와 Incident Memory ADR](docs/adr/0009-knowledge-and-memory-boundary.md)
 - [Neo4j StateGraph Persistence ADR](docs/adr/0010-neo4j-stategraph-persistence.md)
 - [Bounded OpenAI Agent Runtime ADR](docs/adr/0011-bounded-openai-agent-runtime.md)
+- [Deferred Go Provider Gateway ADR](docs/adr/0012-defer-go-provider-gateway.md)
 - [GCP/Cluster Readiness Matrix](docs/provider/gcp-readiness-matrix.md)
 - [GCP/kubeadm Implementation Plan](docs/roadmap/gcp-plan.md)

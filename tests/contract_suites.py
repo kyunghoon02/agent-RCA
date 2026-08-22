@@ -134,6 +134,32 @@ class IncidentRepositoryContract:
         test_case.assertEqual(
             repository.get_agent_run(agent_audit["agent_run_id"]), agent_audit
         )
+        viewer_rows = repository.query_incidents(
+            statuses=("COLLECTING",),
+            severities=(incident["severity"],),
+            namespace=incident["source_entity"]["namespace"],
+            search=incident["source_entity"]["name"],
+            before_updated_at=None,
+            before_incident_id=None,
+            limit=2,
+        )
+        test_case.assertEqual(
+            [item["incident_id"] for item in viewer_rows], [incident_id]
+        )
+        test_case.assertEqual(
+            repository.query_evidence(incident_id, limit=2), [evidence]
+        )
+        test_case.assertEqual(
+            repository.query_contexts(incident_id, limit=2), [artifacts.context]
+        )
+        test_case.assertEqual(
+            repository.query_reports(incident_id, limit=2),
+            [(artifacts.report, artifacts.markdown)],
+        )
+        test_case.assertEqual(
+            repository.query_agent_runs(incident_id, limit=2), [agent_audit]
+        )
+        test_case.assertTrue(repository.query_audit_events(incident_id, limit=20))
 
         resolved = repository.record_alert_resolution(
             incident_id,

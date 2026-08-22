@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:viewer-incident-detail",
+  "title": "Read-only Viewer Incident Detail",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "incident", "evidence", "contexts", "reports",
+    "agent_runs", "timeline", "truncated"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "incident": {"$ref": "urn:agent-rca:schema:incident"},
+    "evidence": {
+      "type": "array", "maxItems": 500,
+      "items": {"$ref": "urn:agent-rca:schema:evidence-item"}
+    },
+    "contexts": {
+      "type": "array", "maxItems": 50,
+      "items": {"$ref": "urn:agent-rca:schema:context-package"}
+    },
+    "reports": {
+      "type": "array", "maxItems": 50,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["report", "markdown"],
+        "properties": {
+          "report": {"$ref": "urn:agent-rca:schema:rca-report"},
+          "markdown": {"type": "string", "minLength": 1, "maxLength": 200000}
+        }
+      }
+    },
+    "agent_runs": {
+      "type": "array", "maxItems": 50,
+      "items": {"$ref": "urn:agent-rca:schema:agent-run-audit"}
+    },
+    "timeline": {
+      "type": "array", "maxItems": 2000,
+      "items": {"$ref": "#/$defs/timelineEvent"}
+    },
+    "truncated": {
+      "type": "object", "additionalProperties": false,
+      "required": ["evidence", "contexts", "reports", "agent_runs", "audit_events", "timeline"],
+      "properties": {
+        "evidence": {"type": "boolean"},
+        "contexts": {"type": "boolean"},
+        "reports": {"type": "boolean"},
+        "agent_runs": {"type": "boolean"},
+        "audit_events": {"type": "boolean"},
+        "timeline": {"type": "boolean"}
+      }
+    }
+  },
+  "$defs": {
+    "timelineEvent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["occurred_at", "stage", "event_type", "evidence_ids", "details"],
+      "properties": {
+        "occurred_at": {"type": "string", "format": "date-time"},
+        "stage": {"enum": ["DETECTION", "COLLECTION", "LOCALIZATION", "ANALYSIS", "REPORT"]},
+        "event_type": {"type": "string", "minLength": 1, "maxLength": 100},
+        "evidence_ids": {
+          "type": "array", "uniqueItems": true, "maxItems": 100,
+          "items": {"type": "string", "pattern": "^ev-[a-z0-9][a-z0-9-]{7,63}$"}
+        },
+        "details": {"type": "object"}
+      }
+    }
+  }
+}

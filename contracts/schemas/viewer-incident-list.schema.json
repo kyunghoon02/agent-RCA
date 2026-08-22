@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:viewer-incident-list",
+  "title": "Read-only Viewer Incident List",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "items", "next_cursor"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "items": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {"$ref": "#/$defs/summary"}
+    },
+    "next_cursor": {
+      "type": ["string", "null"],
+      "maxLength": 512
+    }
+  },
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id", "status", "severity", "source", "triggered_at",
+        "updated_at", "alert_name", "source_entity", "collector_problem_count"
+      ],
+      "properties": {
+        "incident_id": {"type": "string", "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"},
+        "status": {"enum": ["RECEIVED", "COLLECTING", "LOCALIZING", "ANALYZING", "REPORTED", "PARTIAL", "FAILED"]},
+        "severity": {"enum": ["info", "warning", "critical"]},
+        "source": {"enum": ["alertmanager", "cloud-monitoring"]},
+        "triggered_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "alert_name": {"type": "string", "minLength": 1, "maxLength": 512},
+        "source_entity": {"$ref": "urn:agent-rca:schema:entity-ref"},
+        "collector_problem_count": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

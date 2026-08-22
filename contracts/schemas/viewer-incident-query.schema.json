@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:viewer-incident-query",
+  "title": "Read-only Viewer Incident Query",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "statuses", "severities", "namespace", "search", "limit", "cursor"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "statuses": {
+      "type": "array", "uniqueItems": true, "maxItems": 7,
+      "items": {"enum": ["RECEIVED", "COLLECTING", "LOCALIZING", "ANALYZING", "REPORTED", "PARTIAL", "FAILED"]}
+    },
+    "severities": {
+      "type": "array", "uniqueItems": true, "maxItems": 3,
+      "items": {"enum": ["info", "warning", "critical"]}
+    },
+    "namespace": {"type": ["string", "null"], "minLength": 1, "maxLength": 253},
+    "search": {"type": ["string", "null"], "minLength": 1, "maxLength": 100},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+    "cursor": {"type": ["string", "null"], "maxLength": 512}
+  }
+}

@@ -548,6 +548,158 @@ class PostgreSQLIncidentRepository:
                     raise KeyError(f"unknown Agent Run: {agent_run_id}")
                 return _decode_document(row[0])
 
+    def query_incidents(
+        self,
+        *,
+        statuses: Sequence[str],
+        severities: Sequence[str],
+        namespace: Optional[str],
+        search: Optional[str],
+        before_updated_at: Optional[str],
+        before_incident_id: Optional[str],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        self._validate_viewer_limit(limit, 101)
+        if (before_updated_at is None) != (before_incident_id is None):
+            raise ValueError("Viewer cursor fields must be provided together")
+        clauses = []
+        parameters: List[Any] = []
+        if statuses:
+            clauses.append("status = ANY(%s)")
+            parameters.append(list(statuses))
+        if severities:
+            clauses.append("document->>'severity' = ANY(%s)")
+            parameters.append(list(severities))
+        if namespace is not None:
+            clauses.append(
+                "COALESCE(document->'source_entity'->>'namespace', "
+                "document->'source_entity'->'scope'->>'namespace') = %s"
+            )
+            parameters.append(namespace)
+        if search is not None:
+            clauses.append(
+                "POSITION(lower(%s) IN lower("
+                "incident_id || ' ' || document->'alert'->>'name' || ' ' || "
+                "document->'source_entity'->>'name' || ' ' || "
+                "(document->'alert'->'labels')::text)) > 0"
+            )
+            parameters.append(search)
+        if before_updated_at is not None:
+            clauses.append("(updated_at, incident_id) < (%s, %s)")
+            parameters.extend((before_updated_at, before_incident_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        parameters.append(limit)
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT document FROM incidents"
+                    + where
+                    + " ORDER BY updated_at DESC, incident_id DESC LIMIT %s",
+                    tuple(parameters),
+                )
+                return [_decode_document(row[0]) for row in cursor.fetchall()]
+
+    def query_evidence(
+        self, incident_id: str, *, limit: int
+    ) -> List[Dict[str, Any]]:
+        self._validate_viewer_limit(limit, 501)
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._require_incident(cursor, incident_id)
+                cursor.execute(
+                    """
+                    SELECT document FROM evidence_items
+                    WHERE incident_id = %s
+                    ORDER BY observed_at, evidence_id
+                    LIMIT %s
+                    """,
+                    (incident_id, limit),
+                )
+                return [_decode_document(row[0]) for row in cursor.fetchall()]
+
+    def query_contexts(
+        self, incident_id: str, *, limit: int
+    ) -> List[Dict[str, Any]]:
+        self._validate_viewer_limit(limit, 51)
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._require_incident(cursor, incident_id)
+                cursor.execute(
+                    """
+                    SELECT document FROM context_packages
+                    WHERE incident_id = %s
+                    ORDER BY frozen_at DESC, context_id DESC
+                    LIMIT %s
+                    """,
+                    (incident_id, limit),
+                )
+                return [_decode_document(row[0]) for row in cursor.fetchall()]
+
+    def query_reports(
+        self, incident_id: str, *, limit: int
+    ) -> List[tuple[Dict[str, Any], str]]:
+        self._validate_viewer_limit(limit, 51)
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._require_incident(cursor, incident_id)
+                cursor.execute(
+                    """
+                    SELECT document, markdown FROM rca_reports
+                    WHERE incident_id = %s
+                    ORDER BY generated_at DESC, report_id DESC
+                    LIMIT %s
+                    """,
+                    (incident_id, limit),
+                )
+                return [
+                    (_decode_document(row[0]), row[1]) for row in cursor.fetchall()
+                ]
+
+    def query_agent_runs(
+        self, incident_id: str, *, limit: int
+    ) -> List[Dict[str, Any]]:
+        self._validate_viewer_limit(limit, 51)
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._require_incident(cursor, incident_id)
+                cursor.execute(
+                    """
+                    SELECT document FROM agent_runs
+                    WHERE incident_id = %s
+                    ORDER BY started_at DESC, agent_run_id DESC
+                    LIMIT %s
+                    """,
+                    (incident_id, limit),
+                )
+                return [_decode_document(row[0]) for row in cursor.fetchall()]
+
+    def query_audit_events(
+        self, incident_id: str, *, limit: int
+    ) -> List[AuditEvent]:
+        self._validate_viewer_limit(limit, 1001)
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._require_incident(cursor, incident_id)
+                cursor.execute(
+                    """
+                    SELECT event_type, occurred_at, details
+                    FROM incident_audit_events
+                    WHERE incident_id = %s
+                    ORDER BY occurred_at, event_id
+                    LIMIT %s
+                    """,
+                    (incident_id, limit),
+                )
+                return [
+                    AuditEvent(
+                        incident_id=incident_id,
+                        event_type=row[0],
+                        occurred_at=_format_time(row[1]),
+                        details=_decode_document(row[2]),
+                    )
+                    for row in cursor.fetchall()
+                ]
+
     def list_audit_events(self, incident_id: str) -> List[AuditEvent]:
         with _connection(self._connection_factory) as connection:
             with connection.cursor() as cursor:
@@ -633,3 +785,8 @@ class PostgreSQLIncidentRepository:
             (incident_id,),
         )
         return {row[0] for row in cursor.fetchall()}
+
+    @staticmethod
+    def _validate_viewer_limit(limit: int, maximum: int) -> None:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= maximum:
+            raise ValueError(f"Viewer repository limit must be between 1 and {maximum}")

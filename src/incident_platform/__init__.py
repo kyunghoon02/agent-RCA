@@ -101,6 +101,7 @@ from .krca import (
     KRCAScoredEdge,
 )
 from .projectors import KubernetesEvidenceProjector
+from .viewer import IncidentViewerQueryService, ViewerQueryPolicy, ViewerRepository
 
 __all__ = [
     "AgentInvocation",
@@ -150,6 +151,7 @@ __all__ = [
     "IncidentFastPathService",
     "IncidentLocalizationRun",
     "IncidentLocalizationService",
+    "IncidentViewerQueryService",
     "IngestionResult",
     "HTTPResponse",
     "InvalidAlert",
@@ -193,4 +195,6 @@ __all__ = [
     "state_content_hash",
     "validate_graph_record",
     "verify_evidence_content_hash",
+    "ViewerQueryPolicy",
+    "ViewerRepository",
 ]

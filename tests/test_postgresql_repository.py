@@ -101,6 +101,65 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertIn("context_id TEXT NOT NULL REFERENCES context_packages", sql)
         self.assertIn("document JSONB NOT NULL", sql)
 
+    def test_viewer_list_query_keeps_search_text_in_sql_parameters(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, statement, parameters=()):
+                self.calls.append((statement, parameters))
+
+            def fetchall(self):
+                return []
+
+        class RecordingConnection:
+            closed = False
+
+            def __init__(self, cursor) -> None:
+                self._cursor = cursor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        cursor = RecordingCursor()
+        repository = PostgreSQLIncidentRepository(
+            lambda: RecordingConnection(cursor)
+        )
+        search = "%' OR true --"
+
+        self.assertEqual(
+            repository.query_incidents(
+                statuses=("FAILED",),
+                severities=("critical",),
+                namespace="online-boutique",
+                search=search,
+                before_updated_at=None,
+                before_incident_id=None,
+                limit=10,
+            ),
+            [],
+        )
+
+        statement, parameters = cursor.calls[0]
+        self.assertNotIn(search, statement)
+        self.assertIn(search, parameters)
+        self.assertIn("LIMIT %s", statement)
+
 
 @unittest.skipUnless(
     os.environ.get("POSTGRES_TEST_DSN"),

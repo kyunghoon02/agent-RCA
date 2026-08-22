@@ -449,6 +449,140 @@ class InMemoryIncidentRepository:
         with self._lock:
             return len(self._incidents)
 
+    def query_incidents(
+        self,
+        *,
+        statuses: Sequence[str],
+        severities: Sequence[str],
+        namespace: Optional[str],
+        search: Optional[str],
+        before_updated_at: Optional[str],
+        before_incident_id: Optional[str],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        self._validate_query_limit(limit, 101)
+        if (before_updated_at is None) != (before_incident_id is None):
+            raise ValueError("Viewer cursor fields must be provided together")
+        status_filter = set(statuses)
+        severity_filter = set(severities)
+        search_term = search.casefold() if search is not None else None
+        with self._lock:
+            rows = []
+            for incident in self._incidents.values():
+                if status_filter and incident["status"] not in status_filter:
+                    continue
+                if severity_filter and incident["severity"] not in severity_filter:
+                    continue
+                if namespace is not None and self._incident_namespace(incident) != namespace:
+                    continue
+                if search_term is not None:
+                    searchable = (
+                        incident["incident_id"],
+                        incident["alert"]["name"],
+                        incident["source_entity"]["name"],
+                        *incident["alert"]["labels"].values(),
+                    )
+                    if not any(search_term in value.casefold() for value in searchable):
+                        continue
+                if before_updated_at is not None and (
+                    incident["updated_at"], incident["incident_id"]
+                ) >= (before_updated_at, before_incident_id):
+                    continue
+                rows.append(incident)
+            rows.sort(
+                key=lambda item: (item["updated_at"], item["incident_id"]),
+                reverse=True,
+            )
+            return copy.deepcopy(rows[:limit])
+
+    def query_evidence(
+        self, incident_id: str, *, limit: int
+    ) -> List[Dict[str, Any]]:
+        self._validate_query_limit(limit, 501)
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            rows = sorted(
+                self._evidence_by_incident[incident_id].values(),
+                key=lambda item: (item["observed_at"], item["evidence_id"]),
+            )
+            return copy.deepcopy(rows[:limit])
+
+    def query_contexts(
+        self, incident_id: str, *, limit: int
+    ) -> List[Dict[str, Any]]:
+        self._validate_query_limit(limit, 51)
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            rows = sorted(
+                (
+                    item
+                    for item in self._contexts.values()
+                    if item["incident_id"] == incident_id
+                ),
+                key=lambda item: (item["frozen_at"], item["context_id"]),
+                reverse=True,
+            )
+            return copy.deepcopy(rows[:limit])
+
+    def query_reports(
+        self, incident_id: str, *, limit: int
+    ) -> List[tuple[Dict[str, Any], str]]:
+        self._validate_query_limit(limit, 51)
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            rows = sorted(
+                (
+                    item
+                    for item in self._reports.values()
+                    if item["incident_id"] == incident_id
+                ),
+                key=lambda item: (item["generated_at"], item["report_id"]),
+                reverse=True,
+            )[:limit]
+            return [
+                (copy.deepcopy(item), self._report_markdown[item["report_id"]])
+                for item in rows
+            ]
+
+    def query_agent_runs(
+        self, incident_id: str, *, limit: int
+    ) -> List[Dict[str, Any]]:
+        self._validate_query_limit(limit, 51)
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            rows = sorted(
+                (
+                    item
+                    for item in self._agent_runs.values()
+                    if item["incident_id"] == incident_id
+                ),
+                key=lambda item: (item["started_at"], item["agent_run_id"]),
+                reverse=True,
+            )
+            return copy.deepcopy(rows[:limit])
+
+    def query_audit_events(
+        self, incident_id: str, *, limit: int
+    ) -> List[AuditEvent]:
+        self._validate_query_limit(limit, 1001)
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            return copy.deepcopy(self._audit_events[incident_id][:limit])
+
+    @staticmethod
+    def _incident_namespace(incident: Mapping[str, Any]) -> Optional[str]:
+        entity = incident["source_entity"]
+        if "namespace" in entity:
+            return entity["namespace"]
+        scope = entity.get("scope", {})
+        value = scope.get("namespace") if isinstance(scope, Mapping) else None
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _validate_query_limit(limit: int, maximum: int) -> None:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= maximum:
+            raise ValueError(f"Viewer repository limit must be between 1 and {maximum}")
+
     def _require_incident_locked(self, incident_id: str) -> Dict[str, Any]:
         try:
             return self._incidents[incident_id]
