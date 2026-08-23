@@ -385,6 +385,14 @@ def validate_versions_and_manifests() -> None:
             "deployment_mode": "Monolithic",
             "retention": "72h",
         },
+        "tempo": {
+            "manifest": "platform/observability/tempo",
+            "app_version": "2.9.0",
+            "image_digest": "sha256:65a5789759435f1ef696f1953258b9bbdb18eb571d5ce711ff812d2e128288a4",
+            "deployment_mode": "monolithic",
+            "retention": "72h",
+            "storage": "5Gi",
+        },
         "alloy": {
             "chart_ref": "grafana/alloy",
             "chart_repository": "https://grafana.github.io/helm-charts",
@@ -533,7 +541,7 @@ def validate_versions_and_manifests() -> None:
         ROOT / "platform" / "online-boutique" / "kustomization.yaml"
     )[0]
     expected_remote = versions["online_boutique"]["remote_kustomize_base"]
-    if boutique.get("resources") != [expected_remote]:
+    if boutique.get("resources") != [expected_remote, "otel-collector.yaml"]:
         raise ValidationFailure("Online Boutique remote base is not pinned to the recorded SHA")
     if boutique.get("namespace") != "online-boutique":
         raise ValidationFailure("Online Boutique namespace is not fixed")
@@ -551,7 +559,7 @@ def validate_versions_and_manifests() -> None:
     deleted_targets = {
         (patch["target"]["kind"], patch["target"]["name"])
         for patch in boutique.get("patches", [])
-        if "$patch: delete" in patch.get("patch", "")
+        if "target" in patch and "$patch: delete" in patch.get("patch", "")
     }
     expected_deletions = {
         ("Service", "frontend-external"),
@@ -562,6 +570,85 @@ def validate_versions_and_manifests() -> None:
         raise ValidationFailure(
             f"Online Boutique deletion patches mismatch: {sorted(deleted_targets)}"
         )
+
+    expected_instrumented_services = set(
+        versions["online_boutique"]["directly_instrumented_services"]
+    )
+    instrumentation_paths = {
+        patch["path"]
+        for patch in boutique.get("patches", [])
+        if "path" in patch
+    }
+    expected_instrumentation_paths = {
+        f"patches/{service}-otel.yaml"
+        for service in expected_instrumented_services
+    }
+    if instrumentation_paths != expected_instrumentation_paths:
+        raise ValidationFailure("Online Boutique direct instrumentation patches drifted")
+    for service in expected_instrumented_services:
+        patch = load_yaml_documents(
+            ROOT / "platform" / "online-boutique" / "patches" / f"{service}-otel.yaml"
+        )[0]
+        env = {
+            item["name"]: item.get("value")
+            for item in patch["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        if env != {
+            "COLLECTOR_SERVICE_ADDR": "opentelemetrycollector:4317",
+            "OTEL_SERVICE_NAME": service,
+            "ENABLE_TRACING": "1",
+        }:
+            raise ValidationFailure(
+                f"Online Boutique OTel environment drifted for {service}"
+            )
+
+    collector_docs = load_yaml_documents(
+        ROOT / "platform" / "online-boutique" / "otel-collector.yaml"
+    )
+    collector_by_kind = {document["kind"]: document for document in collector_docs}
+    collector_container = collector_by_kind["Deployment"]["spec"]["template"]["spec"][
+        "containers"
+    ][0]
+    expected_collector_image = (
+        "otel/opentelemetry-collector-contrib:"
+        f"{versions['online_boutique']['otel_collector_version']}@"
+        f"{versions['online_boutique']['otel_collector_digest']}"
+    )
+    if collector_container.get("image") != expected_collector_image:
+        raise ValidationFailure("Online Boutique OTel Collector image is not pinned")
+    if collector_by_kind["Service"].get("spec", {}).get("type") != "ClusterIP":
+        raise ValidationFailure("Online Boutique OTel Collector must remain internal")
+    if (
+        collector_by_kind["ServiceMonitor"].get("metadata", {}).get("labels", {}).get(
+            "release"
+        )
+        != "monitoring"
+    ):
+        raise ValidationFailure("Online Boutique OTel ServiceMonitor is not selected")
+
+    collector_config = load_yaml_documents(
+        ROOT / "platform" / "online-boutique" / "otel-collector-config.yaml"
+    )[0]
+    connectors = collector_config.get("connectors", {})
+    if (
+        connectors.get("span_metrics", {}).get("aggregation_cardinality_limit")
+        != 5000
+        or connectors.get("span_metrics", {}).get("metrics_expiration") != "5m"
+        or "service_graph" not in connectors
+    ):
+        raise ValidationFailure("Online Boutique span-derived metric boundary drifted")
+    pipelines = collector_config.get("service", {}).get("pipelines", {})
+    if set(pipelines.get("traces", {}).get("exporters", [])) != {
+        "otlp/tempo",
+        "span_metrics",
+        "service_graph",
+    }:
+        raise ValidationFailure("Online Boutique trace pipeline is incomplete")
+    if set(pipelines.get("metrics/derived", {}).get("receivers", [])) != {
+        "span_metrics",
+        "service_graph",
+    }:
+        raise ValidationFailure("Online Boutique derived metric pipeline is incomplete")
 
     if scope["target"]["release_tag"] != versions["online_boutique"]["release_tag"]:
         raise ValidationFailure("project scope and version pin disagree on release tag")
@@ -578,6 +665,9 @@ def validate_observability_values() -> None:
         directory / "kube-prometheus-stack-values.yaml"
     )[0]
     loki = load_yaml_documents(directory / "loki-values.yaml")[0]
+    tempo_directory = directory / "tempo"
+    tempo_config = load_yaml_documents(tempo_directory / "tempo-config.yaml")[0]
+    tempo_documents = load_yaml_documents(tempo_directory / "tempo.yaml")
     alloy = load_yaml_documents(directory / "alloy-values.yaml")[0]
 
     storage_class = local_path.get("storageClass", {})
@@ -609,6 +699,17 @@ def validate_observability_values() -> None:
         if values.get("service", {}).get("type") != "ClusterIP":
             raise ValidationFailure(f"{component} Service must remain ClusterIP")
 
+    tempo_datasources = {
+        datasource.get("uid"): datasource
+        for datasource in prometheus.get("grafana", {}).get("additionalDataSources", [])
+    }
+    if (
+        tempo_datasources.get("tempo", {}).get("type") != "tempo"
+        or tempo_datasources.get("tempo", {}).get("url")
+        != "http://tempo.observability.svc.cluster.local:3200"
+    ):
+        raise ValidationFailure("Grafana Tempo datasource is missing or unsafe")
+
     if (
         loki.get("deploymentMode") != "Monolithic"
         or loki.get("loki", {}).get("auth_enabled") is not False
@@ -618,6 +719,36 @@ def validate_observability_values() -> None:
         or loki.get("gateway", {}).get("service", {}).get("type") != "ClusterIP"
     ):
         raise ValidationFailure("Loki monolithic/private retention boundary drifted")
+
+    tempo_version = load_yaml_documents(ROOT / "platform" / "versions.yaml")[0]["observability"]["tempo"]
+    tempo_statefulset = next(
+        document for document in tempo_documents if document["kind"] == "StatefulSet"
+    )
+    tempo_services = [
+        document for document in tempo_documents if document["kind"] == "Service"
+    ]
+    tempo_container = tempo_statefulset["spec"]["template"]["spec"]["containers"][0]
+    tempo_claim = tempo_statefulset["spec"]["volumeClaimTemplates"][0]["spec"]
+    expected_tempo_image = (
+        f"docker.io/grafana/tempo:{tempo_version['app_version']}@"
+        f"{tempo_version['image_digest']}"
+    )
+    if (
+        tempo_container.get("image") != expected_tempo_image
+        or tempo_config.get("usage_report", {}).get("reporting_enabled") is not False
+        or tempo_config.get("compactor", {}).get("compaction", {}).get(
+            "block_retention"
+        )
+        != "72h"
+        or tempo_config.get("storage", {}).get("trace", {}).get("backend")
+        != "local"
+        or len(tempo_services) != 2
+        or any(service.get("spec", {}).get("type") != "ClusterIP" for service in tempo_services)
+        or tempo_claim.get("storageClassName") != "agent-rca-local"
+        or tempo_claim.get("resources", {}).get("requests", {}).get("storage")
+        != "5Gi"
+    ):
+        raise ValidationFailure("Tempo monolithic/private retention boundary drifted")
 
     if (
         alloy.get("controller", {}).get("type") != "deployment"

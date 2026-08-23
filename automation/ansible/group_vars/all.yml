@@ -55,6 +55,9 @@ loki_release_name: loki
 loki_chart_ref: oci://ghcr.io/grafana-community/helm-charts/loki
 loki_chart_version: "18.11.0"
 
+tempo_statefulset_name: tempo
+tempo_remote_manifest: /etc/agent-rca/observability/tempo-manifest.yaml
+
 alloy_release_name: alloy
 alloy_chart_repository_name: grafana
 alloy_chart_repository_url: https://grafana.github.io/helm-charts
@@ -67,6 +70,8 @@ online_boutique_wait_timeout: 20m
 online_boutique_image_tag: v0.10.6
 online_boutique_redis_image: >-
   docker.io/library/redis@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+online_boutique_otel_collector_image: >-
+  otel/opentelemetry-collector-contrib:0.155.0@sha256:4935caa35e9a4cb387e35732e8fb22b2b5759af8d12e7043357f03837f6e8df5
 online_boutique_expected_workloads:
   - adservice
   - cartservice
@@ -79,3 +84,15 @@ online_boutique_expected_workloads:
   - recommendationservice
   - redis-cart
   - shippingservice
+online_boutique_expected_deployments: >-
+  {{ online_boutique_expected_workloads + ['opentelemetrycollector'] }}
+online_boutique_expected_services: >-
+  {{ online_boutique_expected_workloads + ['opentelemetrycollector'] }}
+online_boutique_instrumented_services:
+  - checkoutservice
+  - currencyservice
+  - emailservice
+  - frontend
+  - paymentservice
+  - productcatalogservice
+  - recommendationservice

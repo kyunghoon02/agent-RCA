@@ -76,6 +76,17 @@ grafana:
       url: http://loki-gateway.observability.svc.cluster.local
       isDefault: false
       editable: false
+    - name: Tempo
+      uid: tempo
+      type: tempo
+      access: proxy
+      url: http://tempo.observability.svc.cluster.local:3200
+      isDefault: false
+      editable: false
+      jsonData:
+        httpMethod: GET
+        serviceMap:
+          datasourceUid: prometheus
 
 prometheusOperator:
   resources:

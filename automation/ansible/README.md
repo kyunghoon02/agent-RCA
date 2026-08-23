@@ -54,20 +54,25 @@ Ansible package tasks wait for the apt/dpkg lock. Never delete dpkg lock files;
 if unattended upgrades are active, let them finish and rerun the playbook.
 
 The observability playbook installs pinned Helm releases for local-path storage,
-kube-prometheus-stack, Loki in monolithic mode and Alloy. It then reconciles
-Cilium/Hubble ServiceMonitors. Verification requires four Bound PVCs, only
-ClusterIP services, no Ingress, healthy Prometheus/Alertmanager/Grafana/Loki
-endpoints, Cilium/Hubble `up=1` targets and one normalized Kubernetes log stream
-from Loki. A normal rerun does not create new Helm revisions.
+kube-prometheus-stack, Loki in monolithic mode and Alloy, then applies the
+digest-pinned monolithic Tempo manifest. It also reconciles Cilium/Hubble
+ServiceMonitors. Verification requires five Bound PVCs, only ClusterIP services,
+no Ingress, healthy Prometheus/Alertmanager/Grafana/Loki/Tempo endpoints,
+Cilium/Hubble `up=1` targets and one normalized Kubernetes log stream from Loki.
+A normal rerun does not create new Helm revisions.
 
 The Online Boutique playbook renders the SHA-pinned Kustomize overlay on the
 local controller and copies the rendered result to the VM before applying it.
 The upstream external frontend and in-cluster load generator are removed, all
-11 services remain ClusterIP, and Redis is pinned by OCI digest. Verification
-requires the exact workload and service set, Ready pods, a stable restart count
-without OOM termination, a working frontend, no target PVC, and one normalized
-Online Boutique log stream in Loki. The current upstream base does not configure
-application Prometheus metrics or OpenTelemetry export.
+11 target services remain ClusterIP, and Redis is pinned by OCI digest. The
+overlay also deploys an internal OpenTelemetry Collector and enables the pinned
+upstream direct tracing code on seven services. Verification requires the exact
+12-Deployment/service set, completed rollouts, the approved instrumentation
+environment, a stable restart count without OOM termination, a working
+frontend, no target PVC, a normalized Loki log, a healthy Prometheus telemetry
+target, non-zero span-derived RED metrics and at least one Tempo trace. The
+three remaining services retain the server-side tracing gap documented in
+`platform/online-boutique/README.md`.
 
 This is a single-node development storage boundary. `Retain` protects a PV from
 automatic deletion with its claim or release, but the data still resides on the

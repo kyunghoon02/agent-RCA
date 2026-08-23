@@ -64,6 +64,13 @@ observability:
     chart_version: "18.11.0"
     deployment_mode: Monolithic
     retention: 72h
+  tempo:
+    manifest: platform/observability/tempo
+    app_version: "2.9.0"
+    image_digest: sha256:65a5789759435f1ef696f1953258b9bbdb18eb571d5ce711ff812d2e128288a4
+    deployment_mode: monolithic
+    retention: 72h
+    storage: 5Gi
   alloy:
     chart_ref: grafana/alloy
     chart_repository: https://grafana.github.io/helm-charts
@@ -76,4 +83,14 @@ online_boutique:
   commit_sha: "5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb"
   image_tag: "v0.10.6"
   redis_image_digest: "sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576"
+  otel_collector_version: "0.155.0"
+  otel_collector_digest: "sha256:4935caa35e9a4cb387e35732e8fb22b2b5759af8d12e7043357f03837f6e8df5"
+  directly_instrumented_services:
+    - checkoutservice
+    - currencyservice
+    - emailservice
+    - frontend
+    - paymentservice
+    - productcatalogservice
+    - recommendationservice
   remote_kustomize_base: "https://github.com/GoogleCloudPlatform/microservices-demo//kustomize?ref=5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb"

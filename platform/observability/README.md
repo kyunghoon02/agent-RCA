@@ -1,8 +1,9 @@
 # Development observability stack
 
-This directory contains reviewable values for the GCP kubeadm reference
-runtime. Helm renders and installs the upstream charts; the repository does not
-vendor generated Kubernetes YAML.
+This directory contains reviewable values and manifests for the GCP kubeadm
+reference runtime. Helm renders the pinned upstream charts, while the small
+single-binary Tempo deployment is rendered from the checked-in Kustomize base.
+The repository does not vendor generated Kubernetes YAML.
 
 | Release | Purpose | Development boundary |
 |---|---|---|
@@ -10,6 +11,7 @@ vendor generated Kubernetes YAML.
 | kube-prometheus-stack | Prometheus, Alertmanager, Grafana and Kubernetes/node metrics | 7-day or 12 GiB Prometheus retention |
 | Loki | Kubernetes container log storage and query | monolithic, one replica, 72-hour retention |
 | Alloy | Kubernetes API-based Pod log discovery and forwarding | one Deployment, read-only Pod/log RBAC |
+| Tempo | OTLP trace storage and search | monolithic, one replica, 72-hour retention, 5 GiB PVC |
 
 Cilium agent, Envoy, operator, Hubble metrics and Hubble Relay expose
 ServiceMonitors only after the Prometheus Operator CRD exists. Hubble flow
@@ -29,15 +31,15 @@ missing, its pinned chart version changed, or its managed values changed. Helm
 uses `--atomic --wait`; an unsuccessful install is rolled back instead of being
 accepted as complete.
 
-The verify command checks Pod readiness, four Bound PVCs, private-only Services,
-the absence of Ingress, component readiness, five Cilium/Hubble Prometheus
-targets with `up=1`, and a Loki stream labeled with the expected `cluster_id`
-and namespace.
+The verify command checks Pod readiness, five Bound PVCs, private-only Services,
+the absence of Ingress, Prometheus/Alertmanager/Grafana/Loki/Tempo readiness,
+five Cilium/Hubble Prometheus targets with `up=1`, and a Loki stream labeled
+with the expected `cluster_id` and namespace.
 
 ## Private access
 
-No Grafana, Prometheus, Alertmanager or Loki endpoint is exposed through a
-NodePort, LoadBalancer or Ingress. From an SSH session on the VM, start a
+No Grafana, Prometheus, Alertmanager, Loki or Tempo endpoint is exposed through
+a NodePort, LoadBalancer or Ingress. From an SSH session on the VM, start a
 loopback-only port forward:
 
 ```bash
@@ -66,5 +68,5 @@ destroy all telemetry. Before any destructive cleanup, resolve the exact PVC,
 PV and host path and decide explicitly whether to archive or remove it.
 
 This stack does not prove alert delivery, Agent RCA provider integration,
-Online Boutique application telemetry, production HA, long-term storage, or
-backup/restore.
+complete server-side trace coverage for every Online Boutique service,
+production HA, long-term storage, or backup/restore.

@@ -94,6 +94,34 @@
   changed_when: false
   failed_when: local_path_reclaim_policy.stdout != 'Retain'
 
+- name: Render the pinned Tempo manifest locally
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - kustomize
+      - "{{ playbook_dir }}/../../../platform/observability/tempo"
+  delegate_to: localhost
+  become: false
+  register: tempo_rendered_manifest
+  changed_when: false
+
+- name: Copy the rendered Tempo manifest
+  ansible.builtin.copy:
+    content: "{{ tempo_rendered_manifest.stdout }}\n"
+    dest: "{{ tempo_remote_manifest }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply the rendered Tempo manifest
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    apply --filename {{ tempo_remote_manifest }}
+  register: tempo_apply
+  changed_when: >-
+    ' created' in tempo_apply.stdout
+    or ' configured' in tempo_apply.stdout
+
 - name: Inspect the kube-prometheus-stack release
   ansible.builtin.command: >-
     helm --kubeconfig /etc/kubernetes/admin.conf

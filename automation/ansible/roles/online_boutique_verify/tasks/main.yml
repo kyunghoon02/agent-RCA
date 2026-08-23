@@ -5,16 +5,7 @@
     rollout status deployment/{{ item }}
     --namespace {{ online_boutique_namespace }}
     --timeout={{ online_boutique_wait_timeout }}
-  loop: "{{ online_boutique_expected_workloads }}"
-  changed_when: false
-
-- name: Wait for Online Boutique pods to become Ready
-  ansible.builtin.command: >-
-    kubectl --kubeconfig /etc/kubernetes/admin.conf
-    wait pod --namespace {{ online_boutique_namespace }}
-    --all
-    --for=condition=Ready
-    --timeout={{ online_boutique_wait_timeout }}
+  loop: "{{ online_boutique_expected_deployments }}"
   changed_when: false
 
 - name: Read Online Boutique deployments
@@ -30,7 +21,7 @@
       - >-
         ((online_boutique_deployments.stdout | from_json)['items']
         | map(attribute='metadata.name') | sort | list)
-        == (online_boutique_expected_workloads | sort | list)
+        == (online_boutique_expected_deployments | sort | list)
     fail_msg: The deployed Online Boutique workload set does not match the pinned overlay.
 
 - name: Read Online Boutique services
@@ -46,7 +37,7 @@
       - >-
         ((online_boutique_services.stdout | from_json)['items']
         | map(attribute='metadata.name') | sort | list)
-        == (online_boutique_expected_workloads | sort | list)
+        == (online_boutique_expected_services | sort | list)
       - >-
         (online_boutique_services.stdout | from_json)['items']
         | rejectattr('spec.type', 'equalto', 'ClusterIP') | list | length == 0
@@ -71,6 +62,49 @@
         and (item.stdout | regex_search(':' + online_boutique_image_tag + '$')) is not none)
     fail_msg: "Online Boutique image is not pinned as expected: {{ item.item }}={{ item.stdout }}"
   loop: "{{ online_boutique_images.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read the OpenTelemetry Collector image
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment/opentelemetrycollector --namespace {{ online_boutique_namespace }}
+    --output jsonpath='{.spec.template.spec.containers[0].image}'
+  register: online_boutique_otel_collector_deployed_image
+  changed_when: false
+
+- name: Require the digest-pinned OpenTelemetry Collector image
+  ansible.builtin.assert:
+    that:
+      - >-
+        online_boutique_otel_collector_deployed_image.stdout
+        == online_boutique_otel_collector_image
+    fail_msg: The OpenTelemetry Collector image is not pinned as expected.
+
+- name: Read direct instrumentation settings
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - "deployment/{{ item }}"
+      - --namespace
+      - "{{ online_boutique_namespace }}"
+      - --output
+      - "jsonpath={range .spec.template.spec.containers[?(@.name=='server')].env[*]}{.name}={.value}{'\\n'}{end}"
+  loop: "{{ online_boutique_instrumented_services }}"
+  register: online_boutique_instrumentation_settings
+  changed_when: false
+
+- name: Require direct OTel instrumentation on the approved service set
+  ansible.builtin.assert:
+    that:
+      - "'ENABLE_TRACING=1' in item.stdout_lines"
+      - "'COLLECTOR_SERVICE_ADDR=opentelemetrycollector:4317' in item.stdout_lines"
+      - "('OTEL_SERVICE_NAME=' + item.item) in item.stdout_lines"
+    fail_msg: "Direct OTel instrumentation is incomplete for {{ item.item }}."
+  loop: "{{ online_boutique_instrumentation_settings.results }}"
   loop_control:
     label: "{{ item.item }}"
 
@@ -139,6 +173,82 @@
   register: online_boutique_frontend
   changed_when: false
   failed_when: "'Online Boutique' not in online_boutique_frontend.stdout"
+
+- name: Verify the OpenTelemetry Collector health endpoint
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ online_boutique_namespace
+    }}/services/http:opentelemetrycollector:13133/proxy/
+  register: online_boutique_otel_collector_health
+  changed_when: false
+  failed_when: "'Server available' not in online_boutique_otel_collector_health.stdout"
+
+- name: Wait for Prometheus to scrape the OpenTelemetry Collector
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=up%7Bnamespace%3D%22online-boutique%22%2Cjob%3D%22opentelemetrycollector%22%7D
+  register: online_boutique_otel_target
+  retries: 18
+  delay: 10
+  until: >-
+    (online_boutique_otel_target.stdout | from_json)['data']['result'] | length > 0
+    and (online_boutique_otel_target.stdout | from_json)['data']['result'][0]
+    ['value'][1] == '1'
+  changed_when: false
+
+- name: Require a healthy Online Boutique telemetry target
+  ansible.builtin.assert:
+    that:
+      - item['value'][1] == '1'
+    fail_msg: Prometheus did not report the Online Boutique telemetry target as healthy.
+  loop: "{{ (online_boutique_otel_target.stdout | from_json)['data']['result'] }}"
+  loop_control:
+    label: "{{ item['metric'].get('job', 'online-boutique') }}"
+
+- name: Wait for span-derived RED metrics in Prometheus
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=sum%28agent_rca_calls_total%29
+  register: online_boutique_span_metrics
+  retries: 24
+  delay: 10
+  until: >-
+    (online_boutique_span_metrics.stdout | from_json)['data']['result'] | length > 0
+    and ((online_boutique_span_metrics.stdout | from_json)['data']['result'][0]
+    ['value'][1] | float) > 0
+  changed_when: false
+
+- name: Wait for a stored Online Boutique trace in Tempo
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:tempo:3200/proxy/api/search?tags=service.name%3Dfrontend&limit=1
+  register: online_boutique_tempo_traces
+  retries: 24
+  delay: 10
+  until: >-
+    (online_boutique_tempo_traces.stdout | from_json).get('traces', []) | length > 0
+  changed_when: false
 
 - name: Wait for one recent Online Boutique log stream in Loki
   ansible.builtin.command:

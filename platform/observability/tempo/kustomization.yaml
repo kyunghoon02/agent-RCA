@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: observability
+
+resources:
+  - tempo.yaml
+
+configMapGenerator:
+  - name: tempo-config
+    files:
+      - tempo.yaml=tempo-config.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: agent-rca
+      app.kubernetes.io/component: trace-backend
+    includeSelectors: false

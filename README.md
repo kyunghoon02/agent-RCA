@@ -92,7 +92,8 @@ seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Fro
 - Kubernetes: upstream Kubernetes, kubeadm single-node bootstrap
 - container runtime: containerd
 - dataplane and network evidence: Cilium CNI와 Hubble
-- observability: Prometheus, Alertmanager, Grafana, Loki/Alloy와 Kubernetes API/Event
+- observability: Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo,
+  OpenTelemetry Collector와 Kubernetes API/Event
 - graph: Neo4j Community 기반 temporal StateGraph
 - operational knowledge index: Git source + PostgreSQL/pgvector derived index
 - reference workload: [Google Online Boutique](platform/online-boutique/README.md)
@@ -103,8 +104,8 @@ seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Fro
 
 Terraform은 VPC, subnet, firewall, IAM과 Compute Engine lifecycle까지만 소유한다.
 Ansible은 containerd와 kubeadm host/cluster bootstrap을 소유하고, Ansible이 실행하는
-고정 Helm release가 Cilium/Hubble과 observability stack을 설치한다. target workload와
-Agent RCA 배포는 그 다음 Kubernetes deployment 계층이 담당한다. Reference runtime은 교체할 수 있으며 RCA core와
+고정 Helm release와 manifest가 Cilium/Hubble 및 observability stack을 설치한다. target
+workload와 Agent RCA 배포는 그 다음 Kubernetes deployment 계층이 담당한다. Reference runtime은 교체할 수 있으며 RCA core와
 Evidence contract는 GCP나 특정 workload ontology에 종속되지 않는다.
 
 ## Evaluation Strategy
@@ -166,8 +167,8 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Kubernetes v1.36.4 single-node가 재부팅 후 복구됐으며 Cilium/Hubble과 read-only flow 조회 검증; destroy와 fault runtime 미검증 |
-| Observability stack | pinned Helm values와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy 배포; PVC 4개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream 확인. alert rule/webhook과 RCA provider runtime은 미연결 |
-| Online Boutique target | upstream `v0.10.6` commit과 Redis digest를 고정한 Kustomize overlay, Ansible deploy/verify 구현 | 11 Deployment와 11 internal Service Ready, frontend 응답·stable restart·no OOM·no PVC·normalized Loki log 검증. application Prometheus/OTel과 external load는 미연결 |
+| Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. alert rule/webhook과 RCA provider runtime은 미연결 |
+| Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정한 Kustomize overlay, direct OTel tracing 활성화와 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 7개 서비스 direct span, Collector target `up=1`, span-derived `agent_rca_calls_total`, service graph metric, Tempo trace, frontend·restart·OOM·no PVC·Loki 검증 완료. `adservice`/`cartservice`/`shippingservice` server span과 external load는 미연결 |
 
 Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
 production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed

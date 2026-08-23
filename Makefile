@@ -52,6 +52,7 @@ render-observability:
 		--values platform/observability/loki-values.yaml >/dev/null
 	helm repo add grafana https://grafana.github.io/helm-charts --force-update >/dev/null
 	helm repo update grafana >/dev/null
+	kubectl kustomize platform/observability/tempo >/dev/null
 	helm template alloy grafana/alloy \
 		--version 1.11.1 --namespace observability \
 		--values platform/observability/alloy-values.yaml >/dev/null

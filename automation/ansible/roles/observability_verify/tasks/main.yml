@@ -20,6 +20,14 @@
     - "{{ alloy_release_name }}"
   changed_when: false
 
+- name: Wait for the Tempo StatefulSet
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status statefulset/{{ tempo_statefulset_name }}
+    --namespace {{ observability_namespace }}
+    --timeout={{ observability_wait_timeout }}
+  changed_when: false
+
 - name: Read observability persistent volume claims
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf
@@ -31,7 +39,7 @@
 - name: Require all observability persistent volume claims to be Bound
   ansible.builtin.assert:
     that:
-      - (observability_pvcs.stdout | from_json)['items'] | length == 4
+      - (observability_pvcs.stdout | from_json)['items'] | length == 5
       - >-
         (observability_pvcs.stdout | from_json)['items']
         | rejectattr('status.phase', 'equalto', 'Bound') | list | length == 0
@@ -100,6 +108,15 @@
   register: loki_readiness
   changed_when: false
   failed_when: "'ready' not in loki_readiness.stdout"
+
+- name: Verify Tempo readiness through the Kubernetes API proxy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ observability_namespace
+    }}/services/http:tempo:3200/proxy/ready
+  register: tempo_readiness
+  changed_when: false
+  failed_when: "'ready' not in tempo_readiness.stdout"
 
 - name: Wait for Prometheus to discover Cilium and Hubble targets
   ansible.builtin.command: >-

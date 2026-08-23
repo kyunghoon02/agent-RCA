@@ -17,13 +17,43 @@ observable across more than one Kubernetes resource or telemetry provider.
 - Application images use the upstream `v0.10.6` tag. The upstream mutable
   `redis:alpine` reference is replaced with a recorded OCI digest.
 - `frontend-external` and the bundled `loadgenerator` are removed.
-- All 11 services remain `ClusterIP`; no Ingress is created.
+- All 11 target services and the telemetry Collector service remain
+  `ClusterIP`; no Ingress is created.
 - Redis uses ephemeral pod storage. This target creates no PVC and does not
   preserve cart data across pod replacement.
-- The current upstream base emits container logs but does not configure
-  application Prometheus metrics or OpenTelemetry export. Kubernetes state,
-  container logs, and Cilium/Hubble flow evidence are available now; explicit
-  application telemetry integration is a later step.
+- The target and Collector remain ephemeral. Traces are retained separately by
+  Tempo in the `observability` namespace.
+
+## Direct application telemetry
+
+The pinned upstream source already contains explicit OpenTelemetry SDK tracing
+paths that are disabled by default. This overlay enables those code paths on
+`checkoutservice`, `currencyservice`, `emailservice`, `frontend`,
+`paymentservice`, `productcatalogservice`, and `recommendationservice` with an
+explicit `OTEL_SERVICE_NAME` and the internal OTLP gRPC endpoint. It does not
+inject an auto-instrumentation agent, sidecar proxy, or eBPF HTTP inference.
+
+```text
+instrumented application code
+  -> OTLP spans
+  -> OpenTelemetry Collector
+       -> Tempo (trace storage, 72 hours)
+       -> span_metrics -> Prometheus RED metrics
+       -> service_graph -> Prometheus dependency-edge metrics
+```
+
+The span metrics include request count, duration histogram, error status and
+bounded RPC dimensions under the `agent_rca_*` namespace. They are derived from
+application-created spans, not custom business metrics emitted directly by the
+service. The service graph metrics use the `traces_service_graph_*` namespace.
+Cardinality, retention and resource use are bounded in the checked-in Collector
+and Tempo configurations.
+
+`adservice`, `cartservice`, and `shippingservice` do not have a complete
+upstream server-side tracing path in this pinned release. Instrumented callers
+still produce client spans for their edges, but internal server latency and
+child spans for those three services are an explicit coverage gap. Adding that
+coverage requires a controlled source fork and rebuilt digest-pinned images.
 
 ## Operations
 
@@ -40,6 +70,9 @@ make deploy-online-boutique
 make verify-online-boutique
 ```
 
-Verification requires all deployments and pods to be ready, the exact internal
-service set, pinned images, stable container restart counts without OOM kills, a
-working frontend, no PVC, and a normalized `online-boutique` log stream in Loki.
+Verification requires all 12 deployments to complete rollout, the exact
+internal service set, pinned images, the approved seven-service instrumentation
+settings, stable container restart counts without OOM kills, a working
+frontend, no target PVC, and a normalized `online-boutique` log stream in Loki.
+It also requires a healthy Collector Prometheus target, a non-zero
+`agent_rca_calls_total` result and at least one stored Tempo trace.
