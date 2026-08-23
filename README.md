@@ -159,16 +159,16 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
-| Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | live source 미연결 |
+| Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature 경로는 live 연결, 일반 metric·Kubernetes provider orchestration은 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
-| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | live PromQL/dependency config, continuous projection과 cluster Graph 미연결 |
+| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | schema-validated PromQL/dependency profile, Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | 2개 Online Boutique profile의 4개 edge가 Prometheus→normalized Evidence→KRCA drilldown live smoke 통과. Entity resolution, continuous projection과 cluster Graph는 미연결 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Kubernetes v1.36.4 single-node가 재부팅 후 복구됐으며 Cilium/Hubble과 read-only flow 조회 검증; destroy와 fault runtime 미검증 |
-| Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. alert rule/webhook과 RCA provider runtime은 미연결 |
-| Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정한 Kustomize overlay, direct OTel tracing 활성화와 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 7개 서비스 direct span, Collector target `up=1`, span-derived `agent_rca_calls_total`, service graph metric, Tempo trace, frontend·restart·OOM·no PVC·Loki 검증 완료. `adservice`/`cartservice`/`shippingservice` server span과 external load는 미연결 |
+| Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. KRCA recording rule 4개는 live 적용, Alertmanager webhook과 나머지 RCA provider runtime은 미연결 |
+| Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정한 Kustomize overlay, direct OTel tracing 활성화와 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 7개 서비스 direct span, Collector target `up=1`, span-derived RED/service graph metric, Tempo trace와 KRCA live smoke 검증 완료. `adservice`/`cartservice`/`shippingservice` server span과 external load는 미연결 |
 
 Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
 production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed
@@ -217,6 +217,26 @@ operation label이 scope와 정확히 일치하는 단일 series만 허용한다
 Evidence나 StateGraph에 저장하지 않는다. 필수 series 누락, truncation 또는 정렬 표본
 부족은 완전한 `APIEdgeSignal`로 승격하지 않고 fallback 대상으로 남긴다.
 
+현재 reference runtime의 연결 경로는 다음과 같다. 버전 관리되는
+[Online Boutique KRCA profile](config/online-boutique-krca.yaml)이 허용된 API operation과
+PromQL만 정의하며 endpoint나 credential은 저장하지 않는다.
+
+```text
+instrumented Online Boutique server span
+→ OpenTelemetry Collector span metrics
+→ Prometheus recording rules (request rate, failure rate, p95, baseline p95)
+→ PrometheusAPIFeatureProvider
+→ EvidenceBuilder의 schema·scope·provenance·hash 검증
+→ metric-summary Evidence
+→ APIEdgeEvidenceProjector
+→ KRCA drilldown
+```
+
+이 live 연결은 metric 수집과 Evidence 변환이 실제 데이터로 동작한다는 증거다. 정상
+traffic에서도 짧은 burst는 상대적 anomaly를 만들 수 있으므로, Top-N 결과 자체를 실제
+root cause나 정확도 성과로 해석하지 않는다. Fault 정확도와 false positive는 별도의
+외부 baseline load 및 `Change × Workload` 반복 실험으로 검증한다.
+
 ```text
 Score(P, C) = max(FailureRateScore(P, C), LatencyScore(P, C))
 ```
@@ -261,6 +281,7 @@ Entity, reference-only 결론, 낮은 completeness, collector failure와 budget 
 make bootstrap-dev
 make validate-core
 make smoke-agent-rca
+make smoke-live-krca
 make sync-knowledge-vectors
 make evaluate-knowledge-retrieval
 make gcp-readiness
@@ -276,6 +297,11 @@ deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval 
 fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
 `credit_balance_exhausted` 429를 반환해 live 성공은 증명하지 못했다. 키 값과 model
 input은 출력하지 않으며, 사용 가능한 API credit가 준비되면 같은 명령으로 재검증한다.
+
+`make smoke-live-krca`는 기본적으로 로컬 `127.0.0.1:19090`의 loopback-only Prometheus
+tunnel과 최근 controlled traffic을 요구한다. 구성된 2개 profile을 bounded range query로
+수집해 Provider batch와 normalized Evidence를 검증하고 KRCA drilldown까지 실행한다.
+이 명령의 `CONNECTED`는 연결성을 뜻하며 fault 원인 정확도를 뜻하지 않는다.
 
 `make sync-knowledge-vectors`는 승인된 Git corpus를 bounded chunk로 나누고 opt-in
 pgvector migration/index에 hash와 embedding model을 함께 저장한다. 이어서

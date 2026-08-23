@@ -212,6 +212,44 @@
   loop_control:
     label: "{{ item['metric'].get('job', 'online-boutique') }}"
 
+- name: Read Prometheus recording rules for live KRCA features
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/rules?type=record
+  register: online_boutique_rca_rules
+  retries: 18
+  delay: 10
+  until: >-
+    (online_boutique_rca_rules.stdout | from_json).get('status') == 'success'
+    and 'agent_rca_api_request_rate' in online_boutique_rca_rules.stdout
+    and 'agent_rca_api_failure_rate' in online_boutique_rca_rules.stdout
+    and 'agent_rca_api_latency_p95_milliseconds' in online_boutique_rca_rules.stdout
+    and 'agent_rca_api_latency_baseline_p95_milliseconds' in online_boutique_rca_rules.stdout
+  changed_when: false
+
+- name: Require healthy live KRCA recording rules
+  ansible.builtin.assert:
+    that:
+      - >-
+        (online_boutique_rca_rules.stdout | from_json)['data']['groups']
+        | map(attribute='rules') | flatten
+        | selectattr('name', 'equalto', item)
+        | selectattr('health', 'equalto', 'ok')
+        | list | length == 1
+    fail_msg: "Prometheus recording rule {{ item }} is missing, duplicated, or unhealthy."
+  loop:
+    - agent_rca_api_request_rate
+    - agent_rca_api_failure_rate
+    - agent_rca_api_latency_p95_milliseconds
+    - agent_rca_api_latency_baseline_p95_milliseconds
+
 - name: Wait for span-derived RED metrics in Prometheus
   ansible.builtin.command:
     argv:

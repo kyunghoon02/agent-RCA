@@ -57,6 +57,12 @@ from .krca_pipeline import (
     KRCATopServiceResolutionRun,
     KRCATopServiceScopeResolver,
 )
+from .krca_runtime import (
+    KRCARuntimeCollectionPolicy,
+    KRCARuntimeConfig,
+    KRCARuntimeProfile,
+    load_krca_runtime_config,
+)
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
 from .stategraph import (
     EntityIdentity,
@@ -179,6 +185,9 @@ __all__ = [
     "KRCADrilldownScorer",
     "KRCAScoredEdge",
     "KRCAMetricLocalizationRun",
+    "KRCARuntimeCollectionPolicy",
+    "KRCARuntimeConfig",
+    "KRCARuntimeProfile",
     "KRCATopServiceLocalizationRun",
     "KRCATopServiceLocalizationService",
     "KRCATopServiceResolutionRun",
@@ -205,6 +214,7 @@ __all__ = [
     "apply_vector_migrations",
     "chunk_markdown",
     "render_markdown",
+    "load_krca_runtime_config",
     "stable_graph_id",
     "state_content_hash",
     "validate_graph_record",

@@ -32,7 +32,7 @@ def memory_query() -> PrometheusQuerySpec:
         query_id="memory_working_set_ratio",
         expression_template=(
             "max by (namespace, service) "
-            "(container_memory_working_set_ratio{{{scope}}})"
+            "(container_memory_working_set_ratio{{scope}})"
         ),
         namespace_label="namespace",
         resource_label="service",
@@ -66,6 +66,7 @@ class PrometheusMetricProviderTests(unittest.TestCase):
         expression = client.calls[0][0]
         self.assertIn('namespace="online-boutique"', expression)
         self.assertIn('service=~"^(?:checkoutservice)$"', expression)
+        self.assertNotIn("{{", expression)
         draft = provider.collect(request).items[0]
         self.assertEqual(draft.facts["result_status"], "HAS_DATA")
         self.assertEqual(draft.facts["sample_count"], 2)
@@ -106,7 +107,7 @@ class PrometheusMetricProviderTests(unittest.TestCase):
     def test_sample_limit_returns_partial_summary(self) -> None:
         spec = PrometheusQuerySpec(
             query_id="request_error_ratio",
-            expression_template="request_error_ratio{{{scope}}}",
+            expression_template="request_error_ratio{{scope}}",
             namespace_label="namespace",
             resource_label="service",
             max_samples=1,

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:krca-runtime-config",
+  "title": "KRCA Runtime Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cluster_id",
+    "namespace",
+    "prometheus",
+    "collection",
+    "profiles"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "cluster_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,62}$"},
+    "namespace": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+    "prometheus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["labels", "queries", "step_seconds", "max_samples_per_query", "minimum_aligned_samples", "maximum_time_lag"],
+      "properties": {
+        "labels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["namespace", "service", "operation"],
+          "properties": {
+            "namespace": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+            "service": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+            "operation": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}
+          }
+        },
+        "queries": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["failure_rate", "latency", "qps", "latency_baseline"],
+          "properties": {
+            "failure_rate": {"type": "string", "minLength": 10, "maxLength": 2000},
+            "latency": {"type": "string", "minLength": 10, "maxLength": 2000},
+            "qps": {"type": "string", "minLength": 10, "maxLength": 2000},
+            "latency_baseline": {"type": "string", "minLength": 10, "maxLength": 2000}
+          }
+        },
+        "step_seconds": {"type": "integer", "minimum": 5, "maximum": 300},
+        "max_samples_per_query": {"type": "integer", "minimum": 100, "maximum": 10000},
+        "minimum_aligned_samples": {"type": "integer", "minimum": 3, "maximum": 1000},
+        "maximum_time_lag": {"type": "integer", "minimum": 0, "maximum": 20}
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["window_seconds", "timeout_seconds", "max_evidence_items", "max_edges", "max_queries"],
+      "properties": {
+        "window_seconds": {"type": "integer", "minimum": 120, "maximum": 86400},
+        "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 120},
+        "max_evidence_items": {"type": "integer", "minimum": 1, "maximum": 100},
+        "max_edges": {"type": "integer", "minimum": 1, "maximum": 100},
+        "max_queries": {"type": "integer", "minimum": 4, "maximum": 400}
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["profile_id", "alerting_api", "resource_names", "dependencies"],
+        "properties": {
+          "profile_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "alerting_api": {"$ref": "#/$defs/apiRef"},
+          "resource_names": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+          },
+          "dependencies": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["edge_id", "parent", "child"],
+              "properties": {
+                "edge_id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{2,63}$"},
+                "parent": {"$ref": "#/$defs/apiRef"},
+                "child": {"$ref": "#/$defs/apiRef"}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "apiRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "operation"],
+      "properties": {
+        "service": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "operation": {"type": "string", "minLength": 1, "maxLength": 255}
+      }
+    }
+  }
+}

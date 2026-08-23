@@ -6,6 +6,7 @@ namespace: online-boutique
 resources:
   - https://github.com/GoogleCloudPlatform/microservices-demo//kustomize?ref=5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb
   - otel-collector.yaml
+  - otel-rca-rules.yaml
 
 configMapGenerator:
   - name: otel-collector-config

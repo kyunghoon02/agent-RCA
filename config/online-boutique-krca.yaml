@@ -1,0 +1,73 @@
+schema_version: "1.0.0"
+cluster_id: agent-rca-dev
+namespace: online-boutique
+
+prometheus:
+  labels:
+    namespace: namespace
+    service: service_name
+    operation: span_name
+  queries:
+    failure_rate: agent_rca_api_failure_rate{{scope}}
+    latency: agent_rca_api_latency_p95_milliseconds{{scope}} >= 0
+    qps: agent_rca_api_request_rate{{scope}}
+    latency_baseline: agent_rca_api_latency_baseline_p95_milliseconds{{scope}} >= 0
+  step_seconds: 15
+  max_samples_per_query: 4000
+  minimum_aligned_samples: 4
+  maximum_time_lag: 5
+
+collection:
+  window_seconds: 900
+  timeout_seconds: 30
+  max_evidence_items: 10
+  max_edges: 10
+  max_queries: 40
+
+profiles:
+  - profile_id: checkout-payment
+    alerting_api:
+      service: frontend
+      operation: POST
+    resource_names:
+      - frontend
+      - checkoutservice
+      - paymentservice
+    dependencies:
+      - edge_id: frontend-checkout-place-order
+        parent:
+          service: frontend
+          operation: POST
+        child:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+      - edge_id: checkout-payment-charge
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: paymentservice
+          operation: grpc.hipstershop.PaymentService/Charge
+  - profile_id: recommendation-catalog
+    alerting_api:
+      service: frontend
+      operation: GET
+    resource_names:
+      - frontend
+      - recommendationservice
+      - productcatalogservice
+    dependencies:
+      - edge_id: frontend-recommendations
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: recommendationservice
+          operation: /hipstershop.RecommendationService/ListRecommendations
+      - edge_id: recommendations-catalog-list
+        parent:
+          service: recommendationservice
+          operation: /hipstershop.RecommendationService/ListRecommendations
+        child:
+          service: productcatalogservice
+          operation: hipstershop.ProductCatalogService/ListProducts

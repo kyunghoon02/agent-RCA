@@ -541,7 +541,11 @@ def validate_versions_and_manifests() -> None:
         ROOT / "platform" / "online-boutique" / "kustomization.yaml"
     )[0]
     expected_remote = versions["online_boutique"]["remote_kustomize_base"]
-    if boutique.get("resources") != [expected_remote, "otel-collector.yaml"]:
+    if boutique.get("resources") != [
+        expected_remote,
+        "otel-collector.yaml",
+        "otel-rca-rules.yaml",
+    ]:
         raise ValidationFailure("Online Boutique remote base is not pinned to the recorded SHA")
     if boutique.get("namespace") != "online-boutique":
         raise ValidationFailure("Online Boutique namespace is not fixed")
@@ -650,12 +654,72 @@ def validate_versions_and_manifests() -> None:
     }:
         raise ValidationFailure("Online Boutique derived metric pipeline is incomplete")
 
+    rca_rule = load_yaml_documents(
+        ROOT / "platform" / "online-boutique" / "otel-rca-rules.yaml"
+    )[0]
+    if (
+        rca_rule.get("kind") != "PrometheusRule"
+        or rca_rule.get("metadata", {}).get("labels", {}).get("release")
+        != "monitoring"
+    ):
+        raise ValidationFailure("Online Boutique KRCA recording rules are not selected")
+    groups = rca_rule.get("spec", {}).get("groups", [])
+    if len(groups) != 1 or groups[0].get("interval") != "15s":
+        raise ValidationFailure("Online Boutique KRCA recording rule interval drifted")
+    expected_recording_rules = {
+        "agent_rca_api_request_rate",
+        "agent_rca_api_failure_rate",
+        "agent_rca_api_latency_p95_milliseconds",
+        "agent_rca_api_latency_baseline_p95_milliseconds",
+    }
+    actual_recording_rules = {
+        rule.get("record") for rule in groups[0].get("rules", [])
+    }
+    if actual_recording_rules != expected_recording_rules:
+        raise ValidationFailure("Online Boutique KRCA recording rule set drifted")
+
     if scope["target"]["release_tag"] != versions["online_boutique"]["release_tag"]:
         raise ValidationFailure("project scope and version pin disagree on release tag")
     if scope["target"]["commit_sha"] != versions["online_boutique"]["commit_sha"]:
         raise ValidationFailure("project scope and version pin disagree on commit SHA")
 
     validate_observability_values()
+
+
+def validate_krca_runtime_config() -> None:
+    schemas, registry = schema_registry()
+    runtime = load_yaml_documents(ROOT / "config" / "online-boutique-krca.yaml")[0]
+    validate_instance(
+        schemas["krca-runtime-config.schema.json"],
+        runtime,
+        registry,
+        "online-boutique-krca.yaml",
+    )
+
+    labels = runtime["prometheus"]["labels"]
+    if labels != {
+        "namespace": "namespace",
+        "service": "service_name",
+        "operation": "span_name",
+    }:
+        raise ValidationFailure("Online Boutique live Prometheus labels drifted")
+    expected_queries = {
+        "failure_rate": "agent_rca_api_failure_rate{{scope}}",
+        "latency": "agent_rca_api_latency_p95_milliseconds{{scope}} >= 0",
+        "qps": "agent_rca_api_request_rate{{scope}}",
+        "latency_baseline": (
+            "agent_rca_api_latency_baseline_p95_milliseconds{{scope}} >= 0"
+        ),
+    }
+    if runtime["prometheus"]["queries"] != expected_queries:
+        raise ValidationFailure("Online Boutique live KRCA query allowlist drifted")
+    expected_profiles = {
+        "checkout-payment",
+        "recommendation-catalog",
+    }
+    profile_ids = {profile["profile_id"] for profile in runtime["profiles"]}
+    if profile_ids != expected_profiles:
+        raise ValidationFailure("Online Boutique live KRCA profiles drifted")
 
 
 def validate_observability_values() -> None:
@@ -934,6 +998,7 @@ def main() -> None:
     validate_namespaces()
     validate_rbac()
     validate_versions_and_manifests()
+    validate_krca_runtime_config()
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
     print("Phase 0 validation passed:")
@@ -942,7 +1007,7 @@ def main() -> None:
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
-    print("- private single-node observability versions, retention, storage, and RBAC are consistent")
+    print("- private observability and live KRCA metric profiles are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 

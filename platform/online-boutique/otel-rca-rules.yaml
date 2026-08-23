@@ -1,0 +1,86 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: online-boutique-otel-rca
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: online-boutique-otel-rca
+      interval: 15s
+      rules:
+        - record: agent_rca_api_request_rate
+          expr: |
+            sum by (namespace, service_name, span_name) (
+              rate(agent_rca_calls_total{
+                namespace="online-boutique",
+                span_kind="SPAN_KIND_SERVER"
+              }[2m])
+            )
+        - record: agent_rca_api_failure_rate
+          expr: |
+            (
+              sum by (namespace, service_name, span_name) (
+                rate(agent_rca_calls_total{
+                  namespace="online-boutique",
+                  span_kind="SPAN_KIND_SERVER",
+                  status_code="STATUS_CODE_ERROR"
+                }[2m])
+              )
+              or on (namespace, service_name, span_name)
+              (
+                0 * sum by (namespace, service_name, span_name) (
+                  rate(agent_rca_calls_total{
+                    namespace="online-boutique",
+                    span_kind="SPAN_KIND_SERVER"
+                  }[2m])
+                )
+              )
+            )
+            /
+            clamp_min(
+              sum by (namespace, service_name, span_name) (
+                rate(agent_rca_calls_total{
+                  namespace="online-boutique",
+                  span_kind="SPAN_KIND_SERVER"
+                }[2m])
+              ),
+              0.000000001
+            )
+        - record: agent_rca_api_latency_p95_milliseconds
+          expr: |
+            (
+              histogram_quantile(
+                0.95,
+                sum by (le, namespace, service_name, span_name) (
+                  rate(agent_rca_duration_milliseconds_bucket{
+                    namespace="online-boutique",
+                    span_kind="SPAN_KIND_SERVER"
+                  }[2m])
+                )
+              )
+              and on (namespace, service_name, span_name)
+              (agent_rca_api_request_rate > 0)
+            )
+        - record: agent_rca_api_latency_baseline_p95_milliseconds
+          expr: |
+            (
+              histogram_quantile(
+                0.95,
+                sum by (le, namespace, service_name, span_name) (
+                  rate(agent_rca_duration_milliseconds_bucket{
+                    namespace="online-boutique",
+                    span_kind="SPAN_KIND_SERVER"
+                  }[15m])
+                )
+              )
+              and on (namespace, service_name, span_name)
+              (
+                sum by (namespace, service_name, span_name) (
+                  rate(agent_rca_calls_total{
+                    namespace="online-boutique",
+                    span_kind="SPAN_KIND_SERVER"
+                  }[15m])
+                ) > 0
+              )
+            )

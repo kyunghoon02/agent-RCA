@@ -50,10 +50,10 @@ TIMESTAMPS = tuple(
 
 def query_spec(**overrides) -> PrometheusAPIFeatureQuerySpec:
     values = {
-        "failure_rate_template": "failure_ratio{{{scope}}}",
-        "latency_template": "latency_seconds{{{scope}}}",
-        "qps_template": "request_qps{{{scope}}}",
-        "latency_baseline_template": "latency_baseline{{{scope}}}",
+        "failure_rate_template": "failure_ratio{{scope}}",
+        "latency_template": "latency_seconds{{scope}}",
+        "qps_template": "request_qps{{scope}}",
+        "latency_baseline_template": "latency_baseline{{scope}}",
         "step_seconds": 60,
         "minimum_aligned_samples": 4,
         "maximum_time_lag": 2,
@@ -165,6 +165,9 @@ class PrometheusAPIFeatureProviderTests(unittest.TestCase):
         evidence, _ = build_feature_evidence(client)
 
         self.assertEqual(len(client.calls), 7)
+        self.assertTrue(
+            all("{{" not in expression for expression, _ in client.calls)
+        )
         self.assertEqual(evidence["facts"]["result_status"], "HAS_DATA")
         self.assertEqual(evidence["facts"]["failure_rate_correlation"], 1.0)
         self.assertEqual(evidence["facts"]["failure_rate_p_value"], 0.0)
