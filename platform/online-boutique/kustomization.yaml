@@ -6,6 +6,11 @@ namespace: online-boutique
 resources:
   - https://github.com/GoogleCloudPlatform/microservices-demo//kustomize?ref=5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb
 
+images:
+  - name: redis
+    newName: docker.io/library/redis
+    digest: sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+
 labels:
   - pairs:
       app.kubernetes.io/part-of: online-boutique

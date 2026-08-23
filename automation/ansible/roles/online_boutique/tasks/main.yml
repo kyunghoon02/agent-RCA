@@ -1,0 +1,60 @@
+---
+- name: Render the pinned Online Boutique overlay locally
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - kustomize
+      - "{{ playbook_dir }}/../../../platform/online-boutique"
+  delegate_to: localhost
+  become: false
+  register: online_boutique_rendered_manifest
+  changed_when: false
+
+- name: Create the remote Online Boutique manifest directory
+  ansible.builtin.file:
+    path: "{{ online_boutique_remote_manifest_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy the rendered Online Boutique manifest
+  ansible.builtin.copy:
+    content: "{{ online_boutique_rendered_manifest.stdout }}\n"
+    dest: "{{ online_boutique_remote_manifest_directory }}/manifest.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Check the Online Boutique namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get namespace {{ online_boutique_namespace }}
+  register: online_boutique_namespace_status
+  changed_when: false
+  failed_when: online_boutique_namespace_status.rc not in [0, 1]
+
+- name: Create the Online Boutique namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ online_boutique_namespace }}
+  when: online_boutique_namespace_status.rc == 1
+
+- name: Label the Online Boutique namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    label namespace {{ online_boutique_namespace }}
+    app.kubernetes.io/part-of=online-boutique
+    kyunghoon02.github.io/boundary=target
+    --overwrite
+  register: online_boutique_namespace_label
+  changed_when: "'not labeled' not in online_boutique_namespace_label.stdout"
+
+- name: Apply the rendered Online Boutique manifest
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    apply --filename {{ online_boutique_remote_manifest_directory }}/manifest.yaml
+  register: online_boutique_apply
+  changed_when: >-
+    ' created' in online_boutique_apply.stdout
+    or ' configured' in online_boutique_apply.stdout

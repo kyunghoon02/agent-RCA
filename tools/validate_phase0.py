@@ -538,6 +538,16 @@ def validate_versions_and_manifests() -> None:
     if boutique.get("namespace") != "online-boutique":
         raise ValidationFailure("Online Boutique namespace is not fixed")
 
+    expected_redis_digest = versions["online_boutique"]["redis_image_digest"]
+    if boutique.get("images") != [
+        {
+            "name": "redis",
+            "newName": "docker.io/library/redis",
+            "digest": expected_redis_digest,
+        }
+    ]:
+        raise ValidationFailure("Online Boutique Redis image is not digest-pinned")
+
     deleted_targets = {
         (patch["target"]["kind"], patch["target"]["name"])
         for patch in boutique.get("patches", [])

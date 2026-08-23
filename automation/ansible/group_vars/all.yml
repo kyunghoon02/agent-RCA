@@ -60,3 +60,22 @@ alloy_chart_repository_name: grafana
 alloy_chart_repository_url: https://grafana.github.io/helm-charts
 alloy_chart_ref: grafana/alloy
 alloy_chart_version: "1.11.1"
+
+online_boutique_namespace: online-boutique
+online_boutique_remote_manifest_directory: /etc/agent-rca/online-boutique
+online_boutique_wait_timeout: 20m
+online_boutique_image_tag: v0.10.6
+online_boutique_redis_image: >-
+  docker.io/library/redis@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+online_boutique_expected_workloads:
+  - adservice
+  - cartservice
+  - checkoutservice
+  - currencyservice
+  - emailservice
+  - frontend
+  - paymentservice
+  - productcatalogservice
+  - recommendationservice
+  - redis-cart
+  - shippingservice

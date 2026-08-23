@@ -1,0 +1,173 @@
+---
+- name: Wait for Online Boutique deployments
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/{{ item }}
+    --namespace {{ online_boutique_namespace }}
+    --timeout={{ online_boutique_wait_timeout }}
+  loop: "{{ online_boutique_expected_workloads }}"
+  changed_when: false
+
+- name: Wait for Online Boutique pods to become Ready
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    wait pod --namespace {{ online_boutique_namespace }}
+    --all
+    --for=condition=Ready
+    --timeout={{ online_boutique_wait_timeout }}
+  changed_when: false
+
+- name: Read Online Boutique deployments
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment --namespace {{ online_boutique_namespace }} --output json
+  register: online_boutique_deployments
+  changed_when: false
+
+- name: Require the exact Online Boutique workload set
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((online_boutique_deployments.stdout | from_json)['items']
+        | map(attribute='metadata.name') | sort | list)
+        == (online_boutique_expected_workloads | sort | list)
+    fail_msg: The deployed Online Boutique workload set does not match the pinned overlay.
+
+- name: Read Online Boutique services
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service --namespace {{ online_boutique_namespace }} --output json
+  register: online_boutique_services
+  changed_when: false
+
+- name: Require internal-only Online Boutique services
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((online_boutique_services.stdout | from_json)['items']
+        | map(attribute='metadata.name') | sort | list)
+        == (online_boutique_expected_workloads | sort | list)
+      - >-
+        (online_boutique_services.stdout | from_json)['items']
+        | rejectattr('spec.type', 'equalto', 'ClusterIP') | list | length == 0
+    fail_msg: Online Boutique has a missing, unexpected, or externally exposed service.
+
+- name: Read Online Boutique workload images
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment/{{ item }} --namespace {{ online_boutique_namespace }}
+    --output jsonpath='{.spec.template.spec.containers[*].image}'
+  loop: "{{ online_boutique_expected_workloads }}"
+  register: online_boutique_images
+  changed_when: false
+
+- name: Require pinned Online Boutique workload images
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.item == 'redis-cart' and item.stdout == online_boutique_redis_image)
+        or
+        (item.item != 'redis-cart'
+        and (item.stdout | regex_search(':' + online_boutique_image_tag + '$')) is not none)
+    fail_msg: "Online Boutique image is not pinned as expected: {{ item.item }}={{ item.stdout }}"
+  loop: "{{ online_boutique_images.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Capture Online Boutique container restart counts
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - pod
+      - --namespace
+      - "{{ online_boutique_namespace }}"
+      - --output
+      - "jsonpath={range .items[*]}{.metadata.name}{':'}{.status.containerStatuses[0].restartCount}{'\\n'}{end}"
+  register: online_boutique_restart_counts_before
+  changed_when: false
+
+- name: Allow Online Boutique workloads to stabilize
+  ansible.builtin.pause:
+    seconds: 30
+
+- name: Recapture Online Boutique container restart counts and termination reasons
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - pod
+      - --namespace
+      - "{{ online_boutique_namespace }}"
+      - --output
+      - "jsonpath={range .items[*]}{.metadata.name}{':'}{.status.containerStatuses[0].restartCount}{':'}{.status.containerStatuses[0].lastState.terminated.reason}{'\\n'}{end}"
+  register: online_boutique_restart_state_after
+  changed_when: false
+
+- name: Require stable Online Boutique containers without OOM termination
+  ansible.builtin.assert:
+    that:
+      - >-
+        (online_boutique_restart_state_after.stdout_lines
+        | map('regex_replace', ':[^:]*$', '') | list)
+        == online_boutique_restart_counts_before.stdout_lines
+      - "'OOMKilled' not in online_boutique_restart_state_after.stdout"
+    fail_msg: An Online Boutique container is still restarting or was OOM-killed.
+
+- name: Read Online Boutique persistent volume claims
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get persistentvolumeclaim --namespace {{ online_boutique_namespace }} --output json
+  register: online_boutique_pvcs
+  changed_when: false
+
+- name: Require the target workload to remain ephemeral
+  ansible.builtin.assert:
+    that:
+      - (online_boutique_pvcs.stdout | from_json)['items'] | length == 0
+    fail_msg: Online Boutique unexpectedly created persistent storage.
+
+- name: Verify the Online Boutique frontend through the Kubernetes API proxy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ online_boutique_namespace
+    }}/services/http:frontend:80/proxy/
+  register: online_boutique_frontend
+  changed_when: false
+  failed_when: "'Online Boutique' not in online_boutique_frontend.stdout"
+
+- name: Wait for one recent Online Boutique log stream in Loki
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:loki:3100/proxy/loki/api/v1/query_range?query=%7Bnamespace%3D%22online-boutique%22%7D&limit=1&direction=backward
+  register: loki_online_boutique_logs
+  retries: 18
+  delay: 10
+  until: >-
+    (loki_online_boutique_logs.stdout | from_json)['data']['result'] | length > 0
+  changed_when: false
+
+- name: Require normalized Online Boutique labels on Loki logs
+  ansible.builtin.assert:
+    that:
+      - >-
+        (loki_online_boutique_logs.stdout | from_json)['data']['result'][0]
+        ['stream']['cluster_id'] == cluster_name
+      - >-
+        (loki_online_boutique_logs.stdout | from_json)['data']['result'][0]
+        ['stream']['namespace'] == online_boutique_namespace
+      - >-
+        (loki_online_boutique_logs.stdout | from_json)['data']['result'][0]
+        ['values'] | length > 0
+    fail_msg: Loki did not return a normalized Online Boutique log stream.

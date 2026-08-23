@@ -4,10 +4,10 @@ This layer configures the already-provisioned Compute Engine VM. Terraform
 continues to own the GCP network, firewall, identity, VM, disk and address; this
 Ansible layer owns host prerequisites, containerd, pinned Kubernetes packages,
 single-node `kubeadm init`, Cilium/Hubble, the development observability stack
-and runtime verification.
+and the Online Boutique target workload with runtime verification.
 
 It intentionally does not run `kubeadm reset`, distribute kubeconfig off the VM,
-open firewall rules, or deploy Online Boutique and Agent RCA workloads.
+open firewall rules, or deploy Agent RCA workloads.
 
 ## Local controller setup
 
@@ -33,6 +33,9 @@ make verify-kubernetes
 make render-observability
 make deploy-observability
 make verify-observability
+make render-online-boutique
+make deploy-online-boutique
+make verify-online-boutique
 ```
 
 The bootstrap is intentionally fail-fast on a host other than Ubuntu 24.04
@@ -56,6 +59,15 @@ Cilium/Hubble ServiceMonitors. Verification requires four Bound PVCs, only
 ClusterIP services, no Ingress, healthy Prometheus/Alertmanager/Grafana/Loki
 endpoints, Cilium/Hubble `up=1` targets and one normalized Kubernetes log stream
 from Loki. A normal rerun does not create new Helm revisions.
+
+The Online Boutique playbook renders the SHA-pinned Kustomize overlay on the
+local controller and copies the rendered result to the VM before applying it.
+The upstream external frontend and in-cluster load generator are removed, all
+11 services remain ClusterIP, and Redis is pinned by OCI digest. Verification
+requires the exact workload and service set, Ready pods, a stable restart count
+without OOM termination, a working frontend, no target PVC, and one normalized
+Online Boutique log stream in Loki. The current upstream base does not configure
+application Prometheus metrics or OpenTelemetry export.
 
 This is a single-node development storage boundary. `Retain` protects a PV from
 automatic deletion with its claim or release, but the data still resides on the

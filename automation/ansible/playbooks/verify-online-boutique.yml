@@ -1,0 +1,11 @@
+---
+- name: Verify the Online Boutique target workload
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - role: cluster_verify
+    - role: online_boutique_verify

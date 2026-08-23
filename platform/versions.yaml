@@ -75,4 +75,5 @@ online_boutique:
   release_tag: "v0.10.6"
   commit_sha: "5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb"
   image_tag: "v0.10.6"
+  redis_image_digest: "sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576"
   remote_kustomize_base: "https://github.com/GoogleCloudPlatform/microservices-demo//kustomize?ref=5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb"

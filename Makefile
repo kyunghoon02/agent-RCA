@@ -8,7 +8,7 @@ ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
 	render-online-boutique terraform-fmt terraform-validate \
 	bootstrap-ansible ansible-syntax ansible-ping bootstrap-kubernetes \
 	verify-kubernetes render-observability deploy-observability \
-	verify-observability
+	verify-observability deploy-online-boutique verify-online-boutique
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -80,6 +80,12 @@ ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/verify-observability.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/deploy-online-boutique.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/verify-online-boutique.yml
 
 ansible-ping:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible \
@@ -102,3 +108,13 @@ verify-observability:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-observability.yml
+
+deploy-online-boutique:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/deploy-online-boutique.yml
+
+verify-online-boutique:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/verify-online-boutique.yml

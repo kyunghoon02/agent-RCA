@@ -95,7 +95,8 @@ seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Fro
 - observability: Prometheus, Alertmanager, Grafana, Loki/Alloy와 Kubernetes API/Event
 - graph: Neo4j Community 기반 temporal StateGraph
 - operational knowledge index: Git source + PostgreSQL/pgvector derived index
-- reference workload: Google Online Boutique `v0.10.6`
+- reference workload: [Google Online Boutique](platform/online-boutique/README.md)
+  `v0.10.6` controlled incident target
 - state: versioning을 활성화한 사전 생성 GCS Terraform backend
 - identity: 전용 최소 권한 VM service account
 - RCA permission: Kubernetes와 observability source에 대한 bounded read-only access
@@ -152,7 +153,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 ## 현재 구현 상태
 
-> 기준일: 2026-08-22. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
+> 기준일: 2026-08-23. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
@@ -166,6 +167,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Kubernetes v1.36.4 single-node가 재부팅 후 복구됐으며 Cilium/Hubble과 read-only flow 조회 검증; destroy와 fault runtime 미검증 |
 | Observability stack | pinned Helm values와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy 배포; PVC 4개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream 확인. alert rule/webhook과 RCA provider runtime은 미연결 |
+| Online Boutique target | upstream `v0.10.6` commit과 Redis digest를 고정한 Kustomize overlay, Ansible deploy/verify 구현 | 11 Deployment와 11 internal Service Ready, frontend 응답·stable restart·no OOM·no PVC·normalized Loki log 검증. application Prometheus/OTel과 external load는 미연결 |
 
 Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
 production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed
