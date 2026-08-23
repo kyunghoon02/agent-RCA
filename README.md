@@ -1,13 +1,62 @@
 # Agent RCA
 
-Agent RCA는 운영 장애를 bounded read-only Evidence로 조사하고, 모든 결론을 실제
-`evidence_id`로 추적하는 evidence-grounded incident analysis platform이다. 근거가
-충분하지 않거나 서로 충돌하면 원인을 추측하지 않고 `ABSTAIN`한다.
+> Evidence-grounded infrastructure incident analysis for Kubernetes and
+> cloud-native systems.
 
-Agent RCA Orchestrator가 Incident 조사 상태와 budget을 관리하며, deterministic
-rule과 citation validation은 별도 주 경로가 아니라 Orchestrator 내부 `Evidence Gate`로
-동작한다. 이 저장소는 cloud-neutral RCA core와 Kubernetes reference runtime을 함께
-구축한다.
+## 해결하려는 문제
+
+Cloud-native 장애의 원인은 metric 하나나 log 한 줄에만 있지 않다. 배포 변경, workload,
+Prometheus metric, log, trace, Kubernetes Event와 Cilium/Hubble network flow를 같은
+Incident time window 안에서 함께 봐야 한다. 일반적인 LLM 요약은 운영 지식이나 시간상
+가까운 변경을 실제 원인 증거로 오인할 수도 있다.
+
+Agent RCA는 Incident scope를 먼저 고정하고, 여러 관측 소스의 데이터를 검증된
+`EvidenceItem`으로 정규화한 뒤 관련 service와 Entity만 localization한다. 하나의 bounded
+read-only Agent가 이 Context 안에서 Evidence를 조사하고, 모든 결론은 실제
+`evidence_id`로 추적한다. Orchestrator 내부의 deterministic `Evidence Gate`가 근거와
+scope를 다시 검사하며, Evidence가 부족하거나 충돌하면 원인을 추측하지 않고
+`ABSTAIN`한다.
+
+## 시스템 한눈에 보기
+
+```mermaid
+flowchart LR
+    I[Infrastructure Incident<br/>change, workload, failure] --> D[Detection<br/>Alertmanager]
+    D --> C[Bounded Evidence Collection]
+
+    M[Prometheus<br/>metrics] --> C
+    L[Loki and Tempo<br/>logs and traces] --> C
+    K[Kubernetes API<br/>state and Events] --> C
+    H[Cilium and Hubble<br/>network flows] --> C
+
+    C --> N[Normalize<br/>scope, provenance, redaction, hash]
+    N --> S[KRCA and Temporal StateGraph<br/>localize investigation scope]
+    S --> A[Agent RCA Orchestrator<br/>bounded read-only investigation]
+    A --> G{Evidence Gate}
+    G -->|sufficient and consistent| R[Evidence-grounded<br/>RCA Report]
+    G -->|missing or contradictory| X[ABSTAIN<br/>with explicit gaps]
+```
+
+이 프로젝트에서 Agent는 log를 받아 답을 생성하는 독립된 wrapper가 아니다. 실제
+인프라 Evidence를 제한된 범위에서 조사하는 진단 구성요소다. 현재 RCA 경로는
+read-only이며 write/admin tool과 자동 복구는 허용하지 않는다. 복구가 필요하면 운영자가
+Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtime Evidence로 다시
+검증해야 한다.
+
+## 현재 검증 요약
+
+- **Infrastructure runtime:** Terraform과 Ansible로 GCP 단일 VM, kubeadm Kubernetes,
+  Cilium/Hubble과 observability stack을 구성하고 재부팅 후 복구 및 주요 component
+  readiness를 검증했다.
+- **Live telemetry path:** Online Boutique의 실제 trace와 Prometheus recording rule을
+  normalized metric Evidence와 KRCA drilldown까지 연결한 live smoke를 확인했다.
+- **RCA core:** Incident/Evidence contract, bounded collector, localization, read-only Agent
+  tool과 Evidence Gate는 fixture와 contract test로 검증했다.
+- **아직 증명하지 않은 범위:** Alert 발생부터 Agent Report까지의 전체 cluster runtime,
+  controlled fault에 대한 RCA 정확도, 성공한 external LLM live run과 자동 복구는 아직
+  검증하지 않았다.
+
+세부 구현과 runtime 상태는 [현재 구현 상태](#현재-구현-상태)에서 분리해 기록한다.
 
 ## 목표 아키텍처
 
@@ -107,6 +156,25 @@ Ansible은 containerd와 kubeadm host/cluster bootstrap을 소유하고, Ansible
 고정 Helm release와 manifest가 Cilium/Hubble 및 observability stack을 설치한다. target
 workload와 Agent RCA 배포는 그 다음 Kubernetes deployment 계층이 담당한다. Reference runtime은 교체할 수 있으며 RCA core와
 Evidence contract는 GCP나 특정 workload ontology에 종속되지 않는다.
+
+## 대표 Incident 실증 계획
+
+전체 평가는 최소 15개 Incident를 반복하지만, 포트폴리오에서는 다음 4개 scenario를
+깊이 있는 case study로 먼저 제시한다. 아래 항목은 아직 성과값이 아니라 controlled
+fault 실험 후보이며, 실제 runtime Evidence와 Ground Truth 비교가 끝난 결과만 완료로
+표시한다.
+
+| Scenario | Change × Workload | 수집할 핵심 Evidence | 검증할 원인 | 상태 |
+|---|---|---|---|---|
+| `checkoutservice` OOMKilled | memory limit 감소 × 고정 checkout traffic | memory metric, restart/OOMKilled Event, resource limit와 rollout 시각 | 변경과 workload가 결합한 memory exhaustion | 첫 실험 후보 |
+| NetworkPolicy 차단 | policy 변경 × 정상 service traffic | Hubble drop flow, timeout, policy diff와 적용 시각 | 특정 service path를 차단한 policy regression | 계획 |
+| Deployment regression | image/config 변경 × path-weighted traffic | RED metric, trace, application log와 ReplicaSet revision | 새 revision에서 발생한 API path regression | 계획 |
+| Load-only saturation | 변경 없음 × 단계적 stress | latency/error, CPU·memory와 change 부재 Evidence | 배포 변경이 아닌 capacity/workload 문제 | 계획 |
+
+각 case study는 fault 주입만 보여주지 않는다. baseline과 fault window, Agent가 실제로
+검사한 `evidence_id`, Report 또는 `ABSTAIN`, Ground Truth 일치 여부, 진단 시간과 false
+positive를 함께 기록한다. RCA core는 계속 read-only로 유지하며 operator remediation을
+수행한 경우에도 recovery signal은 별도 post-action Evidence로 수집한다.
 
 ## Evaluation Strategy
 
