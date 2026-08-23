@@ -306,15 +306,11 @@ tests/               deterministic fixture와 core unit test
 tools/               정적 검증 도구
 ```
 
-## 주요 공개 자료
+## 상세 설계 및 재현 자료
 
 - [Provider Contract](contracts/providers.md)
-- [KRCA-style API Drilldown Contract](contracts/krca-drilldown.md)
-- [StateGraph Model](contracts/graph/stategraph-model.yaml)
-- [Knowledge Retrieval Contract](contracts/knowledge-retrieval.md)
-- [Knowledge Retrieval Evaluation](evaluation/knowledge-retrieval/README.md)
-- [Read-only Viewer Query Contract](contracts/viewer.md)
+- [KRCA-style API Drilldown](contracts/krca-drilldown.md)
+- [Temporal StateGraph Model](contracts/graph/stategraph-model.yaml)
 - [Agent RCA Runtime Scope](config/project-scope.yaml)
 - [Evaluation Preregistration](evaluation/preregistration.yaml)
-- [Ansible kubeadm bootstrap](automation/ansible/README.md)
-- [Terraform GCP foundation](infra/terraform/README.md)
+- [Infrastructure Reproduction](infra/terraform/README.md)
