@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -578,6 +579,22 @@ def validate_versions_and_manifests() -> None:
     expected_instrumented_services = set(
         versions["online_boutique"]["directly_instrumented_services"]
     )
+    required_application_services = {
+        "adservice",
+        "cartservice",
+        "checkoutservice",
+        "currencyservice",
+        "emailservice",
+        "frontend",
+        "paymentservice",
+        "productcatalogservice",
+        "recommendationservice",
+        "shippingservice",
+    }
+    if expected_instrumented_services != required_application_services:
+        raise ValidationFailure(
+            "Online Boutique direct server-span coverage is not complete"
+        )
     instrumentation_paths = {
         patch["path"]
         for patch in boutique.get("patches", [])
@@ -597,14 +614,79 @@ def validate_versions_and_manifests() -> None:
             item["name"]: item.get("value")
             for item in patch["spec"]["template"]["spec"]["containers"][0]["env"]
         }
-        if env != {
+        required_env = {
             "COLLECTOR_SERVICE_ADDR": "opentelemetrycollector:4317",
             "OTEL_SERVICE_NAME": service,
             "ENABLE_TRACING": "1",
-        }:
+        }
+        if any(env.get(name) != value for name, value in required_env.items()):
             raise ValidationFailure(
                 f"Online Boutique OTel environment drifted for {service}"
             )
+
+    custom_image_digests = versions["online_boutique"].get("custom_image_digests", {})
+    custom_services = {"adservice", "cartservice", "shippingservice"}
+    if set(custom_image_digests) != custom_services or any(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        for digest in custom_image_digests.values()
+    ):
+        raise ValidationFailure("Online Boutique custom image digests drifted")
+    for service in custom_services:
+        patch = load_yaml_documents(
+            ROOT / "platform" / "online-boutique" / "patches" / f"{service}-otel.yaml"
+        )[0]
+        pod_spec = patch["spec"]["template"]["spec"]
+        strategy = patch["spec"].get("strategy", {}).get("rollingUpdate", {})
+        if pod_spec.get("imagePullSecrets") != [{"name": "artifact-registry"}]:
+            raise ValidationFailure(
+                f"Online Boutique private image pull contract drifted for {service}"
+            )
+        if strategy != {"maxSurge": 0, "maxUnavailable": 1}:
+            raise ValidationFailure(
+                f"Online Boutique single-node rollout contract drifted for {service}"
+            )
+        source_patch = (
+            ROOT
+            / "platform"
+            / "online-boutique"
+            / "source-patches"
+            / f"{service}-otel.patch"
+        )
+        if not source_patch.is_file() or f"a/src/{service}/" not in source_patch.read_text(
+            encoding="utf-8"
+        ):
+            raise ValidationFailure(
+                f"Online Boutique source instrumentation patch is missing for {service}"
+            )
+
+    source_patch_directory = (
+        ROOT / "platform" / "online-boutique" / "source-patches"
+    )
+    fingerprint_input = "".join(
+        sorted(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{path.name}\n"
+            for path in source_patch_directory.glob("*.patch")
+        )
+    ).encode()
+    expected_custom_tag = (
+        f"{versions['online_boutique']['release_tag']}-otel-"
+        f"{hashlib.sha256(fingerprint_input).hexdigest()[:12]}"
+    )
+    if versions["online_boutique"].get("custom_image_tag") != expected_custom_tag:
+        raise ValidationFailure("Online Boutique custom image tag fingerprint drifted")
+
+    build_config = load_yaml_documents(
+        ROOT / "platform" / "online-boutique" / "cloudbuild-otel.yaml"
+    )[0]
+    if len(build_config.get("steps", [])) != 3 or len(build_config.get("images", [])) != 3:
+        raise ValidationFailure("Online Boutique Cloud Build image set drifted")
+    build_script = ROOT / "tools" / "build_online_boutique_otel_images.sh"
+    build_script_text = build_script.read_text(encoding="utf-8")
+    if (
+        versions["online_boutique"]["commit_sha"] not in build_script_text
+        or "git -C \"$worktree/upstream\" apply --check" not in build_script_text
+    ):
+        raise ValidationFailure("Online Boutique exact-commit build gate drifted")
 
     collector_docs = load_yaml_documents(
         ROOT / "platform" / "online-boutique" / "otel-collector.yaml"
@@ -714,12 +796,15 @@ def validate_krca_runtime_config() -> None:
     if runtime["prometheus"]["queries"] != expected_queries:
         raise ValidationFailure("Online Boutique live KRCA query allowlist drifted")
     expected_profiles = {
-        "checkout-payment",
-        "recommendation-catalog",
+        "browse-and-cart-read",
+        "cart-mutation",
+        "checkout-full",
     }
     profile_ids = {profile["profile_id"] for profile in runtime["profiles"]}
     if profile_ids != expected_profiles:
         raise ValidationFailure("Online Boutique live KRCA profiles drifted")
+    if sum(len(profile["dependencies"]) for profile in runtime["profiles"]) != 23:
+        raise ValidationFailure("Online Boutique live KRCA edge coverage drifted")
 
 
 def validate_observability_values() -> None:

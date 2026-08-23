@@ -1,0 +1,45 @@
+diff --git a/src/cartservice/src/Startup.cs b/src/cartservice/src/Startup.cs
+index 136d303..bc636e6 100644
+--- a/src/cartservice/src/Startup.cs
++++ b/src/cartservice/src/Startup.cs
+@@ -10,6 +10,8 @@ using Microsoft.Extensions.Hosting;
+ using cartservice.cartstore;
+ using cartservice.services;
+ using Microsoft.Extensions.Caching.StackExchangeRedis;
++using OpenTelemetry.Resources;
++using OpenTelemetry.Trace;
+ 
+ namespace cartservice
+ {
+@@ -57,6 +59,16 @@ namespace cartservice
+ 
+ 
+             services.AddGrpc();
++
++            if (Configuration["ENABLE_TRACING"] == "1")
++            {
++                services.AddOpenTelemetry()
++                    .ConfigureResource(resource => resource.AddService("cartservice"))
++                    .WithTracing(tracing => tracing
++                        .SetSampler(new AlwaysOnSampler())
++                        .AddAspNetCoreInstrumentation()
++                        .AddOtlpExporter());
++            }
+         }
+ 
+         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
+diff --git a/src/cartservice/src/cartservice.csproj b/src/cartservice/src/cartservice.csproj
+index 11c2856..5f25672 100644
+--- a/src/cartservice/src/cartservice.csproj
++++ b/src/cartservice/src/cartservice.csproj
+@@ -11,6 +11,9 @@
+     <PackageReference Include="Google.Cloud.Spanner.Data" Version="5.12.0" />
+     <PackageReference Include="Npgsql" Version="10.0.3" />
+     <PackageReference Include="Google.Cloud.SecretManager.V1" Version="2.7.0" />
++    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
++    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
++    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+

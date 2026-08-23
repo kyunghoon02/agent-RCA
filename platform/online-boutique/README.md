@@ -5,7 +5,7 @@ Google's sample e-commerce application for demonstrating and testing
 microservice environments. It is not a production storefront or part of the
 Agent RCA product. This repository uses it as a controlled incident target.
 
-The pinned `v0.10.6` overlay deploys 11 application and Redis workloads. Their
+The pinned `v0.10.6` overlay deploys ten application services plus Redis. Their
 service-to-service calls provide realistic paths such as frontend -> checkout
 -> cart, catalog, currency, shipping, payment, and email. That makes failures
 observable across more than one Kubernetes resource or telemetry provider.
@@ -14,8 +14,10 @@ observable across more than one Kubernetes resource or telemetry provider.
 
 - The upstream source is pinned to commit
   `5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb`.
-- Application images use the upstream `v0.10.6` tag. The upstream mutable
-  `redis:alpine` reference is replaced with a recorded OCI digest.
+- Seven application images use the upstream `v0.10.6` tag. The three services
+  without upstream server tracing are rebuilt from versioned patches and
+  deployed by recorded OCI digest. The upstream mutable `redis:alpine`
+  reference is also replaced with a recorded OCI digest.
 - `frontend-external` and the bundled `loadgenerator` are removed.
 - All 11 target services and the telemetry Collector service remain
   `ClusterIP`; no Ingress is created.
@@ -27,11 +29,12 @@ observable across more than one Kubernetes resource or telemetry provider.
 ## Direct application telemetry
 
 The pinned upstream source already contains explicit OpenTelemetry SDK tracing
-paths that are disabled by default. This overlay enables those code paths on
-`checkoutservice`, `currencyservice`, `emailservice`, `frontend`,
-`paymentservice`, `productcatalogservice`, and `recommendationservice` with an
-explicit `OTEL_SERVICE_NAME` and the internal OTLP gRPC endpoint. It does not
-inject an auto-instrumentation agent, sidecar proxy, or eBPF HTTP inference.
+paths for seven services that are disabled by default. This overlay enables
+those paths and adds source-level gRPC server instrumentation to `adservice`,
+`cartservice`, and `shippingservice`. All ten application services therefore
+export server spans with an explicit `OTEL_SERVICE_NAME` and the internal OTLP
+gRPC endpoint. It does not inject an auto-instrumentation agent, sidecar proxy,
+or eBPF HTTP inference.
 
 ```text
 instrumented application code
@@ -49,11 +52,12 @@ service. The service graph metrics use the `traces_service_graph_*` namespace.
 Cardinality, retention and resource use are bounded in the checked-in Collector
 and Tempo configurations.
 
-`adservice`, `cartservice`, and `shippingservice` do not have a complete
-upstream server-side tracing path in this pinned release. Instrumented callers
-still produce client spans for their edges, but internal server latency and
-child spans for those three services are an explicit coverage gap. Adding that
-coverage requires a controlled source fork and rebuilt digest-pinned images.
+The three source changes are stored as patches against the exact upstream
+commit instead of vendoring a moving fork. Cloud Build applies the patches,
+builds `linux/amd64` images with a dedicated identity, and pushes them to a
+private Artifact Registry repository. Git stores the resulting digests but no
+GCP project ID or credential. Ansible composes the private image names at
+runtime and refreshes a short-lived image pull token on every deployment.
 
 ## Operations
 
@@ -61,6 +65,13 @@ Render the exact manifest without applying it:
 
 ```bash
 make render-online-boutique
+```
+
+Build the three custom images after Terraform has created their private
+repository:
+
+```bash
+make build-online-boutique-otel-images
 ```
 
 Deploy and verify the target through Ansible:
@@ -71,8 +82,9 @@ make verify-online-boutique
 ```
 
 Verification requires all 12 deployments to complete rollout, the exact
-internal service set, pinned images, the approved seven-service instrumentation
+internal service set, pinned images, all ten application instrumentation
 settings, stable container restart counts without OOM kills, a working
 frontend, no target PVC, and a normalized `online-boutique` log stream in Loki.
-It also requires a healthy Collector Prometheus target, a non-zero
-`agent_rca_calls_total` result and at least one stored Tempo trace.
+It also requires a healthy Collector Prometheus target, server-span metric
+coverage for the exact ten-service application set, and at least one stored
+Tempo trace.

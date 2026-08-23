@@ -20,43 +20,66 @@ prometheus:
 collection:
   window_seconds: 900
   timeout_seconds: 30
-  max_evidence_items: 10
-  max_edges: 10
-  max_queries: 40
+  max_evidence_items: 16
+  max_edges: 16
+  max_queries: 64
 
 profiles:
-  - profile_id: checkout-payment
-    alerting_api:
-      service: frontend
-      operation: POST
-    resource_names:
-      - frontend
-      - checkoutservice
-      - paymentservice
-    dependencies:
-      - edge_id: frontend-checkout-place-order
-        parent:
-          service: frontend
-          operation: POST
-        child:
-          service: checkoutservice
-          operation: hipstershop.CheckoutService/PlaceOrder
-      - edge_id: checkout-payment-charge
-        parent:
-          service: checkoutservice
-          operation: hipstershop.CheckoutService/PlaceOrder
-        child:
-          service: paymentservice
-          operation: grpc.hipstershop.PaymentService/Charge
-  - profile_id: recommendation-catalog
+  - profile_id: browse-and-cart-read
     alerting_api:
       service: frontend
       operation: GET
     resource_names:
+      - adservice
+      - cartservice
+      - currencyservice
       - frontend
-      - recommendationservice
       - productcatalogservice
+      - recommendationservice
+      - shippingservice
     dependencies:
+      - edge_id: frontend-ad-get
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: adservice
+          operation: hipstershop.AdService/GetAds
+      - edge_id: frontend-cart-get
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: cartservice
+          operation: hipstershop.CartService/GetCart
+      - edge_id: frontend-currency-list
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: currencyservice
+          operation: grpc.hipstershop.CurrencyService/GetSupportedCurrencies
+      - edge_id: frontend-currency-convert
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: currencyservice
+          operation: grpc.hipstershop.CurrencyService/Convert
+      - edge_id: frontend-catalog-list
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: productcatalogservice
+          operation: hipstershop.ProductCatalogService/ListProducts
+      - edge_id: frontend-catalog-get
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: productcatalogservice
+          operation: hipstershop.ProductCatalogService/GetProduct
       - edge_id: frontend-recommendations
         parent:
           service: frontend
@@ -71,3 +94,132 @@ profiles:
         child:
           service: productcatalogservice
           operation: hipstershop.ProductCatalogService/ListProducts
+      - edge_id: frontend-shipping-quote
+        parent:
+          service: frontend
+          operation: GET
+        child:
+          service: shippingservice
+          operation: hipstershop.ShippingService/GetQuote
+  - profile_id: cart-mutation
+    alerting_api:
+      service: frontend
+      operation: POST
+    resource_names:
+      - cartservice
+      - frontend
+      - productcatalogservice
+    dependencies:
+      - edge_id: frontend-cart-product-get
+        parent:
+          service: frontend
+          operation: POST
+        child:
+          service: productcatalogservice
+          operation: hipstershop.ProductCatalogService/GetProduct
+      - edge_id: frontend-cart-add
+        parent:
+          service: frontend
+          operation: POST
+        child:
+          service: cartservice
+          operation: hipstershop.CartService/AddItem
+      - edge_id: frontend-cart-empty
+        parent:
+          service: frontend
+          operation: POST
+        child:
+          service: cartservice
+          operation: hipstershop.CartService/EmptyCart
+  - profile_id: checkout-full
+    alerting_api:
+      service: frontend
+      operation: POST
+    resource_names:
+      - cartservice
+      - checkoutservice
+      - currencyservice
+      - emailservice
+      - frontend
+      - paymentservice
+      - productcatalogservice
+      - recommendationservice
+      - shippingservice
+    dependencies:
+      - edge_id: frontend-checkout-place-order
+        parent:
+          service: frontend
+          operation: POST
+        child:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+      - edge_id: checkout-cart-get
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: cartservice
+          operation: hipstershop.CartService/GetCart
+      - edge_id: checkout-product-get
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: productcatalogservice
+          operation: hipstershop.ProductCatalogService/GetProduct
+      - edge_id: checkout-currency-convert
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: currencyservice
+          operation: grpc.hipstershop.CurrencyService/Convert
+      - edge_id: checkout-shipping-quote
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: shippingservice
+          operation: hipstershop.ShippingService/GetQuote
+      - edge_id: checkout-payment-charge
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: paymentservice
+          operation: grpc.hipstershop.PaymentService/Charge
+      - edge_id: checkout-shipping-order
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: shippingservice
+          operation: hipstershop.ShippingService/ShipOrder
+      - edge_id: checkout-cart-empty
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: cartservice
+          operation: hipstershop.CartService/EmptyCart
+      - edge_id: checkout-email-confirmation
+        parent:
+          service: checkoutservice
+          operation: hipstershop.CheckoutService/PlaceOrder
+        child:
+          service: emailservice
+          operation: /hipstershop.EmailService/SendOrderConfirmation
+      - edge_id: frontend-order-recommendations
+        parent:
+          service: frontend
+          operation: POST
+        child:
+          service: recommendationservice
+          operation: /hipstershop.RecommendationService/ListRecommendations
+      - edge_id: frontend-order-currencies
+        parent:
+          service: frontend
+          operation: POST
+        child:
+          service: currencyservice
+          operation: grpc.hipstershop.CurrencyService/GetSupportedCurrencies

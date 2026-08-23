@@ -1,0 +1,39 @@
+steps:
+  - id: build-adservice
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args:
+      - build
+      - --platform=linux/amd64
+      - --tag=${_REGISTRY_PREFIX}/adservice:${_IMAGE_TAG}
+      - src/adservice
+  - id: build-cartservice
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args:
+      - build
+      - --platform=linux/amd64
+      - --tag=${_REGISTRY_PREFIX}/cartservice:${_IMAGE_TAG}
+      - src/cartservice/src
+  - id: build-shippingservice
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args:
+      - build
+      - --platform=linux/amd64
+      - --tag=${_REGISTRY_PREFIX}/shippingservice:${_IMAGE_TAG}
+      - src/shippingservice
+
+images:
+  - ${_REGISTRY_PREFIX}/adservice:${_IMAGE_TAG}
+  - ${_REGISTRY_PREFIX}/cartservice:${_IMAGE_TAG}
+  - ${_REGISTRY_PREFIX}/shippingservice:${_IMAGE_TAG}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _REGISTRY_PREFIX: invalid.example/agent-rca-dev-workloads
+  _IMAGE_TAG: v0.10.6-otel
+
+timeout: 1800s

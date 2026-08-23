@@ -1,14 +1,63 @@
 ---
-- name: Render the pinned Online Boutique overlay locally
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - kustomize
-      - "{{ playbook_dir }}/../../../platform/online-boutique"
-  delegate_to: localhost
-  become: false
-  register: online_boutique_rendered_manifest
-  changed_when: false
+- name: Read the GCP project identity from instance metadata
+  ansible.builtin.uri:
+    url: http://metadata.google.internal/computeMetadata/v1/project/project-id
+    headers:
+      Metadata-Flavor: Google
+    return_content: true
+  register: online_boutique_gcp_project
+  no_log: true
+
+- name: Render a project-local, digest-pinned image overlay
+  block:
+    - name: Create a temporary local image overlay
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ playbook_dir }}/../../../platform"
+        prefix: .online-boutique-image-overlay-
+      delegate_to: localhost
+      become: false
+      register: online_boutique_image_overlay
+
+    - name: Write digest-pinned custom image overrides
+      ansible.builtin.copy:
+        content: |
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../online-boutique
+          images:
+          {% for service, digest in online_boutique.custom_image_digests.items() %}
+            - name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/{{ service }}
+              newName: {{ execution_target.location }}-docker.pkg.dev/{{ online_boutique_gcp_project.content }}/{{ online_boutique.artifact_repository_id }}/{{ service }}
+              digest: {{ digest }}
+          {% endfor %}
+        dest: "{{ online_boutique_image_overlay.path }}/kustomization.yaml"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Render the pinned Online Boutique overlay locally
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - kustomize
+          - "{{ online_boutique_image_overlay.path }}"
+          - --load-restrictor=LoadRestrictionsNone
+      delegate_to: localhost
+      become: false
+      register: online_boutique_rendered_manifest
+      changed_when: false
+      no_log: true
+  always:
+    - name: Remove the temporary local image overlay
+      ansible.builtin.file:
+        path: "{{ online_boutique_image_overlay.path }}"
+        state: absent
+      when: online_boutique_image_overlay.path is defined
+      delegate_to: localhost
+      become: false
 
 - name: Create the remote Online Boutique manifest directory
   ansible.builtin.file:
@@ -49,6 +98,40 @@
     --overwrite
   register: online_boutique_namespace_label
   changed_when: "'not labeled' not in online_boutique_namespace_label.stdout"
+
+- name: Read a short-lived VM access token for Artifact Registry
+  ansible.builtin.uri:
+    url: >-
+      http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+    headers:
+      Metadata-Flavor: Google
+    return_content: true
+  register: online_boutique_registry_token
+  no_log: true
+
+- name: Apply the short-lived Artifact Registry pull secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: artifact-registry
+        namespace: {{ online_boutique_namespace }}
+      type: kubernetes.io/dockerconfigjson
+      stringData:
+        .dockerconfigjson: >-
+          {"auths":{"{{ execution_target.location }}-docker.pkg.dev":{"username":"oauth2accesstoken","password":"{{ (online_boutique_registry_token.content | from_json).access_token }}","auth":"{{ ('oauth2accesstoken:' + (online_boutique_registry_token.content | from_json).access_token) | b64encode }}"}}}
+  register: online_boutique_registry_secret_apply
+  changed_when: >-
+    ' created' in online_boutique_registry_secret_apply.stdout
+    or ' configured' in online_boutique_registry_secret_apply.stdout
+  no_log: true
 
 - name: Apply the rendered Online Boutique manifest
   ansible.builtin.command: >-

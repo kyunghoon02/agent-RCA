@@ -58,7 +58,14 @@
       - >-
         (item.item == 'redis-cart' and item.stdout == online_boutique_redis_image)
         or
+        (item.item in online_boutique.custom_image_digests
+        and item.stdout is match(
+        '^' + execution_target.location + '-docker\\.pkg\\.dev/[^/]+/'
+        + online_boutique.artifact_repository_id + '/' + item.item + '@'
+        + online_boutique.custom_image_digests[item.item] + '$'))
+        or
         (item.item != 'redis-cart'
+        and item.item not in online_boutique.custom_image_digests
         and (item.stdout | regex_search(':' + online_boutique_image_tag + '$')) is not none)
     fail_msg: "Online Boutique image is not pinned as expected: {{ item.item }}={{ item.stdout }}"
   loop: "{{ online_boutique_images.results }}"
@@ -269,6 +276,29 @@
     and ((online_boutique_span_metrics.stdout | from_json)['data']['result'][0]
     ['value'][1] | float) > 0
   changed_when: false
+
+- name: Read application services represented by server spans
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=count%20by%20%28service_name%29%20%28agent_rca_calls_total%7Bnamespace%3D%22online-boutique%22%2Cspan_kind%3D%22SPAN_KIND_SERVER%22%7D%29
+  register: online_boutique_server_span_services
+  changed_when: false
+
+- name: Require server-span coverage for every application service
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((online_boutique_server_span_services.stdout | from_json)['data']['result']
+        | map(attribute='metric.service_name') | sort | list)
+        == (online_boutique_instrumented_services | sort | list)
+    fail_msg: One or more Online Boutique application services has no server-span coverage.
 
 - name: Wait for a stored Online Boutique trace in Tempo
   ansible.builtin.command:

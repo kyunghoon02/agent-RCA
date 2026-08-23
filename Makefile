@@ -1,4 +1,5 @@
 DEV_PYTHON ?= python3.12
+GCLOUD_BIN ?= gcloud
 ANSIBLE_CONFIG_PATH ?= automation/ansible/ansible.cfg
 ANSIBLE_INVENTORY ?= automation/ansible/inventories/dev.yml
 ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
@@ -6,7 +7,7 @@ ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
 .PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca \
 	smoke-live-krca \
 	sync-knowledge-vectors evaluate-knowledge-retrieval gcp-readiness \
-	render-online-boutique terraform-fmt terraform-validate \
+	render-online-boutique build-online-boutique-otel-images terraform-fmt terraform-validate \
 	bootstrap-ansible ansible-syntax ansible-ping bootstrap-kubernetes \
 	verify-kubernetes render-observability deploy-observability \
 	verify-observability deploy-online-boutique verify-online-boutique
@@ -40,6 +41,9 @@ gcp-readiness:
 
 render-online-boutique:
 	kubectl kustomize platform/online-boutique
+
+build-online-boutique-otel-images:
+	GCLOUD_BIN=$(GCLOUD_BIN) tools/build_online_boutique_otel_images.sh
 
 render-observability:
 	helm template local-path-provisioner \

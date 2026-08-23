@@ -6,9 +6,12 @@ locals {
     project     = "agent-rca"
   }
   required_services = toset([
+    "artifactregistry.googleapis.com",
+    "cloudbuild.googleapis.com",
     "compute.googleapis.com",
     "iam.googleapis.com",
     "serviceusage.googleapis.com",
+    "storage.googleapis.com",
   ])
 }
 
@@ -45,6 +48,107 @@ resource "google_service_account" "vm" {
   display_name = "Agent RCA ${var.environment} VM"
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_service_account" "image_builder" {
+  project      = var.project_id
+  account_id   = "${local.name_prefix}-image-builder"
+  display_name = "Agent RCA ${var.environment} image builder"
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_artifact_registry_repository" "online_boutique" {
+  project       = var.project_id
+  location      = var.region
+  repository_id = "${local.name_prefix}-workloads"
+  description   = "Digest-pinned Agent RCA reference workload images"
+  format        = "DOCKER"
+  labels        = local.labels
+
+  cleanup_policy_dry_run = false
+
+  cleanup_policies {
+    id     = "delete-old-untagged"
+    action = "DELETE"
+
+    condition {
+      tag_state  = "UNTAGGED"
+      older_than = "604800s"
+    }
+  }
+
+  cleanup_policies {
+    id     = "delete-old-instrumented-tags"
+    action = "DELETE"
+
+    condition {
+      tag_state    = "TAGGED"
+      tag_prefixes = ["v0.10.6-otel-"]
+      older_than   = "2592000s"
+    }
+  }
+
+  cleanup_policies {
+    id     = "keep-recent"
+    action = "KEEP"
+
+    most_recent_versions {
+      keep_count = 3
+    }
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket" "cloud_build_source" {
+  name                        = "${var.project_id}-${local.name_prefix}-cloudbuild-source"
+  project                     = var.project_id
+  location                    = var.region
+  force_destroy               = true
+  public_access_prevention    = "enforced"
+  uniform_bucket_level_access = true
+  labels                      = local.labels
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+
+    condition {
+      age = 1
+    }
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket_iam_member" "image_builder_source_reader" {
+  bucket = google_storage_bucket.cloud_build_source.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.image_builder.email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "vm_reader" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.online_boutique.location
+  repository = google_artifact_registry_repository.online_boutique.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.vm.email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "image_builder_writer" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.online_boutique.location
+  repository = google_artifact_registry_repository.online_boutique.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${google_service_account.image_builder.email}"
+}
+
+resource "google_project_iam_member" "image_builder_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.image_builder.email}"
 }
 
 resource "google_compute_address" "vm" {

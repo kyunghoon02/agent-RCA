@@ -229,14 +229,14 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature 경로는 live 연결, 일반 metric·Kubernetes provider orchestration은 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
-| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | schema-validated PromQL/dependency profile, Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | 2개 Online Boutique profile의 4개 edge가 Prometheus→normalized Evidence→KRCA drilldown live smoke 통과. Entity resolution, continuous projection과 cluster Graph는 미연결 |
+| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | schema-validated PromQL/dependency profile, Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | browse/cart/checkout 3개 profile의 23개 edge가 모두 Prometheus→normalized Evidence→KRCA drilldown live smoke에서 `HAS_DATA`; Entity resolution, continuous projection과 cluster Graph는 미연결 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Kubernetes v1.36.4 single-node가 재부팅 후 복구됐으며 Cilium/Hubble과 read-only flow 조회 검증; destroy와 fault runtime 미검증 |
 | Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. KRCA recording rule 4개는 live 적용, Alertmanager webhook과 나머지 RCA provider runtime은 미연결 |
-| Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정한 Kustomize overlay, direct OTel tracing 활성화와 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 7개 서비스 direct span, Collector target `up=1`, span-derived RED/service graph metric, Tempo trace와 KRCA live smoke 검증 완료. `adservice`/`cartservice`/`shippingservice` server span과 external load는 미연결 |
+| Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정하고, 3개 source patch와 Cloud Build/Artifact Registry digest pin을 추가한 Kustomize overlay 및 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 10개 application service 모두 server span, Collector target `up=1`, RED/service graph metric, Tempo trace와 23-edge KRCA live smoke 검증 완료. 지속 외부 load와 fault evaluation은 미연결 |
 
 Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
 production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed
@@ -300,10 +300,19 @@ instrumented Online Boutique server span
 → KRCA drilldown
 ```
 
-이 live 연결은 metric 수집과 Evidence 변환이 실제 데이터로 동작한다는 증거다. 정상
-traffic에서도 짧은 burst는 상대적 anomaly를 만들 수 있으므로, Top-N 결과 자체를 실제
-root cause나 정확도 성과로 해석하지 않는다. Fault 정확도와 false positive는 별도의
-외부 baseline load 및 `Change × Workload` 반복 실험으로 검증한다.
+고정 upstream에 tracing이 없던 Java `adservice`, .NET `cartservice`, Go
+`shippingservice`는 repository의 source patch를 exact commit에 적용해 전용 Cloud Build
+identity로 빌드한다. 이미지는 private Artifact Registry에 저장하고 SHA-256 digest만 Git에
+고정한다. 배포 시 Ansible은 VM metadata의 project identity와 단기 access token으로 임시
+image overlay/pull secret을 만들며 project ID나 장기 service-account key를 repository에
+저장하지 않는다.
+
+이 live 연결은 metric 수집과 Evidence 변환이 실제 데이터로 동작한다는 증거다. 현재
+smoke는 10회의 정상 browse/cart/checkout 흐름으로 최소 7개 aligned sample을 확인했지만
+지속 부하 성능을 증명하지 않는다. 정상 traffic에서도 짧은 burst는 상대적 anomaly를
+만들 수 있으므로 Top-N 결과 자체를 실제 root cause나 정확도 성과로 해석하지 않는다.
+Fault 정확도와 false positive는 별도의 지속 외부 baseline load 및
+`Change × Workload` 반복 실험으로 검증한다.
 
 ```text
 Score(P, C) = max(FailureRateScore(P, C), LatencyScore(P, C))

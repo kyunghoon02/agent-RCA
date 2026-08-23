@@ -21,9 +21,9 @@ class KRCARuntimeConfigTests(unittest.TestCase):
 
         self.assertEqual(
             [profile.profile_id for profile in config.profiles],
-            ["checkout-payment", "recommendation-catalog"],
+            ["browse-and-cart-read", "cart-mutation", "checkout-full"],
         )
-        checkout = config.profile("checkout-payment")
+        checkout = config.profile("checkout-full")
         expression = config.query_spec.scoped_expression(
             config.query_spec.failure_rate_template,
             config.namespace,
@@ -47,6 +47,90 @@ class KRCARuntimeConfigTests(unittest.TestCase):
             'service_name="frontend",span_name="POST"} >= 0',
         )
 
+    def test_online_boutique_profiles_cover_every_application_service(self) -> None:
+        config = load_krca_runtime_config(CONFIG)
+
+        covered_services = {
+            service
+            for profile in config.profiles
+            for service in profile.resource_names
+        }
+        self.assertEqual(
+            covered_services,
+            {
+                "adservice",
+                "cartservice",
+                "checkoutservice",
+                "currencyservice",
+                "emailservice",
+                "frontend",
+                "paymentservice",
+                "productcatalogservice",
+                "recommendationservice",
+                "shippingservice",
+            },
+        )
+
+    def test_online_boutique_profiles_cover_every_live_business_operation(self) -> None:
+        config = load_krca_runtime_config(CONFIG)
+
+        covered_apis = {
+            (api.service, api.operation)
+            for profile in config.profiles
+            for dependency in profile.dependencies
+            for api in (dependency.parent, dependency.child)
+        }
+        self.assertEqual(
+            covered_apis,
+            {
+                ("adservice", "hipstershop.AdService/GetAds"),
+                ("cartservice", "hipstershop.CartService/AddItem"),
+                ("cartservice", "hipstershop.CartService/EmptyCart"),
+                ("cartservice", "hipstershop.CartService/GetCart"),
+                (
+                    "checkoutservice",
+                    "hipstershop.CheckoutService/PlaceOrder",
+                ),
+                (
+                    "currencyservice",
+                    "grpc.hipstershop.CurrencyService/Convert",
+                ),
+                (
+                    "currencyservice",
+                    "grpc.hipstershop.CurrencyService/GetSupportedCurrencies",
+                ),
+                (
+                    "emailservice",
+                    "/hipstershop.EmailService/SendOrderConfirmation",
+                ),
+                ("frontend", "GET"),
+                ("frontend", "POST"),
+                (
+                    "paymentservice",
+                    "grpc.hipstershop.PaymentService/Charge",
+                ),
+                (
+                    "productcatalogservice",
+                    "hipstershop.ProductCatalogService/GetProduct",
+                ),
+                (
+                    "productcatalogservice",
+                    "hipstershop.ProductCatalogService/ListProducts",
+                ),
+                (
+                    "recommendationservice",
+                    "/hipstershop.RecommendationService/ListRecommendations",
+                ),
+                (
+                    "shippingservice",
+                    "hipstershop.ShippingService/GetQuote",
+                ),
+                (
+                    "shippingservice",
+                    "hipstershop.ShippingService/ShipOrder",
+                ),
+            },
+        )
     def test_dependency_cannot_escape_the_profile_scope(self) -> None:
         raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
         raw["profiles"][0]["dependencies"][0]["child"]["service"] = "unknown"
@@ -61,7 +145,7 @@ class KRCARuntimeConfigTests(unittest.TestCase):
         raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
         dependency = copy.deepcopy(raw["profiles"][0]["dependencies"][1])
         dependency["parent"] = {
-            "service": "paymentservice",
+            "service": "adservice",
             "operation": "Disconnected",
         }
         raw["profiles"][0]["dependencies"][1] = dependency

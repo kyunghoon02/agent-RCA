@@ -39,3 +39,14 @@ output "vm_service_account" {
   value       = google_service_account.vm.email
   sensitive   = true
 }
+
+output "artifact_registry_repository" {
+  description = "Artifact Registry repository ID for custom reference workload images."
+  value       = google_artifact_registry_repository.online_boutique.repository_id
+}
+
+output "image_builder_service_account" {
+  description = "Least-privilege service account used by Cloud Build."
+  value       = google_service_account.image_builder.email
+  sensitive   = true
+}

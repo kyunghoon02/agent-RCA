@@ -25,6 +25,8 @@ labels:
     includeSelectors: false
 
 patches:
+  - path: patches/adservice-otel.yaml
+  - path: patches/cartservice-otel.yaml
   - path: patches/checkoutservice-otel.yaml
   - path: patches/currencyservice-otel.yaml
   - path: patches/emailservice-otel.yaml
@@ -32,6 +34,7 @@ patches:
   - path: patches/paymentservice-otel.yaml
   - path: patches/productcatalogservice-otel.yaml
   - path: patches/recommendationservice-otel.yaml
+  - path: patches/shippingservice-otel.yaml
   - target:
       group: ""
       version: v1

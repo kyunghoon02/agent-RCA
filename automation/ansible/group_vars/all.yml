@@ -89,6 +89,8 @@ online_boutique_expected_deployments: >-
 online_boutique_expected_services: >-
   {{ online_boutique_expected_workloads + ['opentelemetrycollector'] }}
 online_boutique_instrumented_services:
+  - adservice
+  - cartservice
   - checkoutservice
   - currencyservice
   - emailservice
@@ -96,3 +98,4 @@ online_boutique_instrumented_services:
   - paymentservice
   - productcatalogservice
   - recommendationservice
+  - shippingservice

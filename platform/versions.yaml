@@ -85,7 +85,15 @@ online_boutique:
   redis_image_digest: "sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576"
   otel_collector_version: "0.155.0"
   otel_collector_digest: "sha256:4935caa35e9a4cb387e35732e8fb22b2b5759af8d12e7043357f03837f6e8df5"
+  artifact_repository_id: agent-rca-dev-workloads
+  custom_image_tag: v0.10.6-otel-ca18c5b878de
+  custom_image_digests:
+    adservice: sha256:19066c30b05e2ffbe8360781d41ec56b8eec2cac48f226b790b4dc98877f4426
+    cartservice: sha256:f437d0a44bb2c18dbe0188b92117a5128af1a2562ab056238a88303506d6d553
+    shippingservice: sha256:afb3a0bb9db6a6224e1a06ddb7e0ca547f6bcb7b3f8f85e1d65329176023c213
   directly_instrumented_services:
+    - adservice
+    - cartservice
     - checkoutservice
     - currencyservice
     - emailservice
@@ -93,4 +101,5 @@ online_boutique:
     - paymentservice
     - productcatalogservice
     - recommendationservice
+    - shippingservice
   remote_kustomize_base: "https://github.com/GoogleCloudPlatform/microservices-demo//kustomize?ref=5b3a712ab85ccb8f6f7cd5b720d36ba9a8d041eb"

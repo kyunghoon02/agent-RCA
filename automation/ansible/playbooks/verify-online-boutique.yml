@@ -5,6 +5,7 @@
   gather_facts: true
   vars_files:
     - ../group_vars/all.yml
+    - ../../../platform/versions.yaml
 
   roles:
     - role: cluster_verify
