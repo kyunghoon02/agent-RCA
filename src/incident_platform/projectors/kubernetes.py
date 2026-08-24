@@ -32,6 +32,9 @@ class KubernetesEvidenceProjector:
             "missing_name",
         }
     )
+    relationship_allowlist = frozenset(
+        {"OWNS", "SELECTS", "ROUTES_TO", "SCHEDULED_ON"}
+    )
 
     def supports(self, evidence: Mapping[str, Any]) -> bool:
         """Return whether this projector owns the normalized Evidence kind."""
@@ -62,6 +65,7 @@ class KubernetesEvidenceProjector:
             )
         if evidence["kind"] == "resource-state":
             records.append(self._snapshot(entity["entity_id"], evidence))
+            records.extend(self._relationship_records(entity, evidence))
         else:
             records.append(self._event(entity["entity_id"], evidence))
             records.extend(self._missing_reference_records(entity, evidence))
@@ -84,8 +88,14 @@ class KubernetesEvidenceProjector:
             raise ContractViolation("Kubernetes Evidence subject kind is required")
         if not isinstance(name, str) or not name:
             raise ContractViolation("Kubernetes Evidence subject name is required")
-        if not isinstance(namespace, str) or not namespace:
-            raise ContractViolation("Kubernetes Evidence subject namespace is required")
+        if namespace is not None and (
+            not isinstance(namespace, str) or not namespace
+        ):
+            raise ContractViolation("Kubernetes Evidence subject namespace is malformed")
+        if namespace is None and kind != "Node":
+            raise ContractViolation(
+                "namespaced Kubernetes Evidence subject namespace is required"
+            )
         if not isinstance(api_version, str) or not api_version:
             raise ContractViolation("Kubernetes Evidence subject api_version is required")
         identity = (
@@ -172,9 +182,11 @@ class KubernetesEvidenceProjector:
         }
 
     def _snapshot(self, entity_id: str, evidence: Mapping[str, Any]) -> Dict[str, Any]:
+        facts = copy.deepcopy(evidence["facts"])
+        facts.pop("relationships", None)
         state = {
             "exists": bool(evidence["subject"].get("exists")),
-            "facts": copy.deepcopy(evidence["facts"]),
+            "facts": facts,
         }
         digest = state_content_hash(state)
         return {
@@ -195,6 +207,73 @@ class KubernetesEvidenceProjector:
             "state": state,
             "evidence_ids": [evidence["evidence_id"]],
         }
+
+    def _relationship_records(
+        self,
+        source_entity: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+    ) -> List[Mapping[str, Any]]:
+        relationships = evidence["facts"].get("relationships", [])
+        if not isinstance(relationships, list):
+            raise ContractViolation("Kubernetes Evidence relationships must be a list")
+        records: List[Mapping[str, Any]] = []
+        seen = set()
+        for relationship in relationships:
+            if not isinstance(relationship, Mapping):
+                raise ContractViolation("Kubernetes relationship is malformed")
+            relation_type = relationship.get("relation_type")
+            if relation_type not in self.relationship_allowlist:
+                raise ContractViolation(
+                    f"unsupported Kubernetes relationship: {relation_type}"
+                )
+            reference_key = relationship.get("reference_key")
+            if not isinstance(reference_key, str) or not reference_key:
+                raise ContractViolation("Kubernetes relationship reference_key is required")
+            destination = self._entity(
+                {
+                    "cluster_id": evidence["subject"].get("cluster_id"),
+                    "api_version": relationship.get("api_version"),
+                    "kind": relationship.get("kind"),
+                    "namespace": relationship.get("namespace"),
+                    "name": relationship.get("name"),
+                    "uid": relationship.get("uid"),
+                    "exists": True,
+                },
+                evidence,
+            )
+            identity = {
+                "source_entity_id": source_entity["entity_id"],
+                "relation_type": relation_type,
+                "destination_entity_id": destination["entity_id"],
+                "reference_key": reference_key,
+                "projector": self.projector_name,
+            }
+            relation_key = stable_graph_id("relkey", identity)
+            if relation_key in seen:
+                continue
+            seen.add(relation_key)
+            records.extend(
+                [
+                    destination,
+                    {
+                        "record_type": "relation_interval",
+                        "relation_id": stable_graph_id(
+                            "rel",
+                            {
+                                "relation_key": relation_key,
+                                "valid_from": evidence["observed_at"],
+                            },
+                        ),
+                        "relation_key": relation_key,
+                        **identity,
+                        "observed_at": evidence["observed_at"],
+                        "valid_from": evidence["observed_at"],
+                        "valid_to": None,
+                        "evidence_ids": [evidence["evidence_id"]],
+                    },
+                ]
+            )
+        return records
 
     def _event(self, entity_id: str, evidence: Mapping[str, Any]) -> Dict[str, Any]:
         facts = evidence["facts"]

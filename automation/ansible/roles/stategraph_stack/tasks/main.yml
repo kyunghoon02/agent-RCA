@@ -1,0 +1,145 @@
+---
+- name: Create the remote StateGraph manifest directory
+  ansible.builtin.file:
+    path: "{{ stategraph_remote_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check whether the StateGraph namespace exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get namespace {{ stategraph_namespace }}
+  register: stategraph_namespace_status
+  changed_when: false
+  failed_when: false
+
+- name: Create the StateGraph namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ stategraph_namespace }}
+  when: stategraph_namespace_status.rc != 0
+  changed_when: true
+
+- name: Reconcile the StateGraph namespace labels
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    label namespace {{ stategraph_namespace }}
+    app.kubernetes.io/part-of=agent-rca
+    kyunghoon02.github.io/boundary=data
+    app.kubernetes.io/managed-by=ansible
+    --overwrite
+  register: stategraph_namespace_labels
+  changed_when: "'not labeled' not in stategraph_namespace_labels.stdout"
+
+- name: Check whether the Incident Platform namespace exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get namespace {{ incident_platform_namespace }}
+  register: incident_platform_namespace_status
+  changed_when: false
+  failed_when: false
+
+- name: Create the Incident Platform namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ incident_platform_namespace }}
+  when: incident_platform_namespace_status.rc != 0
+  changed_when: true
+
+- name: Reconcile the Incident Platform namespace labels
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    label namespace {{ incident_platform_namespace }}
+    app.kubernetes.io/part-of=agent-rca
+    kyunghoon02.github.io/boundary=control
+    app.kubernetes.io/managed-by=ansible
+    --overwrite
+  register: incident_platform_namespace_labels
+  changed_when: "'not labeled' not in incident_platform_namespace_labels.stdout"
+
+- name: Copy the Incident Platform read-only RBAC manifest
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../platform/rbac/incident-platform-readonly.yaml"
+    dest: "{{ incident_platform_readonly_manifest }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply the Incident Platform read-only RBAC
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    apply --filename {{ incident_platform_readonly_manifest }}
+  register: incident_platform_rbac_apply
+  changed_when: >-
+    ' created' in incident_platform_rbac_apply.stdout
+    or ' configured' in incident_platform_rbac_apply.stdout
+
+- name: Check whether the Neo4j authentication Secret exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ stategraph_auth_secret_name }}
+    --namespace {{ stategraph_namespace }}
+  register: stategraph_auth_secret_status
+  changed_when: false
+  failed_when: false
+
+- name: Generate the initial Neo4j password
+  ansible.builtin.command: openssl rand -hex 32
+  register: stategraph_generated_password
+  changed_when: false
+  no_log: true
+  when: stategraph_auth_secret_status.rc != 0
+
+- name: Create the Neo4j authentication Secret
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      kubectl --kubeconfig /etc/kubernetes/admin.conf
+      create secret generic {{ stategraph_auth_secret_name }}
+      --namespace {{ stategraph_namespace }}
+      --from-file=auth=/dev/stdin --dry-run=client --output json
+      | kubectl --kubeconfig /etc/kubernetes/admin.conf apply --filename -
+    executable: /bin/bash
+    stdin: "neo4j/{{ stategraph_generated_password.stdout }}"
+    stdin_add_newline: false
+  no_log: true
+  changed_when: true
+  when: stategraph_auth_secret_status.rc != 0
+
+- name: Render the pinned StateGraph manifest locally
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - kustomize
+      - "{{ playbook_dir }}/../../../platform/stategraph"
+  delegate_to: localhost
+  become: false
+  register: stategraph_rendered_manifest
+  changed_when: false
+
+- name: Copy the rendered StateGraph manifest
+  ansible.builtin.copy:
+    content: "{{ stategraph_rendered_manifest.stdout }}\n"
+    dest: "{{ stategraph_remote_manifest }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply the StateGraph manifest
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    apply --filename {{ stategraph_remote_manifest }}
+  register: stategraph_apply
+  changed_when: >-
+    ' created' in stategraph_apply.stdout
+    or ' configured' in stategraph_apply.stdout
+
+- name: Wait for the Neo4j StatefulSet
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status statefulset/{{ stategraph_statefulset_name }}
+    --namespace {{ stategraph_namespace }}
+    --timeout={{ stategraph_wait_timeout }}
+  changed_when: false

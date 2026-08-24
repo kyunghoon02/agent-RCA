@@ -1,0 +1,180 @@
+---
+- name: Install the remote StateGraph smoke Python prerequisite
+  ansible.builtin.apt:
+    name: python3-venv
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Create the remote StateGraph smoke directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ stategraph_smoke_remote_directory }}"
+    - "{{ stategraph_smoke_remote_directory }}/src"
+    - "{{ stategraph_smoke_remote_directory }}/contracts"
+    - "{{ stategraph_smoke_remote_directory }}/tools"
+
+- name: Copy the StateGraph smoke Python source
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../src/"
+    dest: "{{ stategraph_smoke_remote_directory }}/src/"
+    owner: root
+    group: root
+    mode: preserve
+
+- name: Copy the StateGraph contracts
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../contracts/"
+    dest: "{{ stategraph_smoke_remote_directory }}/contracts/"
+    owner: root
+    group: root
+    mode: preserve
+
+- name: Copy the StateGraph smoke script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../tools/smoke_live_stategraph.py"
+    dest: "{{ stategraph_smoke_remote_directory }}/tools/smoke_live_stategraph.py"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy the pinned Python requirements
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../requirements.txt"
+    dest: "{{ stategraph_smoke_remote_directory }}/requirements.txt"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create the StateGraph smoke virtual environment
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -m
+      - venv
+      - "{{ stategraph_smoke_remote_directory }}/.venv"
+    creates: "{{ stategraph_smoke_remote_directory }}/.venv/bin/python"
+
+- name: Install the pinned StateGraph smoke dependencies
+  ansible.builtin.pip:
+    requirements: "{{ stategraph_smoke_remote_directory }}/requirements.txt"
+    virtualenv: "{{ stategraph_smoke_remote_directory }}/.venv"
+
+- name: Create a short-lived Incident Platform reader token
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - create
+      - token
+      - incident-platform-reader
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - --duration
+      - 10m
+  register: stategraph_reader_token
+  changed_when: false
+  no_log: true
+
+- name: Read the Neo4j authentication Secret
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ stategraph_auth_secret_name }}
+    --namespace {{ stategraph_namespace }} --output json
+  register: stategraph_auth_secret
+  changed_when: false
+  no_log: true
+
+- name: Read the internal Neo4j Service address
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ stategraph_service_name }}
+    --namespace {{ stategraph_namespace }}
+    --output jsonpath={.spec.clusterIP}
+  register: stategraph_service_cluster_ip
+  changed_when: false
+
+- name: Run the live StateGraph inventory and localization smoke
+  ansible.builtin.command:
+    argv:
+      - "{{ stategraph_smoke_remote_directory }}/.venv/bin/python"
+      - "{{ stategraph_smoke_remote_directory }}/tools/smoke_live_stategraph.py"
+  environment:
+    PYTHONPATH: "{{ stategraph_smoke_remote_directory }}/src"
+    STATEGRAPH_CLUSTER_ID: "{{ cluster_name }}"
+    STATEGRAPH_TARGET_NAMESPACE: "{{ online_boutique_namespace }}"
+    STATEGRAPH_SEED_SERVICE: "{{ stategraph_smoke_seed_service }}"
+    STATEGRAPH_APPLICATION_SERVICES: >-
+      {{ online_boutique_instrumented_services | join(',') }}
+    KUBERNETES_API_SERVER: https://127.0.0.1:6443
+    KUBERNETES_BEARER_TOKEN: "{{ stategraph_reader_token.stdout }}"
+    KUBERNETES_CA_FILE: /etc/kubernetes/pki/ca.crt
+    NEO4J_URI: bolt://{{ stategraph_service_cluster_ip.stdout }}:7687
+    NEO4J_AUTH: >-
+      {{ ((stategraph_auth_secret.stdout | from_json).data.auth | b64decode) }}
+    NEO4J_DATABASE: "{{ stategraph.neo4j.database }}"
+  register: stategraph_live_smoke
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Decode the live StateGraph smoke result
+  ansible.builtin.set_fact:
+    stategraph_live_smoke_result: "{{ stategraph_live_smoke.stdout | from_json }}"
+  no_log: true
+
+- name: Report a sanitized live StateGraph smoke failure
+  ansible.builtin.debug:
+    msg:
+      status: "{{ stategraph_live_smoke_result.status }}"
+      error_stage: "{{ stategraph_live_smoke_result.error_stage | default('unknown') }}"
+      error_type: "{{ stategraph_live_smoke_result.error_type | default('unknown') }}"
+      error: "{{ stategraph_live_smoke_result.error | default('no safe detail') }}"
+  when: stategraph_live_smoke_result.status != 'CONNECTED'
+
+- name: Require a complete live StateGraph vertical slice
+  ansible.builtin.assert:
+    that:
+      - stategraph_live_smoke_result.status == 'CONNECTED'
+      - stategraph_live_smoke_result.idempotent_reingest | bool
+      - >-
+        stategraph_live_smoke_result.application_service_count | int
+        == online_boutique_instrumented_services | length
+      - stategraph_live_smoke_result.resolution.status == 'RESOLVED'
+      - stategraph_live_smoke_result.resolution.candidate_count | int == 1
+      - stategraph_live_smoke_result.context.status == 'ANALYZING'
+      - stategraph_live_smoke_result.context.entity_count | int >= 5
+      - stategraph_live_smoke_result.context.path_count | int >= 5
+      - stategraph_live_smoke_result.context.evidence_count | int >= 1
+      - stategraph_live_smoke_result.context.completeness | float >= 0.7
+      - stategraph_live_smoke_result.graph_counts.entities | int >= 10
+      - stategraph_live_smoke_result.graph_counts.snapshots | int >= 10
+      - stategraph_live_smoke_result.graph_counts.relations | int >= 10
+      - "'REPRESENTED_BY' in stategraph_live_smoke_result.relation_types"
+      - "'OWNS' in stategraph_live_smoke_result.relation_types"
+      - "'SELECTS' in stategraph_live_smoke_result.relation_types"
+      - "'ROUTES_TO' in stategraph_live_smoke_result.relation_types"
+      - "'SCHEDULED_ON' in stategraph_live_smoke_result.relation_types"
+    fail_msg: The live StateGraph inventory, resolution, or localization is incomplete.
+
+- name: Report the sanitized live StateGraph result
+  ansible.builtin.debug:
+    msg:
+      status: "{{ stategraph_live_smoke_result.status }}"
+      inventory_evidence_count: >-
+        {{ stategraph_live_smoke_result.inventory_evidence_count }}
+      projected_record_count: >-
+        {{ stategraph_live_smoke_result.projected_record_count }}
+      graph_counts: "{{ stategraph_live_smoke_result.graph_counts }}"
+      application_service_count: >-
+        {{ stategraph_live_smoke_result.application_service_count }}
+      relation_types: "{{ stategraph_live_smoke_result.relation_types }}"
+      resolution: "{{ stategraph_live_smoke_result.resolution }}"
+      context: "{{ stategraph_live_smoke_result.context }}"

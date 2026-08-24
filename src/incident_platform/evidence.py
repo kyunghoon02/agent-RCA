@@ -61,9 +61,14 @@ class EvidenceWindow:
 class ResourceScope:
     namespace: str
     resource_names: Tuple[str, ...]
+    resource_name_prefixes: Tuple[str, ...] = field(default_factory=tuple)
     max_items: int = 100
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "resource_names", tuple(self.resource_names))
+        object.__setattr__(
+            self, "resource_name_prefixes", tuple(self.resource_name_prefixes)
+        )
         if not self.namespace.strip():
             raise ContractViolation("ResourceScope.namespace is required")
         if not self.resource_names:
@@ -72,8 +77,19 @@ class ResourceScope:
             raise ContractViolation("ResourceScope resource names must not be empty")
         if len(self.resource_names) != len(set(self.resource_names)):
             raise ContractViolation("ResourceScope resource names must be unique")
+        if any(not prefix.strip() for prefix in self.resource_name_prefixes):
+            raise ContractViolation("ResourceScope prefixes must not be empty")
+        if len(self.resource_name_prefixes) != len(set(self.resource_name_prefixes)):
+            raise ContractViolation("ResourceScope prefixes must be unique")
         if self.max_items <= 0:
             raise ContractViolation("ResourceScope.max_items must be positive")
+
+    def contains_resource_name(self, name: object) -> bool:
+        if not isinstance(name, str) or not name:
+            return False
+        return name in self.resource_names or any(
+            name.startswith(prefix) for prefix in self.resource_name_prefixes
+        )
 
 
 @dataclass(frozen=True)
@@ -204,7 +220,7 @@ class EvidenceBuilder:
                 f"scope {request.scope.namespace!r}"
             )
         subject_name = subject.get("name")
-        if subject_name not in request.scope.resource_names:
+        if not request.scope.contains_resource_name(subject_name):
             raise ContractViolation(
                 f"Evidence subject {subject_name!r} is outside the requested resource scope"
             )
@@ -328,5 +344,5 @@ def validate_provider_batch(
         name = draft.subject.get("name")
         if namespace != request.scope.namespace:
             raise ContractViolation("provider returned evidence outside namespace scope")
-        if name not in request.scope.resource_names:
+        if not request.scope.contains_resource_name(name):
             raise ContractViolation("provider returned evidence outside resource scope")

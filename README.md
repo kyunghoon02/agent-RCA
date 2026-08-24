@@ -222,14 +222,15 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 ## Implementation Status
 
-> 기준일: 2026-08-23. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
+> 기준일: 2026-08-24. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
-| Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature 경로는 live 연결, 일반 metric·Kubernetes provider orchestration은 미연결 |
+| Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature와 bounded Kubernetes topology inventory는 live 연결, 지속 collector orchestration과 일반 metric provider는 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
-| KRCA metric feature provider, scorer, Entity resolver와 StateGraph localization | schema-validated PromQL/dependency profile, Evidence-to-Top-N-to-resolved-seed fixture 및 Neo4j adapter/live contract 구현 | browse/cart/checkout 3개 profile의 23개 edge가 모두 Prometheus→normalized Evidence→KRCA drilldown live smoke에서 `HAS_DATA`; Entity resolution, continuous projection과 cluster Graph는 미연결 |
+| KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile과 Evidence-to-Top-N fixture 구현 | browse/cart/checkout 3개 profile의 23개 edge가 모두 Prometheus→normalized Evidence→KRCA drilldown live smoke에서 `HAS_DATA` |
+| Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, Neo4j repository, exact resolver와 Frozen Context 구현 | 실제 cluster에서 66개 Evidence→304개 record→76개 Entity/66개 Snapshot/86개 Relation, 10개 logical Service, exact 단일 후보와 Frozen Context까지 one-shot smoke 통과; 주기적 projection과 relation disappearance reconciliation은 미연결 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
@@ -249,6 +250,22 @@ Provider는 `GraphRecord`를 직접 만들지 않는다. `EvidenceDraft`를 반�
 `EvidenceBuilder`가 provenance, redaction, hash와 schema를 검증하고, domain
 Projector만 검증된 Evidence를 Entity, `SnapshotInterval`, `RelationInterval`과
 `EventAggregate`로 변환한다.
+
+현재 cluster에서 검증한 Kubernetes topology 경로는 다음과 같다.
+
+```text
+short-lived read-only ServiceAccount token
+→ bounded Service/Deployment/ReplicaSet/Pod/EndpointSlice/Node inventory
+→ EvidenceDraft → EvidenceBuilder의 scope·redaction·hash·schema 검증
+→ KubernetesEvidenceProjector
+→ Neo4jStateGraphRepository
+→ exact ServiceToEntityResolver
+→ IncidentLocalizationService → Frozen Context
+```
+
+이 경로는 같은 inventory를 두 번 ingest해 Entity/Snapshot/Relation 수가 증가하지 않는
+idempotence까지 확인한다. 다만 현재 실행기는 수동 one-shot smoke이며, watch 또는 주기
+reconciliation으로 사라진 relation의 `valid_to`를 닫는 상시 controller는 아직 아니다.
 
 ```text
 Validated Evidence
@@ -329,6 +346,9 @@ node와 temporal relationship로 저장한다. exact lookup과 bounded BFS는
 `StateGraphRepository` 뒤에서 Cypher로 실행되며 상위 service와 Agent는 Cypher를 직접
 만들 수 없다. 일반 closed history는 72시간, Frozen Context에 포함된 Entity와 조사
 시간창은 30일 pin으로 보존하고 open interval은 TTL만으로 삭제하지 않는다.
+Neo4j Community는 HTTP를 끄고 cluster 내부 Bolt Service만 노출하며 5Gi
+`agent-rca-local` PVC를 사용한다. StorageClass의 `Retain`은 backup이 아니므로 VM의 로컬
+디스크를 삭제하면 Graph history도 복구할 수 없다.
 
 Operational Knowledge도 StateGraph 내부에 저장하지 않는다. Retriever는 Frozen Context의
 Graph Entity에서 `domain`, `entity-type`, `name`, scope와 entity ID key를 파생하고,
@@ -357,6 +377,10 @@ Entity, reference-only 결론, 낮은 completeness, collector failure와 budget 
 ```bash
 make bootstrap-dev
 make validate-core
+make render-stategraph
+make deploy-stategraph
+make verify-stategraph
+make smoke-live-stategraph
 make smoke-agent-rca
 make smoke-live-krca
 make sync-knowledge-vectors
@@ -370,13 +394,19 @@ Collector concurrency·timeout·retry·partial failure, Evidence redaction/hash,
 deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval fixture를
 비롯해 Agent Evidence Gate와 read-only Viewer query fixture를 확인한다.
 
+`make deploy-stategraph`는 digest-pinned Neo4j Community StatefulSet, 내부 Bolt Service와
+5Gi PVC를 배포하고 인증·Pod 안정성·read-only RBAC를 검증한다. 이어서
+`make smoke-live-stategraph`가 실제 Online Boutique inventory를 Evidence로 정규화해
+Neo4j에 투영하고, exact resolver와 Frozen Context까지 one-shot으로 확인한다. 이 성공은
+지속 reconciliation이나 fault RCA 정확도를 뜻하지 않는다.
+
 `make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
 fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
 `credit_balance_exhausted` 429를 반환해 live 성공은 증명하지 못했다. 키 값과 model
 input은 출력하지 않으며, 사용 가능한 API credit가 준비되면 같은 명령으로 재검증한다.
 
 `make smoke-live-krca`는 기본적으로 로컬 `127.0.0.1:19090`의 loopback-only Prometheus
-tunnel과 최근 controlled traffic을 요구한다. 구성된 2개 profile을 bounded range query로
+tunnel과 최근 controlled traffic을 요구한다. 구성된 3개 profile을 bounded range query로
 수집해 Provider batch와 normalized Evidence를 검증하고 KRCA drilldown까지 실행한다.
 이 명령의 `CONNECTED`는 연결성을 뜻하며 fault 원인 정확도를 뜻하지 않는다.
 

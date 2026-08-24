@@ -1,0 +1,126 @@
+---
+- name: Wait for the Neo4j StatefulSet
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status statefulset/{{ stategraph_statefulset_name }}
+    --namespace {{ stategraph_namespace }}
+    --timeout={{ stategraph_wait_timeout }}
+  changed_when: false
+
+- name: Read the Neo4j StatefulSet image
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get statefulset {{ stategraph_statefulset_name }}
+    --namespace {{ stategraph_namespace }}
+    --output jsonpath={.spec.template.spec.containers[0].image}
+  register: stategraph_image
+  changed_when: false
+
+- name: Require the pinned Neo4j Community image
+  ansible.builtin.assert:
+    that:
+      - stategraph.neo4j.version in stategraph_image.stdout
+      - stategraph.neo4j.image_digest in stategraph_image.stdout
+    fail_msg: The live Neo4j image does not match the pinned version and digest.
+
+- name: Read the Neo4j Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ stategraph_service_name }}
+    --namespace {{ stategraph_namespace }} --output json
+  register: stategraph_service
+  changed_when: false
+
+- name: Require a private Bolt-only Neo4j Service
+  ansible.builtin.assert:
+    that:
+      - (stategraph_service.stdout | from_json).spec.type == 'ClusterIP'
+      - (stategraph_service.stdout | from_json).spec.ports | length == 1
+      - (stategraph_service.stdout | from_json).spec.ports[0].name == 'bolt'
+      - (stategraph_service.stdout | from_json).spec.ports[0].port == 7687
+    fail_msg: Neo4j must remain an internal Bolt-only ClusterIP Service.
+
+- name: Read Neo4j persistent volume claims
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get persistentvolumeclaim --namespace {{ stategraph_namespace }}
+    --selector app.kubernetes.io/name=neo4j --output json
+  register: stategraph_pvcs
+  changed_when: false
+
+- name: Require one Bound Neo4j persistent volume claim
+  ansible.builtin.assert:
+    that:
+      - (stategraph_pvcs.stdout | from_json)['items'] | length == 1
+      - (stategraph_pvcs.stdout | from_json)['items'][0].status.phase == 'Bound'
+      - >-
+        (stategraph_pvcs.stdout | from_json)['items'][0].spec.storageClassName
+        == local_path_storage_class
+    fail_msg: The Neo4j PVC is missing, unbound, or uses the wrong StorageClass.
+
+- name: Authenticate to Neo4j with the mounted Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ stategraph_namespace }}"
+      - statefulset/{{ stategraph_statefulset_name }}
+      - --
+      - bash
+      - -ec
+      - >-
+        username="${NEO4J_AUTH%%/*}";
+        password="${NEO4J_AUTH#*/}";
+        cypher-shell -u "$username" -p "$password" "RETURN 1 AS ready"
+  register: stategraph_cypher_readiness
+  changed_when: false
+  no_log: true
+
+- name: Read the Neo4j Pod state
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get pod --namespace {{ stategraph_namespace }}
+    --selector app.kubernetes.io/name=neo4j --output json
+  register: stategraph_pods
+  changed_when: false
+
+- name: Require a stable Neo4j container
+  ansible.builtin.assert:
+    that:
+      - (stategraph_pods.stdout | from_json)['items'] | length == 1
+      - >-
+        (stategraph_pods.stdout | from_json)['items'][0].status.containerStatuses[0].ready
+        | bool
+      - >-
+        (stategraph_pods.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
+        | int == 0
+    fail_msg: The Neo4j container is not Ready or has restarted.
+
+- name: Verify the Incident Platform reader can list target Pods
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i list pods
+    --namespace {{ online_boutique_namespace }}
+    --as system:serviceaccount:{{ incident_platform_namespace }}:incident-platform-reader
+  register: stategraph_reader_can_list_pods
+  changed_when: false
+  failed_when: stategraph_reader_can_list_pods.stdout != 'yes'
+
+- name: Verify the Incident Platform reader can list cluster Nodes
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i list nodes
+    --as system:serviceaccount:{{ incident_platform_namespace }}:incident-platform-reader
+  register: stategraph_reader_can_list_nodes
+  changed_when: false
+  failed_when: stategraph_reader_can_list_nodes.stdout != 'yes'
+
+- name: Verify the Incident Platform reader cannot read Secrets
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i get secrets
+    --namespace {{ online_boutique_namespace }}
+    --as system:serviceaccount:{{ incident_platform_namespace }}:incident-platform-reader
+  register: stategraph_reader_can_read_secrets
+  changed_when: false
+  failed_when: stategraph_reader_can_read_secrets.stdout != 'no'

@@ -2,7 +2,9 @@
 
 from .kubernetes import (
     KubernetesHTTPAPI,
+    KubernetesInventoryProvider,
     KubernetesResourceSpec,
+    KubernetesResourcePage,
     KubernetesStateProvider,
 )
 from .prometheus import (
@@ -18,6 +20,8 @@ from .krca_metrics import (
 
 __all__ = [
     "KubernetesHTTPAPI",
+    "KubernetesInventoryProvider",
+    "KubernetesResourcePage",
     "KubernetesResourceSpec",
     "KubernetesStateProvider",
     "APIDependencySpec",

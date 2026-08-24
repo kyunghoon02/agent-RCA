@@ -40,6 +40,8 @@ from .postgresql import PostgreSQLIncidentRepository, apply_migrations
 from .providers import (
     APIDependencySpec,
     KubernetesHTTPAPI,
+    KubernetesInventoryProvider,
+    KubernetesResourcePage,
     KubernetesResourceSpec,
     KubernetesStateProvider,
     PrometheusHTTPAPI,
@@ -173,6 +175,8 @@ __all__ = [
     "InvestigationScope",
     "InvestigationScopeFactory",
     "KubernetesHTTPAPI",
+    "KubernetesInventoryProvider",
+    "KubernetesResourcePage",
     "KubernetesEvidenceProjector",
     "KubernetesResourceSpec",
     "KubernetesStateProvider",

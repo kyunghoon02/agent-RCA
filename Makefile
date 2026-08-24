@@ -5,12 +5,13 @@ ANSIBLE_INVENTORY ?= automation/ansible/inventories/dev.yml
 ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
 
 .PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca \
-	smoke-live-krca \
+	smoke-live-krca smoke-live-stategraph \
 	sync-knowledge-vectors evaluate-knowledge-retrieval gcp-readiness \
 	render-online-boutique build-online-boutique-otel-images terraform-fmt terraform-validate \
 	bootstrap-ansible ansible-syntax ansible-ping bootstrap-kubernetes \
 	verify-kubernetes render-observability deploy-observability \
-	verify-observability deploy-online-boutique verify-online-boutique
+	verify-observability deploy-online-boutique verify-online-boutique \
+	render-stategraph deploy-stategraph verify-stategraph
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -30,6 +31,11 @@ smoke-agent-rca:
 smoke-live-krca:
 	PYTHONPATH=src .venv/bin/python tools/smoke_live_krca.py
 
+smoke-live-stategraph:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/smoke-live-stategraph.yml
+
 sync-knowledge-vectors:
 	PYTHONPATH=src .venv/bin/python tools/sync_knowledge_vectors.py
 
@@ -41,6 +47,9 @@ gcp-readiness:
 
 render-online-boutique:
 	kubectl kustomize platform/online-boutique
+
+render-stategraph:
+	kubectl kustomize platform/stategraph
 
 build-online-boutique-otel-images:
 	GCLOUD_BIN=$(GCLOUD_BIN) tools/build_online_boutique_otel_images.sh
@@ -95,6 +104,15 @@ ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/verify-online-boutique.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/deploy-stategraph.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/verify-stategraph.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/smoke-live-stategraph.yml
 
 ansible-ping:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible \
@@ -127,3 +145,13 @@ verify-online-boutique:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-online-boutique.yml
+
+deploy-stategraph:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/deploy-stategraph.yml
+
+verify-stategraph:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/verify-stategraph.yml

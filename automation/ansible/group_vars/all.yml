@@ -99,3 +99,15 @@ online_boutique_instrumented_services:
   - productcatalogservice
   - recommendationservice
   - shippingservice
+
+stategraph_namespace: graph-rca
+stategraph_statefulset_name: neo4j
+stategraph_service_name: neo4j
+stategraph_auth_secret_name: neo4j-auth
+stategraph_remote_directory: /etc/agent-rca/stategraph
+stategraph_remote_manifest: /etc/agent-rca/stategraph/stategraph.yaml
+stategraph_wait_timeout: 15m
+stategraph_smoke_remote_directory: /opt/agent-rca/stategraph-smoke
+stategraph_smoke_seed_service: checkoutservice
+incident_platform_namespace: incident-platform
+incident_platform_readonly_manifest: /etc/agent-rca/stategraph/incident-platform-readonly.yaml

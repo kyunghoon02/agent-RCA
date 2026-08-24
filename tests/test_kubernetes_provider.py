@@ -310,6 +310,87 @@ class KubernetesHTTPAPITests(unittest.TestCase):
         self.assertEqual(resource_options["headers"]["Authorization"],
                          "Bearer service-account-test-token")
 
+    def test_client_lists_namespaced_and_cluster_scoped_inventory(self) -> None:
+        transport = RecordingTransport(
+            [
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "ReplicaSetList",
+                    "metadata": {"continue": ""},
+                    "items": [],
+                },
+                {
+                    "apiVersion": "v1",
+                    "kind": "NodeList",
+                    "metadata": {"continue": ""},
+                    "items": [],
+                },
+            ]
+        )
+        client = KubernetesHTTPAPI(
+            "https://kubernetes.default.svc",
+            bearer_token="service-account-test-token",
+            transport=transport,
+        )
+
+        client.list_resource_page(
+            KubernetesResourceSpec("apps/v1", "ReplicaSet"),
+            namespace="online-boutique",
+            limit=50,
+            continue_token=None,
+            timeout_seconds=2,
+        )
+        client.list_resource_page(
+            KubernetesResourceSpec("v1", "Node"),
+            namespace=None,
+            limit=10,
+            continue_token=None,
+            timeout_seconds=2,
+        )
+
+        namespaced_url, _ = transport.calls[0]
+        cluster_url, _ = transport.calls[1]
+        self.assertEqual(
+            urlsplit(namespaced_url).path,
+            "/apis/apps/v1/namespaces/online-boutique/replicasets",
+        )
+        self.assertEqual(urlsplit(cluster_url).path, "/api/v1/nodes")
+        self.assertEqual(parse_qs(urlsplit(namespaced_url).query)["limit"], ["50"])
+
+    def test_inventory_accepts_items_without_repeated_type_metadata(self) -> None:
+        service = pod_resource()
+        service["metadata"]["name"] = "checkoutservice"
+        service["metadata"]["namespace"] = "online-boutique"
+        service.pop("apiVersion")
+        service.pop("kind")
+        transport = RecordingTransport(
+            [
+                {
+                    "apiVersion": "v1",
+                    "kind": "ServiceList",
+                    "metadata": {"continue": ""},
+                    "items": [service],
+                }
+            ]
+        )
+        client = KubernetesHTTPAPI(
+            "https://kubernetes.default.svc",
+            bearer_token="service-account-test-token",
+            transport=transport,
+        )
+
+        page = client.list_resource_page(
+            KubernetesResourceSpec("v1", "Service"),
+            namespace="online-boutique",
+            limit=50,
+            continue_token=None,
+            timeout_seconds=2,
+        )
+
+        self.assertEqual(page.items[0]["metadata"]["name"], "checkoutservice")
+        self.assertEqual(page.items[0]["apiVersion"], "v1")
+        self.assertEqual(page.items[0]["kind"], "Service")
+
     def test_api_server_requires_https_and_no_embedded_credentials(self) -> None:
         transport = RecordingTransport([])
         with self.assertRaisesRegex(ValueError, "HTTPS"):

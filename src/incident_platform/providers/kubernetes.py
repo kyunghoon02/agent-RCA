@@ -15,12 +15,18 @@ from .http import BoundedJSONTransport, ProviderNotFound, ProviderPageExpired
 
 
 _SUPPORTED_RESOURCES = {
-    ("v1", "Pod"): ("api", "v1", "pods"),
-    ("v1", "Service"): ("api", "v1", "services"),
-    ("v1", "ConfigMap"): ("api", "v1", "configmaps"),
-    ("apps/v1", "Deployment"): ("apis", "apps/v1", "deployments"),
-    ("apps/v1", "StatefulSet"): ("apis", "apps/v1", "statefulsets"),
-    ("apps/v1", "DaemonSet"): ("apis", "apps/v1", "daemonsets"),
+    ("v1", "Pod"): ("api", "v1", "pods", True),
+    ("v1", "Service"): ("api", "v1", "services", True),
+    ("v1", "ConfigMap"): ("api", "v1", "configmaps", True),
+    ("v1", "Node"): ("api", "v1", "nodes", False),
+    ("apps/v1", "Deployment"): ("apis", "apps/v1", "deployments", True),
+    ("apps/v1", "ReplicaSet"): ("apis", "apps/v1", "replicasets", True),
+    ("apps/v1", "StatefulSet"): ("apis", "apps/v1", "statefulsets", True),
+    ("apps/v1", "DaemonSet"): ("apis", "apps/v1", "daemonsets", True),
+    (
+        "discovery.k8s.io/v1",
+        "EndpointSlice",
+    ): ("apis", "discovery.k8s.io/v1", "endpointslices", True),
 }
 _DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _DNS_SUBDOMAIN = re.compile(
@@ -85,6 +91,12 @@ class KubernetesEventPage:
     continue_token: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class KubernetesResourcePage:
+    items: Tuple[Mapping[str, Any], ...]
+    continue_token: Optional[str] = None
+
+
 class KubernetesReadClient(Protocol):
     def get_resource(
         self,
@@ -105,6 +117,19 @@ class KubernetesReadClient(Protocol):
         continue_token: Optional[str],
         timeout_seconds: float,
     ) -> KubernetesEventPage:
+        ...
+
+
+class KubernetesInventoryClient(Protocol):
+    def list_resource_page(
+        self,
+        resource: KubernetesResourceSpec,
+        *,
+        namespace: Optional[str],
+        limit: int,
+        continue_token: Optional[str],
+        timeout_seconds: float,
+    ) -> KubernetesResourcePage:
         ...
 
 
@@ -138,9 +163,13 @@ class KubernetesHTTPAPI:
     ) -> Optional[Mapping[str, Any]]:
         _validate_namespace(namespace)
         _validate_resource_name(name)
-        group, version, plural = _SUPPORTED_RESOURCES[
+        group, version, plural, namespaced = _SUPPORTED_RESOURCES[
             (resource.api_version, resource.kind)
         ]
+        if not namespaced:
+            raise PermanentProviderError(
+                "get_resource requires a namespace-scoped Kubernetes resource"
+            )
         path = (
             f"/{group}/{version}/namespaces/{quote(namespace, safe='')}/"
             f"{plural}/{quote(name, safe='')}"
@@ -153,6 +182,103 @@ class KubernetesHTTPAPI:
             )
         except ProviderNotFound:
             return None
+
+    def list_resource_page(
+        self,
+        resource: KubernetesResourceSpec,
+        *,
+        namespace: Optional[str],
+        limit: int,
+        continue_token: Optional[str],
+        timeout_seconds: float,
+    ) -> KubernetesResourcePage:
+        if limit <= 0:
+            raise PermanentProviderError("Kubernetes resource page limit must be positive")
+        group, version, plural, namespaced = _SUPPORTED_RESOURCES[
+            (resource.api_version, resource.kind)
+        ]
+        if namespaced:
+            if namespace is None:
+                raise PermanentProviderError(
+                    "namespaced Kubernetes inventory requires a namespace"
+                )
+            _validate_namespace(namespace)
+            path = (
+                f"/{group}/{version}/namespaces/{quote(namespace, safe='')}/{plural}"
+            )
+        else:
+            if namespace is not None:
+                raise PermanentProviderError(
+                    "cluster-scoped Kubernetes inventory must not set a namespace"
+                )
+            path = f"/{group}/{version}/{plural}"
+        parameters = {"limit": str(limit)}
+        if continue_token:
+            parameters["continue"] = continue_token
+        payload = self._transport.get_json(
+            f"{self._api_server}{path}?{urlencode(parameters)}",
+            timeout_seconds=timeout_seconds,
+            headers=self._headers,
+        )
+        if (
+            payload.get("apiVersion") != resource.api_version
+            or payload.get("kind") != f"{resource.kind}List"
+        ):
+            raise PermanentProviderError(
+                "Kubernetes inventory returned an unexpected list kind: "
+                f"expected {resource.api_version}/{resource.kind}List, got "
+                f"{payload.get('apiVersion')}/{payload.get('kind')}"
+            )
+        items = payload.get("items")
+        metadata = payload.get("metadata", {})
+        if not isinstance(items, list) or not all(
+            isinstance(item, Mapping) for item in items
+        ):
+            raise PermanentProviderError("Kubernetes resource list is malformed")
+        if len(items) > limit:
+            raise PermanentProviderError(
+                "Kubernetes resource list exceeded the requested page limit"
+            )
+        if not isinstance(metadata, Mapping):
+            raise PermanentProviderError("Kubernetes resource list metadata is malformed")
+        next_token = metadata.get("continue") or None
+        if next_token is not None and not isinstance(next_token, str):
+            raise PermanentProviderError("Kubernetes continue token is malformed")
+        for item in items:
+            item_metadata = item.get("metadata")
+            if not isinstance(item_metadata, Mapping):
+                raise PermanentProviderError(
+                    "Kubernetes inventory resource metadata is malformed"
+                )
+            item_api_version = item.get("apiVersion")
+            item_kind = item.get("kind")
+            if (
+                item_api_version not in (None, resource.api_version)
+                or item_kind not in (None, resource.kind)
+            ):
+                raise PermanentProviderError(
+                    "Kubernetes inventory returned an unexpected resource kind: "
+                    f"expected {resource.api_version}/{resource.kind}, got "
+                    f"{item_api_version}/{item_kind}"
+                )
+            item_namespace = item_metadata.get("namespace")
+            if namespaced and item_namespace != namespace:
+                raise PermanentProviderError(
+                    "Kubernetes inventory returned a resource outside namespace scope"
+                )
+            if not namespaced and item_namespace is not None:
+                raise PermanentProviderError(
+                    "cluster-scoped Kubernetes inventory returned a namespace"
+                )
+        normalized_items = tuple(
+            {
+                **dict(item),
+                "apiVersion": resource.api_version,
+                "kind": resource.kind,
+            }
+            for item in items
+        )
+        return KubernetesResourcePage(normalized_items, next_token)
 
     def list_event_page(
         self,
@@ -198,6 +324,505 @@ class KubernetesHTTPAPI:
         if next_token is not None and not isinstance(next_token, str):
             raise PermanentProviderError("Kubernetes continue token is malformed")
         return KubernetesEventPage(tuple(items), next_token)
+
+
+class KubernetesInventoryProvider:
+    """Collect a bounded, read-only workload topology for one namespace.
+
+    The requested names are trusted logical workload roots. Dynamic ReplicaSet,
+    Pod, and EndpointSlice names are admitted only through Kubernetes ownership
+    or selector relationships rooted at those exact names.
+    """
+
+    _NAMESPACED_SPECS = (
+        KubernetesResourceSpec("v1", "Service"),
+        KubernetesResourceSpec("apps/v1", "Deployment"),
+        KubernetesResourceSpec("apps/v1", "ReplicaSet"),
+        KubernetesResourceSpec("v1", "Pod"),
+        KubernetesResourceSpec("discovery.k8s.io/v1", "EndpointSlice"),
+    )
+    _NODE_SPEC = KubernetesResourceSpec("v1", "Node")
+
+    def __init__(
+        self,
+        client: KubernetesInventoryClient,
+        *,
+        cluster_id: str,
+        page_size: int = 100,
+        max_raw_resources: int = 500,
+    ) -> None:
+        if not cluster_id.strip():
+            raise ValueError("Kubernetes cluster_id must not be empty")
+        if not 1 <= page_size <= 500:
+            raise ValueError("Kubernetes inventory page_size must be between 1 and 500")
+        if not 1 <= max_raw_resources <= 5000:
+            raise ValueError(
+                "Kubernetes inventory max_raw_resources must be between 1 and 5000"
+            )
+        self._client = client
+        self._cluster_id = cluster_id
+        self._page_size = page_size
+        self._max_raw_resources = max_raw_resources
+
+    def collect(self, request: CollectionRequest) -> ProviderBatch:
+        _validate_namespace(request.scope.namespace)
+        roots = set(request.scope.resource_names)
+        for name in roots:
+            _validate_resource_name(name)
+        allowed_prefixes = {f"{name}-" for name in roots}
+        unexpected_prefixes = (
+            set(request.scope.resource_name_prefixes) - allowed_prefixes
+        )
+        if unexpected_prefixes:
+            raise PermanentProviderError(
+                "Kubernetes inventory prefixes must be derived from exact roots"
+            )
+        deadline = time.monotonic() + request.timeout_seconds
+        listed: Dict[str, Tuple[Mapping[str, Any], ...]] = {}
+        total = 0
+        for spec in self._NAMESPACED_SPECS:
+            items = self._list_all(
+                spec,
+                namespace=request.scope.namespace,
+                deadline=deadline,
+                remaining=self._max_raw_resources - total,
+            )
+            listed[spec.kind] = items
+            total += len(items)
+        nodes = self._list_all(
+            self._NODE_SPEC,
+            namespace=None,
+            deadline=deadline,
+            remaining=self._max_raw_resources - total,
+        )
+
+        retained = self._retain_rooted_resources(listed, roots)
+        node_by_name = {
+            str(item.get("metadata", {}).get("name")): item
+            for item in nodes
+            if isinstance(item.get("metadata"), Mapping)
+        }
+        drafts = []
+        for kind in ("Service", "Deployment", "ReplicaSet", "Pod", "EndpointSlice"):
+            for resource in sorted(
+                retained[kind], key=lambda item: str(item["metadata"]["name"])
+            ):
+                name = resource["metadata"]["name"]
+                if not request.scope.contains_resource_name(name):
+                    raise PermanentProviderError(
+                        f"Kubernetes inventory subject {name!r} exceeded root scope"
+                    )
+                facts = self._safe_inventory_facts(resource)
+                facts["relationships"] = self._relationships_for(
+                    resource,
+                    retained=retained,
+                    node_by_name=node_by_name,
+                )
+                drafts.append(
+                    EvidenceDraft(
+                        source="kubernetes",
+                        kind="resource-state",
+                        observed_at=request.window.end,
+                        subject=self._subject(resource, request.scope.namespace),
+                        summary=(
+                            f"Kubernetes {kind} {name} was read from the bounded "
+                            f"{request.scope.namespace} inventory."
+                        ),
+                        facts=facts,
+                        provider="kubernetes-inventory-http-api",
+                        query=(
+                            f"list {resource['apiVersion']}/{kind} "
+                            f"namespace={request.scope.namespace} rooted=true"
+                        ),
+                        locator=f"k8s://{request.scope.namespace}/{kind}/{name}",
+                    )
+                )
+        if not drafts:
+            raise PermanentProviderError(
+                "Kubernetes inventory found no resources for the requested roots"
+            )
+        if len(drafts) > request.scope.max_items:
+            raise PermanentProviderError(
+                "Kubernetes inventory exceeded the Evidence item budget"
+            )
+        return ProviderBatch(items=tuple(drafts))
+
+    def _list_all(
+        self,
+        spec: KubernetesResourceSpec,
+        *,
+        namespace: Optional[str],
+        deadline: float,
+        remaining: int,
+    ) -> Tuple[Mapping[str, Any], ...]:
+        if remaining <= 0:
+            raise PermanentProviderError(
+                "Kubernetes inventory exceeded the raw resource budget"
+            )
+        items = []
+        continue_token = None
+        restarted = False
+        while True:
+            limit = min(self._page_size, remaining - len(items))
+            if limit <= 0:
+                raise PermanentProviderError(
+                    "Kubernetes inventory exceeded the raw resource budget"
+                )
+            try:
+                page = self._client.list_resource_page(
+                    spec,
+                    namespace=namespace,
+                    limit=limit,
+                    continue_token=continue_token,
+                    timeout_seconds=KubernetesStateProvider._remaining(deadline),
+                )
+            except ProviderPageExpired:
+                if continue_token is None or restarted:
+                    raise
+                items = []
+                continue_token = None
+                restarted = True
+                continue
+            items.extend(page.items)
+            continue_token = page.continue_token
+            if not continue_token:
+                return tuple(items)
+
+    @staticmethod
+    def _metadata(resource: Mapping[str, Any]) -> Mapping[str, Any]:
+        metadata = resource.get("metadata")
+        if not isinstance(metadata, Mapping):
+            raise PermanentProviderError(
+                "Kubernetes inventory resource metadata is malformed"
+            )
+        name = metadata.get("name")
+        uid = metadata.get("uid")
+        if not isinstance(name, str) or not name:
+            raise PermanentProviderError("Kubernetes inventory resource name is malformed")
+        if not isinstance(uid, str) or not uid:
+            raise PermanentProviderError("Kubernetes inventory resource UID is required")
+        return metadata
+
+    @classmethod
+    def _owner_matches(
+        cls,
+        resource: Mapping[str, Any],
+        *,
+        kind: str,
+        allowed_names: set[str],
+        allowed_uids: set[str],
+    ) -> bool:
+        metadata = cls._metadata(resource)
+        owners = metadata.get("ownerReferences", [])
+        if not isinstance(owners, list):
+            raise PermanentProviderError("Kubernetes ownerReferences is malformed")
+        return any(
+            isinstance(owner, Mapping)
+            and owner.get("kind") == kind
+            and (
+                owner.get("name") in allowed_names
+                or owner.get("uid") in allowed_uids
+            )
+            for owner in owners
+        )
+
+    @classmethod
+    def _retain_rooted_resources(
+        cls,
+        listed: Mapping[str, Tuple[Mapping[str, Any], ...]],
+        roots: set[str],
+    ) -> Dict[str, Tuple[Mapping[str, Any], ...]]:
+        services = tuple(
+            item for item in listed["Service"] if cls._metadata(item)["name"] in roots
+        )
+        deployments = tuple(
+            item
+            for item in listed["Deployment"]
+            if cls._metadata(item)["name"] in roots
+        )
+        deployment_names = {cls._metadata(item)["name"] for item in deployments}
+        deployment_uids = {cls._metadata(item)["uid"] for item in deployments}
+        replica_sets = tuple(
+            item
+            for item in listed["ReplicaSet"]
+            if cls._owner_matches(
+                item,
+                kind="Deployment",
+                allowed_names=deployment_names,
+                allowed_uids=deployment_uids,
+            )
+        )
+        replica_set_names = {cls._metadata(item)["name"] for item in replica_sets}
+        replica_set_uids = {cls._metadata(item)["uid"] for item in replica_sets}
+        pods = tuple(
+            item
+            for item in listed["Pod"]
+            if cls._owner_matches(
+                item,
+                kind="ReplicaSet",
+                allowed_names=replica_set_names,
+                allowed_uids=replica_set_uids,
+            )
+        )
+        endpoint_slices = tuple(
+            item
+            for item in listed["EndpointSlice"]
+            if isinstance(cls._metadata(item).get("labels"), Mapping)
+            and cls._metadata(item)["labels"].get(
+                "kubernetes.io/service-name"
+            )
+            in roots
+        )
+        return {
+            "Service": services,
+            "Deployment": deployments,
+            "ReplicaSet": replica_sets,
+            "Pod": pods,
+            "EndpointSlice": endpoint_slices,
+        }
+
+    def _subject(
+        self, resource: Mapping[str, Any], namespace: str
+    ) -> Dict[str, Any]:
+        metadata = self._metadata(resource)
+        if metadata.get("namespace") != namespace:
+            raise PermanentProviderError(
+                "Kubernetes inventory resource is outside request scope"
+            )
+        return {
+            "cluster_id": self._cluster_id,
+            "api_version": resource["apiVersion"],
+            "kind": resource["kind"],
+            "namespace": namespace,
+            "name": metadata["name"],
+            "uid": metadata["uid"],
+            "exists": True,
+        }
+
+    @classmethod
+    def _reference(
+        cls,
+        resource: Mapping[str, Any],
+        *,
+        relation_type: str,
+        reference_key: str,
+    ) -> Dict[str, Any]:
+        metadata = cls._metadata(resource)
+        return {
+            "relation_type": relation_type,
+            "api_version": resource["apiVersion"],
+            "kind": resource["kind"],
+            "namespace": metadata.get("namespace"),
+            "name": metadata["name"],
+            "uid": metadata["uid"],
+            "reference_key": reference_key,
+        }
+
+    @classmethod
+    def _relationships_for(
+        cls,
+        resource: Mapping[str, Any],
+        *,
+        retained: Mapping[str, Tuple[Mapping[str, Any], ...]],
+        node_by_name: Mapping[str, Mapping[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        kind = resource["kind"]
+        metadata = cls._metadata(resource)
+        relationships: list[Dict[str, Any]] = []
+        if kind == "Deployment":
+            for replica_set in retained["ReplicaSet"]:
+                if cls._owner_matches(
+                    replica_set,
+                    kind="Deployment",
+                    allowed_names={metadata["name"]},
+                    allowed_uids={metadata["uid"]},
+                ):
+                    relationships.append(
+                        cls._reference(
+                            replica_set,
+                            relation_type="OWNS",
+                            reference_key="deployment-owner-reference",
+                        )
+                    )
+        elif kind == "ReplicaSet":
+            for pod in retained["Pod"]:
+                if cls._owner_matches(
+                    pod,
+                    kind="ReplicaSet",
+                    allowed_names={metadata["name"]},
+                    allowed_uids={metadata["uid"]},
+                ):
+                    relationships.append(
+                        cls._reference(
+                            pod,
+                            relation_type="OWNS",
+                            reference_key="replicaset-owner-reference",
+                        )
+                    )
+        elif kind == "Service":
+            spec = resource.get("spec", {})
+            selector = spec.get("selector", {}) if isinstance(spec, Mapping) else {}
+            if isinstance(selector, Mapping) and selector:
+                for pod in retained["Pod"]:
+                    labels = cls._metadata(pod).get("labels", {})
+                    if isinstance(labels, Mapping) and all(
+                        labels.get(key) == value for key, value in selector.items()
+                    ):
+                        relationships.append(
+                            cls._reference(
+                                pod,
+                                relation_type="SELECTS",
+                                reference_key="service-selector",
+                            )
+                        )
+            for endpoint_slice in retained["EndpointSlice"]:
+                labels = cls._metadata(endpoint_slice).get("labels", {})
+                if (
+                    isinstance(labels, Mapping)
+                    and labels.get("kubernetes.io/service-name") == metadata["name"]
+                ):
+                    relationships.append(
+                        cls._reference(
+                            endpoint_slice,
+                            relation_type="ROUTES_TO",
+                            reference_key="service-endpointslice-label",
+                        )
+                    )
+        elif kind == "EndpointSlice":
+            retained_pods = {
+                cls._metadata(item)["uid"]: item for item in retained["Pod"]
+            }
+            endpoints = resource.get("endpoints", [])
+            if isinstance(endpoints, list):
+                for endpoint in endpoints:
+                    target = endpoint.get("targetRef", {}) if isinstance(endpoint, Mapping) else {}
+                    if not isinstance(target, Mapping) or target.get("kind") != "Pod":
+                        continue
+                    pod = retained_pods.get(target.get("uid"))
+                    if pod is not None:
+                        relationships.append(
+                            cls._reference(
+                                pod,
+                                relation_type="ROUTES_TO",
+                                reference_key="endpointslice-target-ref",
+                            )
+                        )
+        elif kind == "Pod":
+            spec = resource.get("spec", {})
+            node_name = spec.get("nodeName") if isinstance(spec, Mapping) else None
+            node = node_by_name.get(node_name) if isinstance(node_name, str) else None
+            if node is not None:
+                relationships.append(
+                    cls._reference(
+                        node,
+                        relation_type="SCHEDULED_ON",
+                        reference_key="pod-node-name",
+                    )
+                )
+        relationships.sort(
+            key=lambda item: (
+                item["relation_type"],
+                item["kind"],
+                item["namespace"] or "",
+                item["name"],
+            )
+        )
+        return relationships
+
+    @classmethod
+    def _safe_inventory_facts(cls, resource: Mapping[str, Any]) -> Dict[str, Any]:
+        metadata = cls._metadata(resource)
+        spec = resource.get("spec", {})
+        status = resource.get("status", {})
+        if not isinstance(spec, Mapping) or not isinstance(status, Mapping):
+            raise PermanentProviderError("Kubernetes inventory state is malformed")
+        facts: Dict[str, Any] = {
+            "result_status": "FOUND",
+            "resource_version": metadata.get("resourceVersion"),
+            "generation": metadata.get("generation"),
+            "observed_generation": status.get("observedGeneration"),
+        }
+        kind = resource["kind"]
+        if kind == "Service":
+            ports = spec.get("ports", [])
+            facts.update(
+                {
+                    "service_type": spec.get("type"),
+                    "ip_family_policy": spec.get("ipFamilyPolicy"),
+                    "port_count": len(ports) if isinstance(ports, list) else None,
+                }
+            )
+        elif kind in {"Deployment", "ReplicaSet"}:
+            facts.update(
+                {
+                    "desired_replicas": spec.get("replicas"),
+                    "replicas": status.get("replicas"),
+                    "ready_replicas": status.get("readyReplicas"),
+                    "available_replicas": status.get("availableReplicas"),
+                    "fully_labeled_replicas": status.get("fullyLabeledReplicas"),
+                    "conditions": KubernetesStateProvider._conditions(
+                        status.get("conditions", [])
+                    ),
+                }
+            )
+        elif kind == "Pod":
+            container_statuses = status.get("containerStatuses", [])
+            safe_statuses = []
+            if isinstance(container_statuses, list):
+                for item in container_statuses:
+                    if not isinstance(item, Mapping):
+                        continue
+                    state = item.get("state", {})
+                    waiting = state.get("waiting", {}) if isinstance(state, Mapping) else {}
+                    last_state = item.get("lastState", {})
+                    terminated = (
+                        last_state.get("terminated", {})
+                        if isinstance(last_state, Mapping)
+                        else {}
+                    )
+                    safe_statuses.append(
+                        {
+                            "name": item.get("name"),
+                            "ready": item.get("ready"),
+                            "restart_count": item.get("restartCount"),
+                            "waiting_reason": waiting.get("reason")
+                            if isinstance(waiting, Mapping)
+                            else None,
+                            "last_termination_reason": terminated.get("reason")
+                            if isinstance(terminated, Mapping)
+                            else None,
+                        }
+                    )
+            facts.update(
+                {
+                    "phase": status.get("phase"),
+                    "qos_class": status.get("qosClass"),
+                    "conditions": KubernetesStateProvider._conditions(
+                        status.get("conditions", [])
+                    ),
+                    "container_statuses": safe_statuses,
+                }
+            )
+        elif kind == "EndpointSlice":
+            endpoints = resource.get("endpoints", [])
+            ready = 0
+            total = 0
+            if isinstance(endpoints, list):
+                for endpoint in endpoints:
+                    if not isinstance(endpoint, Mapping):
+                        continue
+                    total += 1
+                    conditions = endpoint.get("conditions", {})
+                    if isinstance(conditions, Mapping) and conditions.get("ready") is True:
+                        ready += 1
+            facts.update(
+                {
+                    "address_type": resource.get("addressType"),
+                    "endpoint_count": total,
+                    "ready_endpoint_count": ready,
+                }
+            )
+        return facts
 
 
 class KubernetesStateProvider:

@@ -77,6 +77,15 @@ observability:
     chart_version: "1.11.1"
     controller_type: deployment
 
+stategraph:
+  namespace: graph-rca
+  neo4j:
+    edition: community
+    version: 5.26.29
+    image_digest: sha256:89d577f2e49606de76441eca8cf7a0fe88e594cbaac4d2a3d86c6e59676e2b1e
+    database: neo4j
+    storage: 5Gi
+
 online_boutique:
   repository: "https://github.com/GoogleCloudPlatform/microservices-demo.git"
   release_tag: "v0.10.6"

@@ -1,0 +1,11 @@
+---
+- name: Verify the Neo4j StateGraph
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../../../platform/versions.yaml
+
+  roles:
+    - role: stategraph_verify

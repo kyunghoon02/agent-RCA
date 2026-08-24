@@ -807,6 +807,124 @@ def validate_krca_runtime_config() -> None:
         raise ValidationFailure("Online Boutique live KRCA edge coverage drifted")
 
 
+def validate_stategraph_manifest() -> None:
+    versions = load_yaml_documents(ROOT / "platform" / "versions.yaml")[0]
+    expected_stategraph = {
+        "namespace": "graph-rca",
+        "neo4j": {
+            "edition": "community",
+            "version": "5.26.29",
+            "image_digest": (
+                "sha256:89d577f2e49606de76441eca8cf7a0fe88e594cbaac4d2a3d86c6e59676e2b1e"
+            ),
+            "database": "neo4j",
+            "storage": "5Gi",
+        },
+    }
+    if versions.get("stategraph") != expected_stategraph:
+        raise ValidationFailure("StateGraph version and storage boundary drifted")
+
+    kustomization = load_yaml_documents(
+        ROOT / "platform" / "stategraph" / "kustomization.yaml"
+    )[0]
+    if kustomization.get("resources") != ["neo4j.yaml"]:
+        raise ValidationFailure("StateGraph Kustomize resource set drifted")
+
+    documents = load_yaml_documents(ROOT / "platform" / "stategraph" / "neo4j.yaml")
+    if any(document.get("kind") == "Secret" for document in documents):
+        raise ValidationFailure("Neo4j credentials must not be committed as a Secret")
+    service_account = next(
+        document for document in documents if document.get("kind") == "ServiceAccount"
+    )
+    if service_account.get("automountServiceAccountToken") is not False:
+        raise ValidationFailure("Neo4j ServiceAccount token automount must stay disabled")
+
+    services = [
+        document for document in documents if document.get("kind") == "Service"
+    ]
+    if {service["metadata"]["name"] for service in services} != {
+        "neo4j",
+        "neo4j-headless",
+    }:
+        raise ValidationFailure("Neo4j private Service set drifted")
+    for service in services:
+        ports = service.get("spec", {}).get("ports", [])
+        if (
+            service.get("spec", {}).get("type") != "ClusterIP"
+            or len(ports) != 1
+            or ports[0].get("name") != "bolt"
+            or ports[0].get("port") != 7687
+        ):
+            raise ValidationFailure("Neo4j must expose only internal Bolt")
+
+    statefulset = next(
+        document for document in documents if document.get("kind") == "StatefulSet"
+    )
+    pod_spec = statefulset["spec"]["template"]["spec"]
+    if (
+        statefulset["spec"].get("replicas") != 1
+        or pod_spec.get("automountServiceAccountToken") is not False
+        or pod_spec.get("enableServiceLinks") is not False
+    ):
+        raise ValidationFailure("Neo4j single-node Pod safety boundary drifted")
+    container = pod_spec["containers"][0]
+    expected_image = (
+        "docker.io/library/neo4j:5.26.29-community@"
+        f"{expected_stategraph['neo4j']['image_digest']}"
+    )
+    if container.get("image") != expected_image:
+        raise ValidationFailure("Neo4j Community image is not digest-pinned")
+    env = {item["name"]: item for item in container.get("env", [])}
+    if env.get("NEO4J_AUTH", {}).get("valueFrom", {}).get("secretKeyRef") != {
+        "name": "neo4j-auth",
+        "key": "auth",
+    }:
+        raise ValidationFailure("Neo4j authentication must come from the runtime Secret")
+    if (
+        env.get("NEO4J_server_http_enabled", {}).get("value") != "false"
+        or env.get("NEO4J_server_https_enabled", {}).get("value") != "false"
+    ):
+        raise ValidationFailure("Neo4j HTTP interfaces must stay disabled")
+    claim = statefulset["spec"]["volumeClaimTemplates"][0]["spec"]
+    if (
+        claim.get("storageClassName") != "agent-rca-local"
+        or claim.get("accessModes") != ["ReadWriteOnce"]
+        or claim.get("resources", {}).get("requests", {}).get("storage") != "5Gi"
+    ):
+        raise ValidationFailure("Neo4j PVC boundary drifted")
+
+    rbac = load_yaml_documents(
+        ROOT / "platform" / "rbac" / "incident-platform-readonly.yaml"
+    )
+    reader = next(
+        document
+        for document in rbac
+        if document.get("kind") == "ServiceAccount"
+        and document["metadata"]["name"] == "incident-platform-reader"
+    )
+    if reader.get("automountServiceAccountToken") is not False:
+        raise ValidationFailure(
+            "Incident Platform reader token automount must stay disabled"
+        )
+    readable_resources = {
+        resource
+        for document in rbac
+        if document.get("kind") in {"Role", "ClusterRole"}
+        for rule in document.get("rules", [])
+        for resource in rule.get("resources", [])
+    }
+    required_inventory_resources = {
+        "services",
+        "deployments",
+        "replicasets",
+        "pods",
+        "endpointslices",
+        "nodes",
+    }
+    if not required_inventory_resources.issubset(readable_resources):
+        raise ValidationFailure("StateGraph inventory read-only RBAC is incomplete")
+
+
 def validate_observability_values() -> None:
     directory = ROOT / "platform" / "observability"
     local_path = load_yaml_documents(directory / "local-path-values.yaml")[0]
@@ -1084,6 +1202,7 @@ def main() -> None:
     validate_rbac()
     validate_versions_and_manifests()
     validate_krca_runtime_config()
+    validate_stategraph_manifest()
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
     print("Phase 0 validation passed:")
@@ -1092,7 +1211,7 @@ def main() -> None:
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
-    print("- private observability and live KRCA metric profiles are consistent")
+    print("- private observability, Neo4j StateGraph, and live KRCA pins are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 

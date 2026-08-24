@@ -1,0 +1,12 @@
+---
+- name: Smoke the live Neo4j StateGraph vertical slice
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../../../platform/versions.yaml
+
+  roles:
+    - role: stategraph_verify
+    - role: stategraph_smoke
