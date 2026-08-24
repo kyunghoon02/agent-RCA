@@ -179,6 +179,9 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: incident-webhook
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: incident-worker
       ports:
         - protocol: TCP
           port: 5432

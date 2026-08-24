@@ -84,3 +84,31 @@ spec:
                 ) > 0
               )
             )
+        - alert: OnlineBoutiqueFrontendHighFailureRate
+          expr: |
+            (
+              max by (namespace, service_name) (
+                agent_rca_api_failure_rate{
+                  namespace="online-boutique",
+                  service_name="frontend"
+                }
+              ) > 0.05
+            )
+            and on (namespace, service_name)
+            (
+              sum by (namespace, service_name) (
+                agent_rca_api_request_rate{
+                  namespace="online-boutique",
+                  service_name="frontend"
+                }
+              ) > 0.1
+            )
+          for: 2m
+          labels:
+            namespace: online-boutique
+            service: frontend
+            severity: critical
+            rca_enabled: "true"
+          annotations:
+            summary: Online Boutique frontend failure rate is above 5 percent
+            description: The frontend has sustained elevated server-side failures with active traffic.

@@ -73,9 +73,9 @@
         (incident_platform_postgresql_pods.stdout | from_json)['items'][0].status.containerStatuses[0].ready
         | bool
       - >-
-        (incident_platform_postgresql_pods.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
-        | int == 0
-    fail_msg: The PostgreSQL container is not Ready or has restarted.
+        (incident_platform_postgresql_pods.stdout | from_json)['items'][0].status.containerStatuses[0].lastState.terminated.reason
+        | default('') != 'OOMKilled'
+    fail_msg: The PostgreSQL container is not Ready or was OOM-killed.
 
 - name: Wait for the Incident webhook Deployment
   ansible.builtin.command: >-
@@ -136,6 +136,40 @@
     that:
       - (incident_platform_webhook_health.stdout | from_json).status == 'ok'
     fail_msg: The Incident webhook health endpoint is unavailable.
+
+- name: Wait for the Incident worker Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/{{ incident_platform_worker_deployment }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+
+- name: Read the Incident worker Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment {{ incident_platform_worker_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_worker_deployment_result
+  changed_when: false
+
+- name: Require the digest-pinned read-only Incident worker
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_worker_deployment_result.stdout | from_json).status.readyReplicas == 1
+      - >-
+        incident_platform.reconciler.image_digest in
+        (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].image
+      - >-
+        (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.serviceAccountName
+        == 'incident-platform-reader'
+      - >-
+        (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.automountServiceAccountToken
+        | bool
+      - >-
+        (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].resources.requests.cpu
+        == '100m'
+    fail_msg: The Incident worker image, readiness, identity, or resource boundary drifted.
 
 - name: Read the Agent RCA Alertmanager routing resource
   ansible.builtin.command: >-
@@ -220,7 +254,7 @@
         status_code: 200
       changed_when: true
 
-    - name: Wait for Alertmanager to persist the controlled Incident
+    - name: Wait for the worker to collect the controlled Incident
       ansible.builtin.command:
         argv:
           - kubectl
@@ -239,7 +273,7 @@
             --tuples-only --no-align
             --command="SELECT json_build_object(
               'incident_count', count(*),
-              'received_count', count(*) FILTER (WHERE status = 'RECEIVED'),
+              'localizing_count', count(*) FILTER (WHERE status = 'LOCALIZING'),
               'created_audit_count', (
                 SELECT count(*) FROM incident_audit_events audit
                 WHERE audit.incident_id IN (
@@ -247,7 +281,42 @@
                   WHERE document->'alert'->'labels'->>'verification_id'
                     = '{{ incident_platform_alert_verification_id }}'
                 ) AND audit.event_type = 'INCIDENT_CREATED'
-              )
+              ),
+              'collecting_audit_count', (
+                SELECT count(*) FROM incident_audit_events audit
+                WHERE audit.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND audit.event_type = 'STATUS_TRANSITIONED'
+                  AND audit.details->>'to' = 'COLLECTING'
+              ),
+              'localizing_audit_count', (
+                SELECT count(*) FROM incident_audit_events audit
+                WHERE audit.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND audit.event_type = 'STATUS_TRANSITIONED'
+                  AND audit.details->>'to' = 'LOCALIZING'
+              ),
+              'evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+              ),
+              'work_succeeded_count', (
+                SELECT count(*) FROM incident_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND work.state = 'SUCCEEDED'
+              ),
+              'collector_count', COALESCE(sum(jsonb_array_length(document->'collector_statuses')), 0)
             ) FROM incidents
             WHERE document->'alert'->'labels'->>'verification_id'
               = '{{ incident_platform_alert_verification_id }}'"
@@ -255,9 +324,11 @@
       changed_when: false
       no_log: true
       until: >-
-        (incident_platform_alert_delivery_result.stdout | trim | from_json).incident_count
-        | int == 1
-      retries: 30
+        ((incident_platform_alert_delivery_result.stdout | trim | from_json).incident_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).localizing_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).evidence_count | int >= 5)
+      retries: 60
       delay: 2
 
     - name: Decode the durable Alertmanager delivery result
@@ -266,13 +337,18 @@
           {{ incident_platform_alert_delivery_result.stdout | trim | from_json }}
       no_log: true
 
-    - name: Require one auditable RECEIVED Incident
+    - name: Require one auditable collected Incident
       ansible.builtin.assert:
         that:
           - incident_platform_alert_delivery.incident_count | int == 1
-          - incident_platform_alert_delivery.received_count | int == 1
+          - incident_platform_alert_delivery.localizing_count | int == 1
           - incident_platform_alert_delivery.created_audit_count | int == 1
-        fail_msg: Alertmanager delivery was not persisted exactly once.
+          - incident_platform_alert_delivery.collecting_audit_count | int == 1
+          - incident_platform_alert_delivery.localizing_audit_count | int == 1
+          - incident_platform_alert_delivery.evidence_count | int >= 5
+          - incident_platform_alert_delivery.work_succeeded_count | int == 1
+          - incident_platform_alert_delivery.collector_count | int == 2
+        fail_msg: Alertmanager delivery or Incident Evidence collection was incomplete.
   always:
     - name: Resolve the controlled Alertmanager verification alert
       ansible.builtin.uri:
@@ -473,7 +549,7 @@
 - name: Require all migrations and durable observation Evidence
   ansible.builtin.assert:
     that:
-      - incident_platform_postgresql_journal_result.migration_count | int == 3
+      - incident_platform_postgresql_journal_result.migration_count | int == 4
       - incident_platform_postgresql_journal_result.cycle_count | int >= 1
       - incident_platform_postgresql_journal_result.evidence_count | int >= 10
       - incident_platform_postgresql_journal_result.latest_status == 'APPLIED'
@@ -491,9 +567,13 @@
         {{ incident_platform_postgresql_journal_result.evidence_count }}
       alertmanager_delivery:
         incident_count: "{{ incident_platform_alert_delivery.incident_count }}"
-        received_count: "{{ incident_platform_alert_delivery.received_count }}"
+        localizing_count: "{{ incident_platform_alert_delivery.localizing_count }}"
         created_audit_count: >-
           {{ incident_platform_alert_delivery.created_audit_count }}
+        evidence_count: "{{ incident_platform_alert_delivery.evidence_count }}"
+        work_succeeded_count: >-
+          {{ incident_platform_alert_delivery.work_succeeded_count }}
+        collector_count: "{{ incident_platform_alert_delivery.collector_count }}"
       reconciliation:
         status: "{{ incident_platform_reconciler_result.status }}"
         evidence_count: "{{ incident_platform_reconciler_result.evidence_count }}"

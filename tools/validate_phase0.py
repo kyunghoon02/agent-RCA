@@ -755,10 +755,31 @@ def validate_versions_and_manifests() -> None:
         "agent_rca_api_latency_baseline_p95_milliseconds",
     }
     actual_recording_rules = {
-        rule.get("record") for rule in groups[0].get("rules", [])
+        rule["record"] for rule in groups[0].get("rules", []) if "record" in rule
     }
     if actual_recording_rules != expected_recording_rules:
         raise ValidationFailure("Online Boutique KRCA recording rule set drifted")
+    alerting_rules = [
+        rule for rule in groups[0].get("rules", []) if "alert" in rule
+    ]
+    if len(alerting_rules) != 1:
+        raise ValidationFailure("Online Boutique must expose one RCA opt-in alert")
+    opt_in_alert = alerting_rules[0]
+    if (
+        opt_in_alert.get("alert") != "OnlineBoutiqueFrontendHighFailureRate"
+        or opt_in_alert.get("for") != "2m"
+        or opt_in_alert.get("labels")
+        != {
+            "namespace": "online-boutique",
+            "service": "frontend",
+            "severity": "critical",
+            "rca_enabled": "true",
+        }
+        or 'service_name="frontend"' not in opt_in_alert.get("expr", "")
+        or "> 0.05" not in opt_in_alert.get("expr", "")
+        or "> 0.1" not in opt_in_alert.get("expr", "")
+    ):
+        raise ValidationFailure("Online Boutique RCA opt-in alert boundary drifted")
 
     if scope["target"]["release_tag"] != versions["online_boutique"]["release_tag"]:
         raise ValidationFailure("project scope and version pin disagree on release tag")
@@ -941,9 +962,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-7d5583643ad9",
+            "image_tag": "runtime-1facd6ecc4bb",
             "image_digest": (
-                "sha256:dbea51ced7c30b6b17f58c19c2ddcce7a76cb9b438b43a6afd9283782a9478fd"
+                "sha256:075c34e4542912892fc546af71c9c034b5838dbe009c8b7c77f9004e124826f4"
             ),
         },
         "webhook": {
@@ -952,6 +973,13 @@ def validate_incident_platform_manifest() -> None:
             "max_body_bytes": 1048576,
             "max_alerts_per_request": 100,
             "alert_matcher": "rca_enabled=true",
+        },
+        "worker": {
+            "poll_interval_seconds": 2,
+            "lease_seconds": 120,
+            "max_attempts": 3,
+            "provider_timeout_seconds": 20,
+            "max_evidence_items": 32,
         },
     }
     if versions.get("incident_platform") != expected_runtime:
@@ -964,6 +992,7 @@ def validate_incident_platform_manifest() -> None:
     if kustomization.get("resources") != [
         "postgresql.yaml",
         "incident-webhook.yaml",
+        "incident-worker.yaml",
         "alertmanager-routing.yaml",
         "stategraph-reconciler.yaml",
     ]:
@@ -1050,6 +1079,7 @@ def validate_incident_platform_manifest() -> None:
     if allowed_postgresql_clients != {
         "stategraph-reconciler",
         "incident-webhook",
+        "incident-worker",
     }:
         raise ValidationFailure("PostgreSQL client allowlist drifted")
 
@@ -1140,6 +1170,49 @@ def validate_incident_platform_manifest() -> None:
     ):
         raise ValidationFailure("Incident webhook ingress boundary drifted")
 
+    worker_documents = load_yaml_documents(directory / "incident-worker.yaml")
+    if any(document.get("kind") in {"Service", "Secret"} for document in worker_documents):
+        raise ValidationFailure("Incident worker must not expose a Service or Secret")
+    worker_deployment = next(
+        document for document in worker_documents if document.get("kind") == "Deployment"
+    )
+    worker_pod_spec = worker_deployment["spec"]["template"]["spec"]
+    worker_container = worker_pod_spec["containers"][0]
+    worker_env = {item["name"]: item for item in worker_container.get("env", [])}
+    if (
+        worker_deployment["spec"].get("replicas") != 1
+        or worker_pod_spec.get("serviceAccountName") != "incident-platform-reader"
+        or worker_pod_spec.get("automountServiceAccountToken") is not True
+        or worker_container.get("image") != "agent-rca-runtime@sha256:" + "0" * 64
+        or worker_container.get("args") != ["/app/tools/run_incident_worker.py"]
+        or worker_container.get("resources", {}).get("requests")
+        != {"cpu": "100m", "memory": "192Mi"}
+        or not worker_container.get("securityContext", {}).get(
+            "readOnlyRootFilesystem"
+        )
+    ):
+        raise ValidationFailure("Incident worker runtime boundary drifted")
+    if (
+        worker_env.get("INCIDENT_WORKER_LEASE_SECONDS", {}).get("value") != "120"
+        or worker_env.get("INCIDENT_WORKER_MAX_ATTEMPTS", {}).get("value") != "3"
+        or worker_env.get("INCIDENT_WORKER_PROVIDER_TIMEOUT_SECONDS", {}).get("value")
+        != "20"
+        or worker_env.get("POSTGRES_PASSWORD", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "postgresql-auth", "key": "password"}
+        or worker_env.get("PROMETHEUS_BASE_URL", {}).get("value")
+        != "http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090"
+    ):
+        raise ValidationFailure("Incident worker provider or lease boundary drifted")
+    worker_network_policy = next(
+        document
+        for document in worker_documents
+        if document.get("kind") == "NetworkPolicy"
+    )
+    if worker_network_policy.get("spec", {}).get("ingress") != []:
+        raise ValidationFailure("Incident worker must deny all ingress")
+
     alertmanager_config = load_yaml_documents(
         directory / "alertmanager-routing.yaml"
     )[0]
@@ -1202,6 +1275,7 @@ def validate_incident_platform_manifest() -> None:
     if (
         "python:3.12.11-slim-bookworm@sha256:" not in dockerfile
         or "run_incident_receiver.py" not in dockerfile
+        or "run_incident_worker.py" not in dockerfile
         or "USER 65532:65532" not in dockerfile
     ):
         raise ValidationFailure("Incident Platform runtime image boundary drifted")

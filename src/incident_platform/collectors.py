@@ -291,20 +291,64 @@ class IncidentCollectionService:
         observed_at: Optional[datetime] = None,
     ) -> CollectionRun:
         now = observed_at or datetime.now(timezone.utc)
-        incident = self._repository.get(incident_id)
-        expected_namespace = incident["source_entity"]["namespace"]
-        if scope.namespace != expected_namespace:
-            raise ValueError("collection scope does not match Incident namespace")
-        if incident["source_entity"]["name"] not in scope.resource_names:
-            raise ValueError("collection scope does not include the Incident source entity")
-
+        incident = self._validated_incident(incident_id, scope)
         self._repository.transition(
             incident_id,
             expected_status="RECEIVED",
             next_status="COLLECTING",
             occurred_at=now,
         )
-        end = incident["window"]["incident_end"] or _format_time(now)
+        return self._collect_started(
+            incident_id,
+            incident=incident,
+            scope=scope,
+            observed_at=now,
+        )
+
+    def collect_claimed_incident(
+        self,
+        incident_id: str,
+        *,
+        scope: ResourceScope,
+        observed_at: Optional[datetime] = None,
+    ) -> CollectionRun:
+        """Collect an Incident already moved to COLLECTING by a fenced claim."""
+
+        now = observed_at or datetime.now(timezone.utc)
+        incident = self._validated_incident(incident_id, scope)
+        if incident["status"] != "COLLECTING":
+            raise ValueError("claimed Incident must be COLLECTING")
+        return self._collect_started(
+            incident_id,
+            incident=incident,
+            scope=scope,
+            observed_at=now,
+        )
+
+    def _validated_incident(
+        self,
+        incident_id: str,
+        scope: ResourceScope,
+    ) -> Dict[str, Any]:
+        incident = self._repository.get(incident_id)
+        expected_namespace = incident["source_entity"]["namespace"]
+        if scope.namespace != expected_namespace:
+            raise ValueError("collection scope does not match Incident namespace")
+        if incident["source_entity"]["name"] not in scope.resource_names:
+            raise ValueError("collection scope does not include the Incident source entity")
+        return incident
+
+    def _collect_started(
+        self,
+        incident_id: str,
+        *,
+        incident: Dict[str, Any],
+        scope: ResourceScope,
+        observed_at: datetime,
+    ) -> CollectionRun:
+        if observed_at.tzinfo is None:
+            raise ValueError("observed_at must be timezone-aware")
+        end = incident["window"]["incident_end"] or _format_time(observed_at)
         run = self._orchestrator.collect(
             incident_id=incident_id,
             window=EvidenceWindow(
@@ -312,18 +356,18 @@ class IncidentCollectionService:
                 end=end,
             ),
             scope=scope,
-            observed_at=now,
+            observed_at=observed_at,
         )
         self._repository.replace_collector_statuses(
             incident_id,
             run.collector_statuses,
-            occurred_at=now,
+            occurred_at=observed_at,
         )
         self._repository.store_evidence(incident_id, run.evidence)
         self._repository.transition(
             incident_id,
             expected_status="COLLECTING",
             next_status="FAILED" if run.status == "FAILED" else "LOCALIZING",
-            occurred_at=now,
+            occurred_at=observed_at,
         )
         return run

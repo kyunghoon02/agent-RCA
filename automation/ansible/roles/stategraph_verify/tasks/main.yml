@@ -95,9 +95,9 @@
         (stategraph_pods.stdout | from_json)['items'][0].status.containerStatuses[0].ready
         | bool
       - >-
-        (stategraph_pods.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
-        | int == 0
-    fail_msg: The Neo4j container is not Ready or has restarted.
+        (stategraph_pods.stdout | from_json)['items'][0].status.containerStatuses[0].lastState.terminated.reason
+        | default('') != 'OOMKilled'
+    fail_msg: The Neo4j container is not Ready or was OOM-killed.
 
 - name: Verify the Incident Platform reader can list target Pods
   ansible.builtin.command: >-

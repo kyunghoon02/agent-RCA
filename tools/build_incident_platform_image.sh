@@ -28,6 +28,7 @@ runtime_fingerprint="$({
     | xargs -0 shasum -a 256
   shasum -a 256 "$repo_root/tools/run_stategraph_reconciler.py"
   shasum -a 256 "$repo_root/tools/run_incident_receiver.py"
+  shasum -a 256 "$repo_root/tools/run_incident_worker.py"
 } | shasum -a 256 | cut -c1-12)"
 image_tag="${IMAGE_TAG:-runtime-${runtime_fingerprint}}"
 registry_prefix="${region}-docker.pkg.dev/${project_id}/${repository}"
@@ -47,6 +48,8 @@ cp "$repo_root/tools/run_stategraph_reconciler.py" \
   "$build_context/tools/run_stategraph_reconciler.py"
 cp "$repo_root/tools/run_incident_receiver.py" \
   "$build_context/tools/run_incident_receiver.py"
+cp "$repo_root/tools/run_incident_worker.py" \
+  "$build_context/tools/run_incident_worker.py"
 find "$build_context" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$build_context" -type f -name '*.pyc' -delete
 

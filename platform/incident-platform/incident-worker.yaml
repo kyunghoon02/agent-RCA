@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-worker
+  namespace: incident-platform
+  labels:
+    app.kubernetes.io/name: incident-worker
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: incident-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: incident-worker
+        app.kubernetes.io/part-of: agent-rca
+    spec:
+      serviceAccountName: incident-platform-reader
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: artifact-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: agent-rca-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+          args:
+            - /app/tools/run_incident_worker.py
+          env:
+            - name: INCIDENT_WORKER_CLUSTER_ID
+              value: agent-rca-dev
+            - name: INCIDENT_WORKER_TARGET_NAMESPACE
+              value: online-boutique
+            - name: INCIDENT_WORKER_POLL_INTERVAL_SECONDS
+              value: "2"
+            - name: INCIDENT_WORKER_LEASE_SECONDS
+              value: "120"
+            - name: INCIDENT_WORKER_MAX_ATTEMPTS
+              value: "3"
+            - name: INCIDENT_WORKER_PROVIDER_TIMEOUT_SECONDS
+              value: "20"
+            - name: INCIDENT_WORKER_MAX_EVIDENCE_ITEMS
+              value: "32"
+            - name: PROMETHEUS_BASE_URL
+              value: http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090
+            - name: POSTGRES_HOST
+              value: postgresql.incident-platform.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-auth
+                  key: database
+            - name: POSTGRES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-auth
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-auth
+                  key: password
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: incident-worker-ingress
+  namespace: incident-platform
+  labels:
+    app.kubernetes.io/name: incident-worker
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: incident-worker
+  policyTypes:
+    - Ingress
+  ingress: []

@@ -3,5 +3,6 @@ kind: Kustomization
 resources:
   - postgresql.yaml
   - incident-webhook.yaml
+  - incident-worker.yaml
   - alertmanager-routing.yaml
   - stategraph-reconciler.yaml

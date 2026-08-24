@@ -3,7 +3,7 @@ project_id = "replace-with-gcp-project-id"
 region = "asia-northeast3"
 zone   = "asia-northeast3-a"
 
-machine_type     = "e2-standard-4"
+machine_type     = "e2-standard-8"
 boot_disk_size_gb = 100
 
 enable_external_ip = true

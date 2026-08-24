@@ -28,6 +28,11 @@ from .incidents import (
     AlertmanagerNormalizer,
     IngestionResult,
 )
+from .incident_work import (
+    IncidentWorkClaim,
+    IncidentWorkRepository,
+    InMemoryIncidentWorkRepository,
+)
 from .http_receiver import (
     AlertmanagerHTTPReceiver,
     AlertmanagerWebhookWSGI,
@@ -37,6 +42,7 @@ from .http_receiver import (
 from .fast_path import FastPathRun, IncidentFastPathService
 from .repository import InMemoryIncidentRepository
 from .postgresql import (
+    PostgreSQLIncidentWorkRepository,
     PostgreSQLIncidentRepository,
     PostgreSQLStateGraphObservationRepository,
     apply_migrations,
@@ -185,6 +191,9 @@ __all__ = [
     "InMemoryStateGraphObservationRepository",
     "InMemoryIncidentRepository",
     "IncidentCollectionService",
+    "IncidentWorkClaim",
+    "IncidentWorkRepository",
+    "InMemoryIncidentWorkRepository",
     "IncidentFastPathService",
     "IncidentLocalizationRun",
     "IncidentLocalizationService",
@@ -224,6 +233,7 @@ __all__ = [
     "LocalizationAssessment",
     "LocalizationAssessor",
     "ProviderBatch",
+    "PostgreSQLIncidentWorkRepository",
     "PostgreSQLIncidentRepository",
     "PostgreSQLStateGraphObservationRepository",
     "PostgreSQLVectorKnowledgeIndex",

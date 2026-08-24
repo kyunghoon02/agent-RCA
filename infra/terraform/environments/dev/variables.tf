@@ -45,7 +45,7 @@ variable "subnet_cidr" {
 variable "machine_type" {
   description = "Compute Engine machine type for the single-node cluster."
   type        = string
-  default     = "e2-standard-4"
+  default     = "e2-standard-8"
 }
 
 variable "boot_disk_size_gb" {

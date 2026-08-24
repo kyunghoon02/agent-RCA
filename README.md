@@ -50,12 +50,13 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   readiness를 검증했다.
 - **Live telemetry path:** Online Boutique의 실제 trace와 Prometheus recording rule을
   normalized metric Evidence와 KRCA drilldown까지 연결한 live smoke를 확인했다.
-- **Live Incident ingress:** `rca_enabled=true`인 제어 경보가 Alertmanager의 인증된 내부
-  webhook을 거쳐 정규화·중복 제거되고 PostgreSQL에 `RECEIVED` Incident와 감사 이벤트로
-  저장되는 경로를 확인했다.
+- **Live Incident collection:** `rca_enabled=true`인 제어 경보가 Alertmanager의 인증된
+  내부 webhook을 거쳐 PostgreSQL에 저장되고, lease/fencing worker가 이를 claim해
+  Kubernetes Service/Event와 Prometheus Evidence를 수집한 뒤 `LOCALIZING`까지 전이하는
+  경로를 확인했다.
 - **RCA core:** Incident/Evidence contract, bounded collector, localization, read-only Agent
   tool과 Evidence Gate는 fixture와 contract test로 검증했다.
-- **아직 증명하지 않은 범위:** Alert 발생부터 Agent Report까지의 전체 cluster runtime,
+- **아직 증명하지 않은 범위:** `LOCALIZING` 이후 Agent Report까지의 cluster runtime,
   controlled fault에 대한 RCA 정확도, 성공한 external LLM live run과 자동 복구는 아직
   검증하지 않았다.
 
@@ -75,6 +76,7 @@ sequenceDiagram
     autonumber
     participant AM as Alertmanager
     participant IC as Incident Core
+    participant IW as Incident Worker
     participant BC as Bounded Collector
     participant ES as Evidence Sources
     participant LS as KRCA + StateGraph
@@ -83,8 +85,10 @@ sequenceDiagram
     participant EG as Evidence Gate (internal)
 
     AM->>IC: Alert webhook
-    IC->>IC: Deduplicate and freeze scope
-    IC->>BC: Start bounded collection
+    IC->>IC: Normalize, deduplicate, persist RECEIVED + READY work
+    IW->>IC: Claim work with lease and fencing token
+    IC-->>IW: COLLECTING Incident and frozen alert scope
+    IW->>BC: Start bounded collection
     par Metrics and logs
         BC->>ES: Query Prometheus and Loki
         ES-->>BC: Telemetry
@@ -93,7 +97,8 @@ sequenceDiagram
         ES-->>BC: Resource state and flows
     end
     Note over IC,BC: Normalize scope, provenance, redaction, hash and schema
-    BC-->>IC: Validated EvidenceItems
+    BC-->>IW: Validated EvidenceItems
+    IW->>IC: Persist Evidence and advance to LOCALIZING
     IC->>LS: Evidence-backed localization
     LS-->>AO: Frozen Context
     AO->>KR: Retrieve scoped references
@@ -140,7 +145,7 @@ seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Fro
 ## Reference Runtime
 
 - cloud: Google Cloud
-- compute: Compute Engine 단일 VM
+- compute: Compute Engine `e2-standard-8` 단일 VM, 8 vCPU / 32GB memory
 - Kubernetes: upstream Kubernetes, kubeadm single-node bootstrap
 - container runtime: containerd
 - dataplane and network evidence: Cilium CNI와 Hubble
@@ -229,17 +234,17 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
-| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거·상태 전이와 bounded HTTP receiver를 구현하고 Collector 이후 경로는 fixture/unit test로 검증 | authenticated cluster-internal webhook이 `RECEIVED` Incident와 `INCIDENT_CREATED` audit을 PostgreSQL에 저장. Collector orchestration과 이후 상태 전이는 아직 미연결 |
-| Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature와 bounded Kubernetes topology inventory는 live 연결, 지속 collector orchestration과 일반 metric provider는 미연결 |
-| PostgreSQL repository | Incident artifact와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC 배포, migration 3개 적용, Incident webhook과 observation journal live 검증 |
+| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`/READY work→worker claim→`COLLECTING`→Evidence 저장→`LOCALIZING` live 연결. 이후 localization/Agent Report runtime은 미연결 |
+| Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Incident worker가 Service-scoped Kubernetes Service/Event Provider와 고정 allowlist Prometheus query 4개를 병렬 실행. Loki, Hubble과 다른 Kubernetes kind의 Incident collector는 아직 미연결 |
+| PostgreSQL repository | Incident artifact, fenced collection work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC 배포, migration 4개 적용. work enqueue가 Incident insert와 같은 transaction이며 claim/reclaim/complete audit을 live 검증 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile과 Evidence-to-Top-N fixture 구현 | browse/cart/checkout 3개 profile의 23개 edge가 모두 Prometheus→normalized Evidence→KRCA drilldown live smoke에서 `HAS_DATA` |
 | Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation 및 `APPLIED` journal을 검증. 격리된 contract에서 disappearance와 재등장 interval도 검증 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
-| GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Kubernetes v1.36.4 single-node가 재부팅 후 복구됐으며 Cilium/Hubble과 read-only flow 조회 검증; destroy와 fault runtime 미검증 |
-| Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. KRCA recording rule 4개와 opt-in Alertmanager webhook은 live 적용, 나머지 RCA provider runtime은 미연결 |
+| GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회를 검증; destroy와 fault runtime 미검증 |
+| Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. KRCA recording rule 4개, frontend failure-rate opt-in alert rule과 인증된 Alertmanager webhook live 적용 |
 | Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정하고, 3개 source patch와 Cloud Build/Artifact Registry digest pin을 추가한 Kustomize overlay 및 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 10개 application service 모두 server span, Collector target `up=1`, RED/service graph metric, Tempo trace와 23-edge KRCA live smoke 검증 완료. 지속 외부 load와 fault evaluation은 미연결 |
 
 Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
@@ -247,25 +252,41 @@ production HA, cross-node networking, node pool autoscaling, zone 장애 또는 
 control-plane 장애를 증명하지 않는다. VM 장애까지 분석하려면 Agent control plane을
 별도 failure domain으로 분리해야 한다.
 
-현재 cluster에서 실제로 연결된 Incident ingress는 전체 목표 흐름의 첫 구간이다.
+현재 cluster에서 실제로 연결된 Incident 수집 경로는 다음과 같다.
 
 ```text
-controlled alert with rca_enabled=true
+controlled alert or opt-in PrometheusRule with rca_enabled=true
 → AlertmanagerConfig의 exact label route
 → Bearer-authenticated private ClusterIP webhook
 → payload/body/alert-count 검증
 → Alertmanager normalization
 → fingerprint + startsAt + alert + source Entity 기반 deduplication key
-→ PostgreSQL unique insert
+→ PostgreSQL unique Incident insert + READY collection work insert (same transaction)
 → RECEIVED Incident + INCIDENT_CREATED audit
+→ worker의 FOR UPDATE SKIP LOCKED claim + lease/fencing token
+→ COLLECTING 전이
+→ bounded Kubernetes Service/Event + Prometheus query 4개 병렬 수집
+→ EvidenceBuilder의 scope·provenance·redaction·hash·schema 검증
+→ normalized Evidence 저장
+→ LOCALIZING 전이 + work SUCCEEDED
 ```
 
 webhook은 `observability` namespace에서만 접근 가능한 NetworkPolicy와 namespace-local
 Secret을 사용하고 request body 1MiB, request당 alert 100개로 제한한다. 동일 alert의 재전송은
-같은 deduplication key로 기존 Incident를 반환하며 새 감사 이벤트를 만들지 않는다. 현재
-live 검증은 제어 경보 1건이 Incident 1건과 생성 감사 1건으로 저장되는 데까지 확인한다.
-아직 이 `RECEIVED` row를 claim하여 `COLLECTING`으로 전이시키는 worker/Orchestrator는
-cluster에 연결하지 않았으므로, 이 경로만으로 RCA가 실행됐다고 해석하지 않는다.
+같은 deduplication key로 기존 Incident를 반환하며 새 감사 이벤트나 work row를 만들지
+않는다. HTTP receiver가 Provider를 직접 호출하지 않고 먼저 durable queue에 기록하므로
+Alertmanager 응답 시간과 Evidence 수집 실패를 분리한다. worker는 동시에 하나의 row만
+claim하며 120초 lease, 최대 3회 시도와 매 claim마다 새 fencing token을 사용한다. lease가
+만료된 stale worker는 최신 token 없이 완료나 실패를 저장할 수 없고, collection commit 뒤
+work 완료만 누락된 경우 reaper가 Incident 상태를 기준으로 terminal work 상태를 복구한다.
+
+2026-08-24 live 검증에서는 제어 경보 1건이 정확히 하나의 Incident가 되어
+`RECEIVED → COLLECTING → LOCALIZING`으로 이동했고, Kubernetes 1개와 Prometheus 4개로
+총 5개의 normalized Evidence, collector status 2개와 `SUCCEEDED` work row가 남았다. 실제
+`OnlineBoutiqueFrontendHighFailureRate` rule도 Prometheus에 healthy 상태로 로드하지만,
+controlled fault로 이 rule을 firing시킨 정확도 실험은 아직 수행하지 않았다. 또한 현재
+worker는 `online-boutique`의 Service-scoped Incident만 처리하며 `LOCALIZING` 이후
+StateGraph resolver와 Agent RCA runtime은 아직 연결하지 않았다.
 
 ## Core Localization Design
 
@@ -447,9 +468,10 @@ deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval 
 `make smoke-live-stategraph`는 InMemory journal을 사용하는 격리된 one-shot 경로로 exact
 resolver와 Frozen Context까지 확인한다. 실제 지속 경로는
 `make deploy-incident-platform`이 digest-pinned runtime image, authenticated private
-Incident webhook, 내부 PostgreSQL 17.6, 5Gi PVC와 5분 CronJob을 적용한다. 검증은
-실제 Alertmanager 제어 경보→`RECEIVED` Incident/audit 저장과 one-shot Job의 Kubernetes
-Evidence→PostgreSQL `STAGED/APPLIED` journal→Neo4j projection을 함께 확인한다. 두 StatefulSet의
+Incident webhook과 worker, 내부 PostgreSQL 17.6, 5Gi PVC와 5분 CronJob을 적용한다. 검증은
+실제 Alertmanager 제어 경보→fenced claim→Kubernetes/Prometheus Evidence 5개 이상
+→`LOCALIZING` Incident와 성공 work 저장, 그리고 one-shot Job의 Kubernetes Evidence
+→PostgreSQL `STAGED/APPLIED` journal→Neo4j projection을 함께 확인한다. 두 StatefulSet의
 `agent-rca-local` PVC는 single-node VM disk에 묶이며 `Retain`은 backup이 아니다. VM
 disk 삭제나 손상에 대비한 backup/restore와 HA는 아직 구현하지 않았다.
 

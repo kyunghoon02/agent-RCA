@@ -257,6 +257,39 @@
     - agent_rca_api_latency_p95_milliseconds
     - agent_rca_api_latency_baseline_p95_milliseconds
 
+- name: Read the opt-in Agent RCA alerting rule
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/rules?type=alert
+  register: online_boutique_rca_alert_rule
+  retries: 18
+  delay: 10
+  until: >-
+    (online_boutique_rca_alert_rule.stdout | from_json).get('status') == 'success'
+    and 'OnlineBoutiqueFrontendHighFailureRate' in online_boutique_rca_alert_rule.stdout
+  changed_when: false
+
+- name: Require one healthy opt-in Agent RCA alerting rule
+  ansible.builtin.assert:
+    that:
+      - >-
+        (online_boutique_rca_alert_rule.stdout | from_json)['data']['groups']
+        | map(attribute='rules') | flatten
+        | selectattr('name', 'equalto', 'OnlineBoutiqueFrontendHighFailureRate')
+        | selectattr('health', 'equalto', 'ok')
+        | list | length == 1
+      - >-
+        'rca_enabled' in online_boutique_rca_alert_rule.stdout
+        and 'frontend' in online_boutique_rca_alert_rule.stdout
+    fail_msg: The opt-in Agent RCA alerting rule is missing, duplicated, or unhealthy.
+
 - name: Wait for span-derived RED metrics in Prometheus
   ansible.builtin.command:
     argv:

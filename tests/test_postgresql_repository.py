@@ -34,6 +34,7 @@ AGENT_RUN_MIGRATION = ROOT / "db" / "migrations" / "002_agent_runs.sql"
 OBSERVATION_MIGRATION = (
     ROOT / "db" / "migrations" / "003_stategraph_observations.sql"
 )
+INCIDENT_WORK_MIGRATION = ROOT / "db" / "migrations" / "004_incident_work_items.sql"
 
 
 def contract_incident() -> dict:
@@ -124,6 +125,15 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertIn("CREATE TABLE stategraph_observation_evidence", sql)
         self.assertIn("status IN ('STAGED', 'APPLIED')", sql)
         self.assertIn("ON DELETE CASCADE", sql)
+
+    def test_incident_work_migration_adds_a_fenced_lease_queue(self) -> None:
+        sql = INCIDENT_WORK_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE incident_work_items", sql)
+        self.assertIn("FOR EACH ROW", sql)
+        self.assertIn("CREATE TRIGGER incidents_enqueue_collection_work", sql)
+        self.assertIn("claim_token TEXT", sql)
+        self.assertIn("lease_expires_at TIMESTAMPTZ", sql)
+        self.assertIn("state IN ('READY', 'RUNNING', 'SUCCEEDED', 'FAILED')", sql)
 
     def test_viewer_list_query_keeps_search_text_in_sql_parameters(self) -> None:
         class RecordingCursor:
@@ -218,6 +228,7 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
             "001_initial.sql",
             "002_agent_runs.sql",
             "003_stategraph_observations.sql",
+            "004_incident_work_items.sql",
         ]:
             raise AssertionError(f"unexpected applied migrations: {applied}")
         if apply_migrations(cls.connection_factory) != []:

@@ -122,5 +122,6 @@ incident_platform_reconciler_cronjob: stategraph-reconciler
 incident_platform_webhook_deployment: incident-webhook
 incident_platform_webhook_service: incident-webhook
 incident_platform_webhook_secret: incident-webhook-auth
+incident_platform_worker_deployment: incident-worker
 incident_platform_alertmanager_config: agent-rca-incidents
 incident_platform_wait_timeout: 10m
