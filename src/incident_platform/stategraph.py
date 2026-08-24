@@ -613,14 +613,23 @@ class InMemoryStateGraphRepository:
         self._ingest_grouped(grouped)
 
     def _ingest_grouped(
-        self, grouped: Mapping[str, Sequence[Mapping[str, Any]]]
+        self,
+        grouped: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        replace_evidence_ids: bool = False,
     ) -> None:
         for record in grouped["entity"]:
-            self.upsert_entity(record)
+            self.upsert_entity(
+                record, replace_evidence_ids=replace_evidence_ids
+            )
         for record in grouped["snapshot_interval"]:
-            self.append_or_extend_snapshot(record)
+            self.append_or_extend_snapshot(
+                record, replace_evidence_ids=replace_evidence_ids
+            )
         for record in grouped["relation_interval"]:
-            self.append_or_extend_relation(record)
+            self.append_or_extend_relation(
+                record, replace_evidence_ids=replace_evidence_ids
+            )
         for record in grouped["event_aggregate"]:
             self.upsert_event_aggregate(record)
 
@@ -641,7 +650,10 @@ class InMemoryStateGraphRepository:
                 copy.deepcopy(self._events),
             )
             try:
-                self._ingest_grouped(plan.grouped)
+                self._ingest_grouped(
+                    plan.grouped,
+                    replace_evidence_ids=True,
+                )
                 retired_entities = 0
                 closed_snapshots = 0
                 for entity_id, entity in tuple(self._entities.items()):
@@ -720,7 +732,12 @@ class InMemoryStateGraphRepository:
             closed_relation_intervals=closed_relations,
         )
 
-    def upsert_entity(self, record: Mapping[str, Any]) -> Dict[str, Any]:
+    def upsert_entity(
+        self,
+        record: Mapping[str, Any],
+        *,
+        replace_evidence_ids: bool = False,
+    ) -> Dict[str, Any]:
         candidate = copy.deepcopy(dict(record))
         validate_graph_record(candidate)
         if candidate["record_type"] != "entity":
@@ -756,8 +773,12 @@ class InMemoryStateGraphRepository:
             updated["last_seen_at"] = _format_time(max(existing_last, last))
             if last >= existing_last:
                 updated["exists"] = candidate["exists"]
-            updated["evidence_ids"] = _merged_ids(
-                existing["evidence_ids"], candidate["evidence_ids"]
+            updated["evidence_ids"] = (
+                copy.deepcopy(candidate["evidence_ids"])
+                if replace_evidence_ids
+                else _merged_ids(
+                    existing["evidence_ids"], candidate["evidence_ids"]
+                )
             )
             validate_graph_record(updated)
             self._entities[candidate["entity_id"]] = updated
@@ -883,7 +904,12 @@ class InMemoryStateGraphRepository:
             matches.sort(key=lambda item: item["entity_id"])
             return tuple(matches[: lookup.limit])
 
-    def append_or_extend_snapshot(self, record: Mapping[str, Any]) -> Dict[str, Any]:
+    def append_or_extend_snapshot(
+        self,
+        record: Mapping[str, Any],
+        *,
+        replace_evidence_ids: bool = False,
+    ) -> Dict[str, Any]:
         candidate = copy.deepcopy(dict(record))
         validate_graph_record(candidate)
         if candidate["record_type"] != "snapshot_interval":
@@ -926,8 +952,12 @@ class InMemoryStateGraphRepository:
                         observed,
                     )
                 )
-                updated["evidence_ids"] = _merged_ids(
-                    latest["evidence_ids"], candidate["evidence_ids"]
+                updated["evidence_ids"] = (
+                    copy.deepcopy(candidate["evidence_ids"])
+                    if replace_evidence_ids
+                    else _merged_ids(
+                        latest["evidence_ids"], candidate["evidence_ids"]
+                    )
                 )
                 validate_graph_record(updated)
                 history[-1] = updated
@@ -940,7 +970,12 @@ class InMemoryStateGraphRepository:
             history.append(candidate)
             return copy.deepcopy(candidate)
 
-    def append_or_extend_relation(self, record: Mapping[str, Any]) -> Dict[str, Any]:
+    def append_or_extend_relation(
+        self,
+        record: Mapping[str, Any],
+        *,
+        replace_evidence_ids: bool = False,
+    ) -> Dict[str, Any]:
         candidate = copy.deepcopy(dict(record))
         validate_graph_record(candidate)
         if candidate["record_type"] != "relation_interval":
@@ -996,8 +1031,12 @@ class InMemoryStateGraphRepository:
                             observed,
                         )
                     )
-                    updated["evidence_ids"] = _merged_ids(
-                        latest["evidence_ids"], candidate["evidence_ids"]
+                    updated["evidence_ids"] = (
+                        copy.deepcopy(candidate["evidence_ids"])
+                        if replace_evidence_ids
+                        else _merged_ids(
+                            latest["evidence_ids"], candidate["evidence_ids"]
+                        )
                     )
                     validate_graph_record(updated)
                     history[-1] = updated

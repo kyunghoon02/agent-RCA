@@ -36,7 +36,11 @@ from .http_receiver import (
 )
 from .fast_path import FastPathRun, IncidentFastPathService
 from .repository import InMemoryIncidentRepository
-from .postgresql import PostgreSQLIncidentRepository, apply_migrations
+from .postgresql import (
+    PostgreSQLIncidentRepository,
+    PostgreSQLStateGraphObservationRepository,
+    apply_migrations,
+)
 from .providers import (
     APIDependencySpec,
     KubernetesHTTPAPI,
@@ -86,6 +90,13 @@ from .stategraph import (
     stable_graph_id,
     state_content_hash,
     validate_graph_record,
+)
+from .stategraph_observations import (
+    InMemoryStateGraphObservationRepository,
+    StateGraphObservationCycle,
+    StateGraphObservationPruneResult,
+    StateGraphObservationRepository,
+    StateGraphObservationRetentionPolicy,
 )
 from .resolution import (
     EntityResolutionCandidate,
@@ -171,6 +182,7 @@ __all__ = [
     "GraphLocalizer",
     "GraphProjection",
     "InMemoryStateGraphRepository",
+    "InMemoryStateGraphObservationRepository",
     "InMemoryIncidentRepository",
     "IncidentCollectionService",
     "IncidentFastPathService",
@@ -213,6 +225,7 @@ __all__ = [
     "LocalizationAssessor",
     "ProviderBatch",
     "PostgreSQLIncidentRepository",
+    "PostgreSQLStateGraphObservationRepository",
     "PostgreSQLVectorKnowledgeIndex",
     "OpenAIAgentsSDKRunner",
     "OpenAIEmbeddingProvider",
@@ -226,6 +239,10 @@ __all__ = [
     "ResolvedIncidentLocalizationService",
     "ReceiverConfig",
     "StateGraphRepository",
+    "StateGraphObservationCycle",
+    "StateGraphObservationPruneResult",
+    "StateGraphObservationRepository",
+    "StateGraphObservationRetentionPolicy",
     "StateGraphReconciliationRepository",
     "StateGraphReconciliationResult",
     "StateGraphReconciliationScope",

@@ -19,6 +19,9 @@ from incident_platform.stategraph import (
     InMemoryStateGraphRepository,
     StateGraphReconciliationScope,
 )
+from incident_platform.stategraph_observations import (
+    InMemoryStateGraphObservationRepository,
+)
 
 from tests.test_kubernetes_inventory import (
     StaticInventoryClient,
@@ -84,12 +87,14 @@ class KubernetesStateGraphReconcilerTests(unittest.TestCase):
         self.resources = inventory_resources()
         self.client = StaticInventoryClient(self.resources)
         self.repository = InMemoryStateGraphRepository()
+        self.observation_repository = InMemoryStateGraphObservationRepository()
         self.reconciler = KubernetesStateGraphReconciler(
             KubernetesInventoryProvider(
                 self.client,
                 cluster_id=CLUSTER_ID,
             ),
             self.repository,
+            self.observation_repository,
             cluster_id=CLUSTER_ID,
         )
 
@@ -111,6 +116,11 @@ class KubernetesStateGraphReconcilerTests(unittest.TestCase):
         self.assertEqual(first.result.retired_entities, 0)
         self.assertEqual(first.result.closed_snapshot_intervals, 0)
         self.assertEqual(first.result.closed_relation_intervals, 0)
+        self.assertEqual(first.cycle.status, "APPLIED")
+        self.assertEqual(
+            self.observation_repository.list_cycle_evidence(first.cycle.cycle_id),
+            tuple(sorted(first.evidence, key=lambda item: item["evidence_id"])),
+        )
         self.assertGreater(first.projected_record_count, len(first.evidence))
         self.assertTrue(initial_active_keys)
 
@@ -139,10 +149,19 @@ class KubernetesStateGraphReconcilerTests(unittest.TestCase):
         )
 
         self.assertEqual(third.result.retired_entities, 0)
-        self.assertTrue(self.repository.get_entity(POD_ENTITY_ID)["exists"])
+        third_evidence_ids = {item["evidence_id"] for item in third.evidence}
+        reopened_pod = self.repository.get_entity(POD_ENTITY_ID)
+        self.assertTrue(reopened_pod["exists"])
+        self.assertEqual(len(reopened_pod["evidence_ids"]), 1)
+        self.assertIn(reopened_pod["evidence_ids"][0], third_evidence_ids)
         reopened_snapshots = self.repository.list_snapshots(POD_ENTITY_ID)
         self.assertEqual(len(reopened_snapshots), 2)
         self.assertIsNone(reopened_snapshots[-1]["valid_to"])
+        self.assertEqual(len(reopened_snapshots[-1]["evidence_ids"]), 1)
+        self.assertIn(
+            reopened_snapshots[-1]["evidence_ids"][0],
+            third_evidence_ids,
+        )
         reopened_relations = self.repository.list_relations()
         reopened_keys = {
             item["relation_key"]
@@ -151,6 +170,10 @@ class KubernetesStateGraphReconcilerTests(unittest.TestCase):
         }
         self.assertEqual(reopened_keys, initial_active_keys)
         self.assertGreater(len(reopened_relations), len(initial_relations))
+        for relation in reopened_relations:
+            if relation["valid_to"] is None:
+                self.assertEqual(len(relation["evidence_ids"]), 1)
+                self.assertIn(relation["evidence_ids"][0], third_evidence_ids)
 
     def test_partial_provider_batch_cannot_retire_live_graph_state(self) -> None:
         observed_at = datetime(2026, 8, 24, 1, 5, tzinfo=UTC)
@@ -171,6 +194,7 @@ class KubernetesStateGraphReconcilerTests(unittest.TestCase):
         reconciler = KubernetesStateGraphReconciler(
             PartialProvider(),
             self.repository,
+            self.observation_repository,
             cluster_id=CLUSTER_ID,
         )
         next_at = observed_at + timedelta(minutes=1)
@@ -182,6 +206,135 @@ class KubernetesStateGraphReconcilerTests(unittest.TestCase):
 
         self.assertEqual(self.repository.get_entity(POD_ENTITY_ID), before_entities)
         self.assertEqual(self.repository.list_relations(), before_relations)
+
+    def test_observation_storage_failure_prevents_graph_mutation(self) -> None:
+        class FailingObservationRepository:
+            def get_cycle(self, _cycle_id):
+                raise KeyError("not staged")
+
+            def stage_cycle(self, _cycle, _evidence):
+                raise RuntimeError("observation storage unavailable")
+
+        graph_repository = InMemoryStateGraphRepository()
+        reconciler = KubernetesStateGraphReconciler(
+            KubernetesInventoryProvider(self.client, cluster_id=CLUSTER_ID),
+            graph_repository,
+            FailingObservationRepository(),
+            cluster_id=CLUSTER_ID,
+        )
+        observed_at = datetime(2026, 8, 24, 1, 5, tzinfo=UTC)
+
+        with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+            reconciler.reconcile(
+                request_at(1, observed_at),
+                collected_at=observed_at,
+            )
+
+        self.assertEqual(graph_repository.list_relations(), [])
+
+    def test_graph_failure_leaves_a_retryable_staged_cycle(self) -> None:
+        class FailingGraphRepository(InMemoryStateGraphRepository):
+            def reconcile_projection(self, *_args, **_kwargs):
+                raise RuntimeError("graph unavailable")
+
+        class RecordingObservationRepository(
+            InMemoryStateGraphObservationRepository
+        ):
+            def __init__(self) -> None:
+                super().__init__()
+                self.staged_cycle_ids = []
+
+            def stage_cycle(self, cycle, evidence):
+                staged = super().stage_cycle(cycle, evidence)
+                self.staged_cycle_ids.append(staged.cycle_id)
+                return staged
+
+        observations = RecordingObservationRepository()
+        reconciler = KubernetesStateGraphReconciler(
+            KubernetesInventoryProvider(self.client, cluster_id=CLUSTER_ID),
+            FailingGraphRepository(),
+            observations,
+            cluster_id=CLUSTER_ID,
+        )
+        observed_at = datetime(2026, 8, 24, 1, 5, tzinfo=UTC)
+
+        with self.assertRaisesRegex(RuntimeError, "graph unavailable"):
+            reconciler.reconcile(
+                request_at(1, observed_at),
+                collected_at=observed_at,
+            )
+
+        cycle = observations.get_cycle(observations.staged_cycle_ids[0])
+        self.assertEqual(cycle.status, "STAGED")
+        self.assertIsNone(cycle.result)
+
+        self.client.resources = {
+            resource_type: () for resource_type in self.resources
+        }
+        recovery_graph = InMemoryStateGraphRepository()
+        recovery = KubernetesStateGraphReconciler(
+            KubernetesInventoryProvider(self.client, cluster_id=CLUSTER_ID),
+            recovery_graph,
+            observations,
+            cluster_id=CLUSTER_ID,
+        ).reconcile(
+            request_at(1, observed_at),
+            collected_at=observed_at + timedelta(minutes=1),
+        )
+
+        self.assertEqual(recovery.cycle.status, "APPLIED")
+        self.assertEqual(
+            recovery.cycle.applied_at,
+            format_time(observed_at + timedelta(minutes=1)),
+        )
+        self.assertTrue(recovery_graph.get_entity(POD_ENTITY_ID)["exists"])
+
+    def test_applied_cycle_retry_does_not_mutate_the_graph_twice(self) -> None:
+        class CountingProvider:
+            def __init__(self, provider) -> None:
+                self.provider = provider
+                self.calls = 0
+
+            def collect(self, request):
+                self.calls += 1
+                return self.provider.collect(request)
+
+        class CountingGraphRepository(InMemoryStateGraphRepository):
+            def __init__(self) -> None:
+                super().__init__()
+                self.reconciliation_calls = 0
+
+            def reconcile_projection(self, *args, **kwargs):
+                self.reconciliation_calls += 1
+                return super().reconcile_projection(*args, **kwargs)
+
+        graph_repository = CountingGraphRepository()
+        observations = InMemoryStateGraphObservationRepository()
+        provider = CountingProvider(
+            KubernetesInventoryProvider(self.client, cluster_id=CLUSTER_ID)
+        )
+        reconciler = KubernetesStateGraphReconciler(
+            provider,
+            graph_repository,
+            observations,
+            cluster_id=CLUSTER_ID,
+        )
+        observed_at = datetime(2026, 8, 24, 1, 5, tzinfo=UTC)
+        collection_request = request_at(1, observed_at)
+
+        first = reconciler.reconcile(
+            collection_request,
+            collected_at=observed_at,
+        )
+        repeated = reconciler.reconcile(
+            collection_request,
+            collected_at=observed_at + timedelta(minutes=1),
+        )
+
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(graph_repository.reconciliation_calls, 1)
+        self.assertEqual(repeated.cycle, first.cycle)
+        self.assertEqual(repeated.result, first.result)
 
 
 if __name__ == "__main__":

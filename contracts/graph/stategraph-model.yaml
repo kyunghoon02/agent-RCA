@@ -1,4 +1,4 @@
-schema_version: "2.0.0"
+schema_version: "2.1.0"
 
 core_boundary:
   domain_neutral: true
@@ -157,6 +157,8 @@ temporal_semantics:
       - mark_absent_owned_entities_not_existing
       - close_absent_snapshot_intervals
       - close_absent_relation_intervals
+    active_interval_evidence_ids: replace_with_latest_cycle
+    ordinary_ingest_evidence_ids: merge
     partial_or_failed_collection_closes_intervals: false
   event:
     identity_fields:
@@ -225,17 +227,40 @@ localization:
 retention:
   ordinary_history_hours: 72
   incident_pinned_history_days: 30
+  observation_journal:
+    applied_cycle_and_evidence_hours: 72
+    abandoned_staged_cycle_hours: 24
   gc_order:
     - expired_snapshot_intervals
     - expired_relation_intervals
     - expired_event_aggregates
     - expired_unreferenced_entities
+    - expired_stategraph_observation_cycles_and_evidence
 
 persistence:
   port: StateGraphRepository
   primary_adapter: Neo4jStateGraphRepository
   target_engine: Neo4j Community
   incident_artifact_store: PostgreSQL
+  observation_journal:
+    port: StateGraphObservationRepository
+    primary_adapter: PostgreSQLStateGraphObservationRepository
+    separate_from_incident_artifacts: true
+    states:
+      - STAGED
+      - APPLIED
+    write_order:
+      - stage_cycle_and_normalized_evidence
+      - reconcile_graph_transaction
+      - mark_cycle_applied
+    retry_contract:
+      journal_failure_mutates_graph: false
+      graph_failure_leaves_cycle: STAGED
+      staged_cycle_retry_source: stored_normalized_evidence
+      retry_staged_cycle_reapplies_graph_idempotently: true
+      retry_applied_cycle_mutates_graph: false
+    distributed_transaction: false
+    runtime_status: adapter-implemented-postgresql-not-deployed
   graph_record_json_is_interchange_contract: true
   agent_backend_query_language_access: false
   transaction_boundary:

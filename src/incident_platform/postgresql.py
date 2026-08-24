@@ -10,11 +10,23 @@ from __future__ import annotations
 import copy
 import json
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from .contracts import validate_contract
+from .evidence import parse_time
 from .errors import InvalidTransition
 from .repository import (
     ALLOWED_TRANSITIONS,
@@ -24,6 +36,13 @@ from .repository import (
     _utc_now,
     context_evidence_ids,
     report_evidence_ids,
+)
+from .stategraph import StateGraphReconciliationResult
+from .stategraph_observations import (
+    StateGraphObservationCycle,
+    StateGraphObservationPruneResult,
+    StateGraphObservationRetentionPolicy,
+    validate_cycle_evidence,
 )
 
 
@@ -790,3 +809,266 @@ class PostgreSQLIncidentRepository:
     def _validate_viewer_limit(limit: int, maximum: int) -> None:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= maximum:
             raise ValueError(f"Viewer repository limit must be between 1 and {maximum}")
+
+
+class PostgreSQLStateGraphObservationRepository:
+    """PostgreSQL journal for durable background Evidence and retry state."""
+
+    def __init__(
+        self,
+        connection_factory: ConnectionFactory,
+        retention_policy: Optional[StateGraphObservationRetentionPolicy] = None,
+    ) -> None:
+        self._connection_factory = connection_factory
+        self._retention_policy = (
+            retention_policy or StateGraphObservationRetentionPolicy()
+        )
+
+    def stage_cycle(
+        self,
+        cycle: StateGraphObservationCycle,
+        evidence: Sequence[Mapping[str, Any]],
+    ) -> StateGraphObservationCycle:
+        if cycle.status != "STAGED":
+            raise InvalidTransition("only a STAGED observation cycle can be staged")
+        candidates = validate_cycle_evidence(cycle, evidence)
+        document = cycle.to_document()
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO stategraph_observation_cycles (
+                        cycle_id, request_id, evidence_scope_id, cluster_id,
+                        namespace, status, observed_at, staged_at, applied_at,
+                        evidence_count, result, document
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, NULL,
+                        %s::jsonb
+                    )
+                    ON CONFLICT DO NOTHING
+                    RETURNING cycle_id
+                    """,
+                    (
+                        cycle.cycle_id,
+                        cycle.request_id,
+                        cycle.evidence_scope_id,
+                        cycle.cluster_id,
+                        cycle.namespace,
+                        cycle.status,
+                        cycle.observed_at,
+                        cycle.staged_at,
+                        len(candidates),
+                        _json(document),
+                    ),
+                )
+                if cursor.fetchone() is None:
+                    return self._verify_existing_cycle(cursor, cycle, candidates)
+                for candidate in candidates:
+                    cursor.execute(
+                        """
+                        INSERT INTO stategraph_observation_evidence (
+                            evidence_id, cycle_id, content_hash, observed_at,
+                            document
+                        ) VALUES (%s, %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (evidence_id) DO NOTHING
+                        RETURNING evidence_id
+                        """,
+                        (
+                            candidate["evidence_id"],
+                            cycle.cycle_id,
+                            candidate["provenance"]["content_hash"],
+                            candidate["observed_at"],
+                            _json(candidate),
+                        ),
+                    )
+                    if cursor.fetchone() is None:
+                        raise InvalidTransition(
+                            "observation evidence_id belongs to another cycle: "
+                            f"{candidate['evidence_id']}"
+                        )
+                return cycle
+
+    def mark_cycle_applied(
+        self,
+        cycle_id: str,
+        result: StateGraphReconciliationResult,
+        *,
+        applied_at: datetime,
+    ) -> StateGraphObservationCycle:
+        applied_text = _format_time(applied_at)
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT document FROM stategraph_observation_cycles
+                    WHERE cycle_id = %s FOR UPDATE
+                    """,
+                    (cycle_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise KeyError(f"unknown observation cycle: {cycle_id}")
+                existing = StateGraphObservationCycle.from_document(
+                    _decode_document(row[0])
+                )
+                updated = replace(
+                    existing,
+                    status="APPLIED",
+                    applied_at=applied_text,
+                    result=result,
+                )
+                if existing.status == "APPLIED":
+                    if existing != updated:
+                        raise InvalidTransition(
+                            f"observation cycle result collision: {cycle_id}"
+                        )
+                    return existing
+                cursor.execute(
+                    """
+                    UPDATE stategraph_observation_cycles
+                    SET status = 'APPLIED', applied_at = %s,
+                        result = %s::jsonb, document = %s::jsonb
+                    WHERE cycle_id = %s
+                    """,
+                    (
+                        applied_text,
+                        _json(_result_document(result)),
+                        _json(updated.to_document()),
+                        cycle_id,
+                    ),
+                )
+                return updated
+
+    def get_cycle(self, cycle_id: str) -> StateGraphObservationCycle:
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT document FROM stategraph_observation_cycles
+                    WHERE cycle_id = %s
+                    """,
+                    (cycle_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise KeyError(f"unknown observation cycle: {cycle_id}")
+                return StateGraphObservationCycle.from_document(
+                    _decode_document(row[0])
+                )
+
+    def list_cycle_evidence(self, cycle_id: str) -> Tuple[Mapping[str, Any], ...]:
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM stategraph_observation_cycles WHERE cycle_id = %s",
+                    (cycle_id,),
+                )
+                if cursor.fetchone() is None:
+                    raise KeyError(f"unknown observation cycle: {cycle_id}")
+                cursor.execute(
+                    """
+                    SELECT document FROM stategraph_observation_evidence
+                    WHERE cycle_id = %s
+                    ORDER BY evidence_id
+                    """,
+                    (cycle_id,),
+                )
+                return tuple(
+                    _decode_document(row[0]) for row in cursor.fetchall()
+                )
+
+    def prune_observations(
+        self,
+        *,
+        now: datetime,
+        batch_size: int = 1000,
+    ) -> StateGraphObservationPruneResult:
+        if not 1 <= batch_size <= 10_000:
+            raise ValueError("observation prune batch_size must be between 1 and 10000")
+        now_text = _format_time(now)
+        now_utc = parse_time(now_text, "ObservationPrune.now")
+        applied_cutoff = now_utc - self._retention_policy.applied_history
+        staged_cutoff = now_utc - self._retention_policy.abandoned_staged_history
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT cycle_id, evidence_count
+                    FROM stategraph_observation_cycles
+                    WHERE (
+                        status = 'APPLIED' AND applied_at <= %s
+                    ) OR (
+                        status = 'STAGED' AND staged_at <= %s
+                    )
+                    ORDER BY COALESCE(applied_at, staged_at), cycle_id
+                    LIMIT %s
+                    FOR UPDATE
+                    """,
+                    (applied_cutoff, staged_cutoff, batch_size),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    return StateGraphObservationPruneResult()
+                cycle_ids = [row[0] for row in rows]
+                cursor.execute(
+                    """
+                    DELETE FROM stategraph_observation_cycles
+                    WHERE cycle_id = ANY(%s)
+                    """,
+                    (cycle_ids,),
+                )
+                return StateGraphObservationPruneResult(
+                    cycles=len(rows),
+                    evidence_items=sum(int(row[1]) for row in rows),
+                )
+
+    @staticmethod
+    def _verify_existing_cycle(
+        cursor: Any,
+        candidate: StateGraphObservationCycle,
+        evidence: Sequence[Mapping[str, Any]],
+    ) -> StateGraphObservationCycle:
+        cursor.execute(
+            """
+            SELECT document FROM stategraph_observation_cycles
+            WHERE cycle_id = %s OR request_id = %s
+            FOR UPDATE
+            """,
+            (candidate.cycle_id, candidate.request_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise InvalidTransition(
+                "observation cycle insert conflicted without a visible owner"
+            )
+        existing = StateGraphObservationCycle.from_document(
+            _decode_document(row[0])
+        )
+        if existing.staging_identity() != candidate.staging_identity():
+            raise InvalidTransition(
+                f"observation cycle collision: {candidate.cycle_id}"
+            )
+        cursor.execute(
+            """
+            SELECT document FROM stategraph_observation_evidence
+            WHERE cycle_id = %s ORDER BY evidence_id
+            """,
+            (existing.cycle_id,),
+        )
+        stored = tuple(_decode_document(row[0]) for row in cursor.fetchall())
+        if stored != tuple(evidence):
+            raise InvalidTransition(
+                f"observation cycle Evidence collision: {candidate.cycle_id}"
+            )
+        return existing
+
+
+def _result_document(result: StateGraphReconciliationResult) -> Dict[str, Any]:
+    return {
+        "ingested_records": result.ingested_records,
+        "current_entities": result.current_entities,
+        "current_relations": result.current_relations,
+        "retired_entities": result.retired_entities,
+        "closed_snapshot_intervals": result.closed_snapshot_intervals,
+        "closed_relation_intervals": result.closed_relation_intervals,
+    }

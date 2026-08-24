@@ -40,6 +40,9 @@ from incident_platform.stategraph import (
     stable_graph_id,
     state_content_hash,
 )
+from incident_platform.stategraph_observations import (
+    InMemoryStateGraphObservationRepository,
+)
 
 _CURRENT_STAGE = "environment"
 
@@ -499,6 +502,7 @@ def main() -> int:
         reconciler = KubernetesStateGraphReconciler(
             inventory_provider,
             repository,
+            InMemoryStateGraphObservationRepository(),
             cluster_id=cluster_id,
             projector=projector,
         )
@@ -641,6 +645,10 @@ def main() -> int:
                 ),
             },
             "reconciliation_contract": reconciliation_contract,
+            "observation_cycle": {
+                "status": first_reconciliation.cycle.status,
+                "evidence_count": len(first_reconciliation.cycle.evidence_ids),
+            },
             "graph_counts": second_counts,
             "application_service_count": len(
                 set(service_names) & set(live_services)

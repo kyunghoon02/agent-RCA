@@ -157,6 +157,10 @@
       - stategraph_live_smoke_result.graph_counts.entities | int >= 10
       - stategraph_live_smoke_result.graph_counts.snapshots | int >= 10
       - stategraph_live_smoke_result.graph_counts.relations | int >= 10
+      - stategraph_live_smoke_result.observation_cycle.status == 'APPLIED'
+      - >-
+        stategraph_live_smoke_result.observation_cycle.evidence_count | int
+        == stategraph_live_smoke_result.inventory_evidence_count | int
       - >-
         stategraph_live_smoke_result.reconciliation_contract.disappeared_entities
         | int == 1
@@ -194,5 +198,6 @@
       reconciliation: "{{ stategraph_live_smoke_result.reconciliation }}"
       reconciliation_contract: >-
         {{ stategraph_live_smoke_result.reconciliation_contract }}
+      observation_cycle: "{{ stategraph_live_smoke_result.observation_cycle }}"
       resolution: "{{ stategraph_live_smoke_result.resolution }}"
       context: "{{ stategraph_live_smoke_result.context }}"

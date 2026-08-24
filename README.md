@@ -228,9 +228,9 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 |---|---|---|
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature와 bounded Kubernetes topology inventory는 live 연결, 지속 collector orchestration과 일반 metric provider는 미연결 |
-| PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
+| PostgreSQL repository | Incident artifact와 StateGraph observation journal migration/repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile과 Evidence-to-Top-N fixture 구현 | browse/cart/checkout 3개 profile의 23개 edge가 모두 Prometheus→normalized Evidence→KRCA drilldown live smoke에서 `HAS_DATA` |
-| Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | 실제 cluster에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation reconcile, exact 단일 후보와 Frozen Context 통과. 격리된 live contract에서 disappearance 시 Entity/Snapshot/Relation 종료와 재등장 interval 재생성 검증; 주기 scheduler와 지속 Evidence 저장은 미연결 |
+| Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | 실제 cluster에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation reconcile, exact 단일 후보와 Frozen Context 통과. 격리된 live contract에서 disappearance 시 Entity/Snapshot/Relation 종료와 재등장 interval 재생성 검증; journal은 live smoke에서 InMemory로만 검증했으며 PostgreSQL runtime과 주기 scheduler는 미연결 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
@@ -257,8 +257,10 @@ Projector만 검증된 Evidence를 Entity, `SnapshotInterval`, `RelationInterval
 short-lived read-only ServiceAccount token
 → bounded Service/Deployment/ReplicaSet/Pod/EndpointSlice/Node inventory
 → EvidenceDraft → EvidenceBuilder의 scope·redaction·hash·schema 검증
+→ StateGraphObservationRepository에 cycle + Evidence를 STAGED로 선저장
 → KubernetesEvidenceProjector
-→ Neo4jStateGraphRepository
+→ Neo4jStateGraphRepository의 atomic complete-set reconcile
+→ observation cycle을 APPLIED로 확정
 → exact ServiceToEntityResolver
 → IncidentLocalizationService → Frozen Context
 ```
@@ -266,9 +268,21 @@ short-lived read-only ServiceAccount token
 이 경로의 complete-set Reconciler는 inventory Provider가 `SUCCEEDED`인 경우에만 현재
 projection 반영과 사라진 Entity/Snapshot/Relation interval 종료를 같은 repository
 transaction으로 수행한다. `PARTIAL`, timeout과 빈 projection은 absence로 해석하지 않아
-아무 interval도 닫지 않는다. 같은 complete inventory의 반복 실행은 idempotent하다.
-다만 현재 실행기는 수동 one-shot smoke이며, Kubernetes CronJob/watch 같은 주기 scheduler와
-reconciliation Evidence의 지속 저장은 아직 연결하지 않았다.
+아무 interval도 닫지 않는다. Graph transaction과 observation journal 사이에는 분산
+transaction을 두지 않는다. 대신 cycle과 정규화 Evidence를 먼저 `STAGED`하고 Graph가
+성공한 뒤 `APPLIED`한다. Graph 성공 후 상태 확정이 실패해도 같은 cycle의 Graph 적용은
+저장된 Evidence로 idempotent하게 재시도할 수 있고, 이미 `APPLIED`인 cycle은 Provider나
+Graph를 다시 실행하지 않는다.
+
+이 background observation은 `IncidentRepository`에 가짜 Incident를 만들지 않고 별도
+`StateGraphObservationRepository`에 저장한다. 현재 Evidence schema가 요구하는 내부
+`incident_id`는 cycle의 `evidence_scope_id`로만 취급하며 Incident foreign key를 만들지
+않는다. `APPLIED` cycle/Evidence는 72시간, 적용되지 않은 `STAGED` cycle은 24시간 보존한
+뒤 Graph ordinary history GC 다음에 정리한다. Reconciler가 갱신하는 open interval은 최신
+cycle Evidence ID로 교체해 ID가 무한히 누적되지 않게 하고, 일반 Incident `ingest`는 기존
+merge 의미를 유지한다. 현재 실행기는 수동 one-shot smoke이며 journal의 PostgreSQL
+adapter/migration까지 구현했지만 cluster PostgreSQL runtime과 Kubernetes CronJob/watch
+scheduler는 아직 연결하지 않았다.
 
 ```text
 Validated Evidence
@@ -400,8 +414,9 @@ deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval 
 `make deploy-stategraph`는 digest-pinned Neo4j Community StatefulSet, 내부 Bolt Service와
 5Gi PVC를 배포하고 인증·Pod 안정성·read-only RBAC를 검증한다. 이어서
 `make smoke-live-stategraph`가 실제 Online Boutique inventory를 Evidence로 정규화해
-Neo4j에 투영하고, exact resolver와 Frozen Context까지 one-shot으로 확인한다. 이 성공은
-지속 reconciliation이나 fault RCA 정확도를 뜻하지 않는다.
+InMemory observation journal에 `STAGED`한 뒤 Neo4j에 투영하고, `APPLIED` 확정, exact
+resolver와 Frozen Context까지 one-shot으로 확인한다. 이 성공은 PostgreSQL journal의
+runtime 배포, 지속 reconciliation이나 fault RCA 정확도를 뜻하지 않는다.
 
 `make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
 fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
@@ -419,7 +434,8 @@ pgvector migration/index에 hash와 embedding model을 함께 저장한다. 이�
 비교한다. 두 명령은 `POSTGRES_DSN`과 embedding API가 필요하며 현재 저장소에서는 live
 성공 또는 정확도 향상 수치를 아직 주장하지 않는다.
 
-`POSTGRES_TEST_DSN`이 없으면 live PostgreSQL contract test 한 건을 건너뛴다. 승인된
+`POSTGRES_TEST_DSN`이 없으면 Incident repository와 StateGraph observation journal의
+live PostgreSQL contract test를 건너뛴다. 승인된
 테스트 DSN을 제공하면 random schema만 생성·검증·제거하며 공유 DB를 truncate하지
 않는다. Neo4j live contract는 기본적으로 skip하며, 명시적으로 승인된 test instance에
 `NEO4J_TEST_URI`, `NEO4J_TEST_USERNAME`, `NEO4J_TEST_PASSWORD`를 제공할 때만 실행하고

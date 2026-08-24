@@ -180,6 +180,38 @@ inventory가 `SUCCEEDED`이고 비어 있지 않을 때만 현재 projection을 
 닫는다. `PARTIAL`, timeout, 빈 결과나 범위 위반은 삭제로 해석하지 않으며 Graph를
 변경하기 전에 실패한다.
 
+### StateGraphObservationRepository
+
+```text
+stage_cycle(cycle, normalized_evidence)
+mark_cycle_applied(cycle_id, reconciliation_result, applied_at)
+get_cycle(cycle_id)
+list_cycle_evidence(cycle_id)
+prune_observations(now, batch_size)
+```
+
+주기 inventory Evidence는 Incident artifact와 수명이 다르므로
+`IncidentRepository`에 저장하지 않는다. Reconciler는 정규화된 Evidence와 cycle을 먼저
+`STAGED`로 저장한 뒤에만 StateGraph를 변경하고, Graph transaction 성공 뒤 `APPLIED`와
+결과를 기록한다. Graph와 PostgreSQL 사이의 분산 transaction 대신 다음 fail-closed
+재시도 규칙을 사용한다.
+
+- journal 선저장이 실패하면 Graph를 변경하지 않는다.
+- Graph 적용이 실패하면 cycle은 `STAGED`로 남는다.
+- `STAGED` 재시도는 Provider를 다시 호출하지 않고 저장된 normalized Evidence를 투영한다.
+- Graph 성공 뒤 `APPLIED` 기록이 실패하면 같은 cycle을 idempotent하게 재적용한다.
+- 이미 `APPLIED`인 같은 cycle은 저장된 Evidence와 결과를 반환하고 Provider/Graph를 다시
+  실행하지 않는다.
+- 같은 cycle/request ID에 다른 scope, 시각 또는 Evidence가 들어오면 collision으로
+  거부한다.
+
+`APPLIED` cycle과 Evidence의 기본 보존은 72시간이고 abandoned `STAGED` cycle은
+24시간이다. Graph ordinary history를 먼저 정리한 뒤 journal을 batch 단위로 정리한다.
+complete-set reconciliation이 연장한 open Entity/Snapshot/Relation은 최신 cycle의
+Evidence ID로 교체하며 일반 `ingest`의 Evidence ID merge 의미는 바꾸지 않는다. 현재
+InMemory adapter, PostgreSQL migration/adapter와 fixture/live one-shot 경계까지 구현했고
+cluster PostgreSQL runtime과 주기 scheduler는 아직 연결하지 않았다.
+
 | 단계 | 구현 |
 |---|---|
 | Port | `StateGraphRepository` Protocol |
@@ -187,7 +219,8 @@ inventory가 `SUCCEEDED`이고 비어 있지 않을 때만 현재 projection을 
 | Incident 연결 | `IncidentLocalizationService`가 Projector, Port와 Context 저장 연결 |
 | seed resolution | `ResolvedIncidentLocalizationService`가 exact resolver 결과로 scope 생성 |
 | complete-set reconciliation | `KubernetesStateGraphReconciler`와 InMemory/Neo4j atomic adapter 구현 |
-| GCP/kubeadm runtime | Neo4j adapter와 수동 bounded inventory smoke 연결; 주기 scheduler는 미연결 |
+| observation journal | InMemory/PostgreSQL adapter와 `STAGED -> APPLIED` retry contract 구현; runtime PostgreSQL 미배포 |
+| GCP/kubeadm runtime | Neo4j adapter와 InMemory journal을 사용한 수동 bounded inventory smoke 연결; 주기 scheduler는 미연결 |
 
 ### IncidentRepository
 

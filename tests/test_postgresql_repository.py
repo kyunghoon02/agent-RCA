@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from incident_platform.evidence import (
@@ -12,7 +13,16 @@ from incident_platform.evidence import (
 from incident_platform.incidents import AlertmanagerNormalizer
 from incident_platform.postgresql import (
     PostgreSQLIncidentRepository,
+    PostgreSQLStateGraphObservationRepository,
     apply_migrations,
+)
+from incident_platform.stategraph import (
+    StateGraphReconciliationResult,
+    stable_graph_id,
+)
+from incident_platform.stategraph_observations import (
+    StateGraphObservationCycle,
+    StateGraphObservationRepository,
 )
 
 from contract_suites import FIXED_TIME, IncidentRepositoryContract, contract_request
@@ -21,6 +31,9 @@ from contract_suites import FIXED_TIME, IncidentRepositoryContract, contract_req
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "db" / "migrations" / "001_initial.sql"
 AGENT_RUN_MIGRATION = ROOT / "db" / "migrations" / "002_agent_runs.sql"
+OBSERVATION_MIGRATION = (
+    ROOT / "db" / "migrations" / "003_stategraph_observations.sql"
+)
 
 
 def contract_incident() -> dict:
@@ -95,11 +108,22 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "database unavailable"):
             repository.get("inc-does-not-exist")
 
+    def test_observation_adapter_satisfies_the_repository_port(self) -> None:
+        repository = PostgreSQLStateGraphObservationRepository(lambda: None)
+        self.assertIsInstance(repository, StateGraphObservationRepository)
+
     def test_agent_run_migration_adds_auditable_runtime_persistence(self) -> None:
         sql = AGENT_RUN_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("CREATE TABLE agent_runs", sql)
         self.assertIn("context_id TEXT NOT NULL REFERENCES context_packages", sql)
         self.assertIn("document JSONB NOT NULL", sql)
+
+    def test_observation_migration_separates_background_evidence(self) -> None:
+        sql = OBSERVATION_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE stategraph_observation_cycles", sql)
+        self.assertIn("CREATE TABLE stategraph_observation_evidence", sql)
+        self.assertIn("status IN ('STAGED', 'APPLIED')", sql)
+        self.assertIn("ON DELETE CASCADE", sql)
 
     def test_viewer_list_query_keeps_search_text_in_sql_parameters(self) -> None:
         class RecordingCursor:
@@ -190,7 +214,11 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
                 sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(cls._schema))
             )
         applied = apply_migrations(cls.connection_factory)
-        if applied != ["001_initial.sql", "002_agent_runs.sql"]:
+        if applied != [
+            "001_initial.sql",
+            "002_agent_runs.sql",
+            "003_stategraph_observations.sql",
+        ]:
             raise AssertionError(f"unexpected applied migrations: {applied}")
         if apply_migrations(cls.connection_factory) != []:
             raise AssertionError("PostgreSQL migrations are not idempotent")
@@ -221,6 +249,56 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
             incident,
             evidence,
         )
+
+    def test_stategraph_observation_journal_is_durable_and_prunable(self) -> None:
+        incident = contract_incident()
+        evidence = contract_evidence(incident["incident_id"])
+        identity = {
+            "request_id": f"req-postgresql-observation-{uuid.uuid4().hex}",
+            "cluster_id": "postgresql-contract-cluster",
+            "namespace": "online-boutique",
+            "observed_at": evidence["observed_at"],
+        }
+        cycle = StateGraphObservationCycle(
+            cycle_id=stable_graph_id("cycle", identity),
+            request_id=identity["request_id"],
+            evidence_scope_id=incident["incident_id"],
+            cluster_id=identity["cluster_id"],
+            namespace=identity["namespace"],
+            observed_at=identity["observed_at"],
+            staged_at="2026-08-12T01:05:00Z",
+            status="STAGED",
+            evidence_ids=(evidence["evidence_id"],),
+        )
+        result = StateGraphReconciliationResult(
+            ingested_records=3,
+            current_entities=1,
+            current_relations=0,
+            retired_entities=0,
+            closed_snapshot_intervals=0,
+            closed_relation_intervals=0,
+        )
+        repository = PostgreSQLStateGraphObservationRepository(
+            self.connection_factory
+        )
+
+        staged = repository.stage_cycle(cycle, (evidence,))
+        repeated = repository.stage_cycle(cycle, (evidence,))
+        applied = repository.mark_cycle_applied(
+            cycle.cycle_id,
+            result,
+            applied_at=FIXED_TIME,
+        )
+
+        self.assertEqual(staged, repeated)
+        self.assertEqual(applied.status, "APPLIED")
+        self.assertEqual(repository.get_cycle(cycle.cycle_id), applied)
+        self.assertEqual(repository.list_cycle_evidence(cycle.cycle_id), (evidence,))
+        pruned = repository.prune_observations(
+            now=FIXED_TIME + timedelta(hours=73)
+        )
+        self.assertEqual(pruned.cycles, 1)
+        self.assertEqual(pruned.evidence_items, 1)
 
 
 if __name__ == "__main__":

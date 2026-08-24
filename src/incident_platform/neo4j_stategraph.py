@@ -221,7 +221,11 @@ class Neo4jStateGraphRepository:
         plan = _build_reconciliation_plan(records, scope, observed_at)
 
         def work(transaction: Any) -> StateGraphReconciliationResult:
-            self._ingest_grouped_tx(transaction, plan.grouped)
+            self._ingest_grouped_tx(
+                transaction,
+                plan.grouped,
+                replace_evidence_ids=True,
+            )
             return self._reconcile_projection_tx(transaction, scope, plan)
 
         return self._execute_write(work)
@@ -230,13 +234,27 @@ class Neo4jStateGraphRepository:
         self,
         transaction: Any,
         grouped: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        replace_evidence_ids: bool = False,
     ) -> None:
         for entity in grouped["entity"]:
-            self._upsert_entity_tx(transaction, entity)
+            self._upsert_entity_tx(
+                transaction,
+                entity,
+                replace_evidence_ids=replace_evidence_ids,
+            )
         for snapshot in grouped["snapshot_interval"]:
-            self._upsert_snapshot_tx(transaction, snapshot)
+            self._upsert_snapshot_tx(
+                transaction,
+                snapshot,
+                replace_evidence_ids=replace_evidence_ids,
+            )
         for relation in grouped["relation_interval"]:
-            self._upsert_relation_tx(transaction, relation)
+            self._upsert_relation_tx(
+                transaction,
+                relation,
+                replace_evidence_ids=replace_evidence_ids,
+            )
         for event in grouped["event_aggregate"]:
             self._upsert_event_tx(transaction, event)
 
@@ -725,7 +743,11 @@ class Neo4jStateGraphRepository:
         return int(_row_value(row, "deleted")) if row is not None else 0
 
     def _upsert_entity_tx(
-        self, transaction: Any, candidate: Mapping[str, Any]
+        self,
+        transaction: Any,
+        candidate: Mapping[str, Any],
+        *,
+        replace_evidence_ids: bool = False,
     ) -> Dict[str, Any]:
         first = _parse_time(candidate["first_seen_at"], "Entity.first_seen_at")
         last = _parse_time(candidate["last_seen_at"], "Entity.last_seen_at")
@@ -783,8 +805,12 @@ class Neo4jStateGraphRepository:
             updated["last_seen_at"] = _format_time(max(existing_last, last))
             if last >= existing_last:
                 updated["exists"] = candidate["exists"]
-            updated["evidence_ids"] = _merged_ids(
-                existing["evidence_ids"], candidate["evidence_ids"]
+            updated["evidence_ids"] = (
+                copy.deepcopy(candidate["evidence_ids"])
+                if replace_evidence_ids
+                else _merged_ids(
+                    existing["evidence_ids"], candidate["evidence_ids"]
+                )
             )
             validate_graph_record(updated)
             updated_properties = self._entity_properties(updated)
@@ -903,7 +929,11 @@ class Neo4jStateGraphRepository:
             self._upsert_relation_tx(transaction, relation)
 
     def _upsert_snapshot_tx(
-        self, transaction: Any, candidate: Mapping[str, Any]
+        self,
+        transaction: Any,
+        candidate: Mapping[str, Any],
+        *,
+        replace_evidence_ids: bool = False,
     ) -> Dict[str, Any]:
         observed = _parse_time(candidate["observed_at"], "Snapshot.observed_at")
         valid_from = _parse_time(candidate["valid_from"], "Snapshot.valid_from")
@@ -961,8 +991,12 @@ class Neo4jStateGraphRepository:
                     observed,
                 )
             )
-            updated["evidence_ids"] = _merged_ids(
-                latest["evidence_ids"], candidate["evidence_ids"]
+            updated["evidence_ids"] = (
+                copy.deepcopy(candidate["evidence_ids"])
+                if replace_evidence_ids
+                else _merged_ids(
+                    latest["evidence_ids"], candidate["evidence_ids"]
+                )
             )
             validate_graph_record(updated)
             transaction.run(
@@ -1052,7 +1086,11 @@ class Neo4jStateGraphRepository:
             )
 
     def _upsert_relation_tx(
-        self, transaction: Any, candidate: Mapping[str, Any]
+        self,
+        transaction: Any,
+        candidate: Mapping[str, Any],
+        *,
+        replace_evidence_ids: bool = False,
     ) -> Dict[str, Any]:
         observed = _parse_time(candidate["observed_at"], "Relation.observed_at")
         valid_from = _parse_time(candidate["valid_from"], "Relation.valid_from")
@@ -1114,8 +1152,12 @@ class Neo4jStateGraphRepository:
                     observed,
                 )
             )
-            updated["evidence_ids"] = _merged_ids(
-                latest["evidence_ids"], candidate["evidence_ids"]
+            updated["evidence_ids"] = (
+                copy.deepcopy(candidate["evidence_ids"])
+                if replace_evidence_ids
+                else _merged_ids(
+                    latest["evidence_ids"], candidate["evidence_ids"]
+                )
             )
             validate_graph_record(updated)
             transaction.run(

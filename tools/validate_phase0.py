@@ -1179,6 +1179,40 @@ def validate_policy_configs() -> None:
         "merge_only_consecutive_equal_state"
     ]:
         raise ValidationFailure("StateGraph would merge non-consecutive equal states")
+    reconciliation = graph_model["temporal_semantics"][
+        "complete_set_reconciliation"
+    ]
+    if reconciliation["active_interval_evidence_ids"] != (
+        "replace_with_latest_cycle"
+    ):
+        raise ValidationFailure(
+            "StateGraph reconciliation would accumulate stale Evidence IDs"
+        )
+    observation_journal = graph_model["persistence"]["observation_journal"]
+    if observation_journal["write_order"] != [
+        "stage_cycle_and_normalized_evidence",
+        "reconcile_graph_transaction",
+        "mark_cycle_applied",
+    ]:
+        raise ValidationFailure(
+            "StateGraph observation Evidence is not durable before Graph mutation"
+        )
+    if observation_journal["distributed_transaction"]:
+        raise ValidationFailure(
+            "StateGraph observation journal must expose its retry boundary"
+        )
+    if observation_journal["retry_contract"]["staged_cycle_retry_source"] != (
+        "stored_normalized_evidence"
+    ):
+        raise ValidationFailure(
+            "StateGraph observation retry would recollect mutable source state"
+        )
+    observation_retention = graph_model["retention"]["observation_journal"]
+    if observation_retention != {
+        "applied_cycle_and_evidence_hours": 72,
+        "abandoned_staged_cycle_hours": 24,
+    }:
+        raise ValidationFailure("StateGraph observation retention changed")
 
 
 def validate_negative_evidence_reference(examples: dict[str, Any]) -> None:
