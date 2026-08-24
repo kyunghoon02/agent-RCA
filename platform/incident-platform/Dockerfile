@@ -14,6 +14,7 @@ COPY src /app/src
 COPY contracts /app/contracts
 COPY db /app/db
 COPY tools/run_stategraph_reconciler.py /app/tools/run_stategraph_reconciler.py
+COPY tools/run_incident_receiver.py /app/tools/run_incident_receiver.py
 
 RUN chown -R 65532:65532 /app
 

@@ -48,6 +48,7 @@ local_path_chart_version: "0.0.36"
 local_path_storage_class: agent-rca-local
 
 kube_prometheus_release_name: monitoring
+alertmanager_service_name: monitoring-kube-prometheus-alertmanager
 kube_prometheus_chart_ref: oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
 kube_prometheus_chart_version: "88.5.3"
 
@@ -118,4 +119,8 @@ incident_platform_postgresql_service: postgresql
 incident_platform_postgresql_secret: postgresql-auth
 incident_platform_stategraph_secret: stategraph-runtime-auth
 incident_platform_reconciler_cronjob: stategraph-reconciler
+incident_platform_webhook_deployment: incident-webhook
+incident_platform_webhook_service: incident-webhook
+incident_platform_webhook_secret: incident-webhook-auth
+incident_platform_alertmanager_config: agent-rca-incidents
 incident_platform_wait_timeout: 10m

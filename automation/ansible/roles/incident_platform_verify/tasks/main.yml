@@ -77,6 +77,241 @@
         | int == 0
     fail_msg: The PostgreSQL container is not Ready or has restarted.
 
+- name: Wait for the Incident webhook Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/{{ incident_platform_webhook_deployment }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+
+- name: Read the Incident webhook Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment {{ incident_platform_webhook_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_webhook_deployment_result
+  changed_when: false
+
+- name: Require a private digest-pinned Incident webhook runtime
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_webhook_deployment_result.stdout | from_json).status.readyReplicas == 1
+      - >-
+        incident_platform.reconciler.image_digest in
+        (incident_platform_webhook_deployment_result.stdout | from_json).spec.template.spec.containers[0].image
+      - >-
+        (incident_platform_webhook_deployment_result.stdout | from_json).spec.template.spec.serviceAccountName
+        == 'incident-webhook'
+      - >-
+        not ((incident_platform_webhook_deployment_result.stdout | from_json).spec.template.spec.automountServiceAccountToken)
+    fail_msg: The Incident webhook runtime image, readiness, or identity drifted.
+
+- name: Read the private Incident webhook Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ incident_platform_webhook_service }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_webhook_service_result
+  changed_when: false
+
+- name: Require an internal-only Incident webhook Service
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_webhook_service_result.stdout | from_json).spec.type == 'ClusterIP'
+      - (incident_platform_webhook_service_result.stdout | from_json).spec.ports | length == 1
+      - (incident_platform_webhook_service_result.stdout | from_json).spec.ports[0].port == 8080
+    fail_msg: The Incident webhook must remain an internal ClusterIP Service.
+
+- name: Verify the Incident webhook health endpoint
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ incident_platform_namespace
+    }}/services/http:{{ incident_platform_webhook_service }}:8080/proxy/healthz
+  register: incident_platform_webhook_health
+  changed_when: false
+
+- name: Require a healthy bounded Incident webhook
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_webhook_health.stdout | from_json).status == 'ok'
+    fail_msg: The Incident webhook health endpoint is unavailable.
+
+- name: Read the Agent RCA Alertmanager routing resource
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get alertmanagerconfig {{ incident_platform_alertmanager_config }}
+    --namespace {{ online_boutique_namespace }} --output json
+  register: incident_platform_alertmanager_config_result
+  changed_when: false
+
+- name: Require bounded authenticated Alertmanager routing
+  ansible.builtin.assert:
+    that:
+      - >-
+        (incident_platform_alertmanager_config_result.stdout | from_json).spec.route.matchers
+        | selectattr('name', 'equalto', 'rca_enabled')
+        | selectattr('value', 'equalto', 'true')
+        | list | length == 1
+      - >-
+        (incident_platform_alertmanager_config_result.stdout | from_json).spec.receivers[0].webhookConfigs[0].sendResolved
+        | bool
+      - >-
+        (incident_platform_alertmanager_config_result.stdout | from_json).spec.receivers[0].webhookConfigs[0].httpConfig.authorization.credentials.name
+        == incident_platform_webhook_secret
+    fail_msg: Alertmanager routing is unbounded or does not use the webhook Secret.
+
+- name: Define a controlled Alertmanager delivery probe
+  ansible.builtin.set_fact:
+    incident_platform_alert_verification_id: >-
+      alertmanager-runtime-{{ ansible_facts.date_time.epoch }}
+    incident_platform_alert_started_at: "{{ ansible_facts.date_time.iso8601 }}"
+    incident_platform_alert_labels:
+      alertname: AgentRCAReceiverVerification
+      namespace: "{{ online_boutique_namespace }}"
+      severity: warning
+      service: frontend
+      rca_enabled: "true"
+      verification_id: >-
+        alertmanager-runtime-{{ ansible_facts.date_time.epoch }}
+
+- name: Verify Alertmanager delivery into the durable Incident repository
+  block:
+    - name: Start a temporary local Alertmanager port-forward
+      ansible.builtin.shell: |
+        set -eu
+        nohup kubectl --kubeconfig /etc/kubernetes/admin.conf \
+          port-forward --namespace {{ observability_namespace }} \
+          service/{{ alertmanager_service_name }} \
+          19093:9093 \
+          >/tmp/agent-rca-alertmanager-port-forward.log 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: incident_platform_alertmanager_port_forward
+      changed_when: true
+
+    - name: Wait for the temporary Alertmanager endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:19093/-/ready
+        method: GET
+        status_code: 200
+      register: incident_platform_alertmanager_ready
+      changed_when: false
+      until: incident_platform_alertmanager_ready.status == 200
+      retries: 15
+      delay: 1
+
+    - name: Submit a controlled firing alert to Alertmanager
+      ansible.builtin.uri:
+        url: http://127.0.0.1:19093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': incident_platform_alert_labels,
+            'annotations': {
+              'summary': 'Controlled Agent RCA receiver verification'
+            },
+            'startsAt': incident_platform_alert_started_at,
+            'endsAt': '2099-01-01T00:00:00Z',
+            'generatorURL': 'https://prometheus.invalid/agent-rca-verification'
+          }] }}
+        status_code: 200
+      changed_when: true
+
+    - name: Wait for Alertmanager to persist the controlled Incident
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT json_build_object(
+              'incident_count', count(*),
+              'received_count', count(*) FILTER (WHERE status = 'RECEIVED'),
+              'created_audit_count', (
+                SELECT count(*) FROM incident_audit_events audit
+                WHERE audit.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND audit.event_type = 'INCIDENT_CREATED'
+              )
+            ) FROM incidents
+            WHERE document->'alert'->'labels'->>'verification_id'
+              = '{{ incident_platform_alert_verification_id }}'"
+      register: incident_platform_alert_delivery_result
+      changed_when: false
+      no_log: true
+      until: >-
+        (incident_platform_alert_delivery_result.stdout | trim | from_json).incident_count
+        | int == 1
+      retries: 30
+      delay: 2
+
+    - name: Decode the durable Alertmanager delivery result
+      ansible.builtin.set_fact:
+        incident_platform_alert_delivery: >-
+          {{ incident_platform_alert_delivery_result.stdout | trim | from_json }}
+      no_log: true
+
+    - name: Require one auditable RECEIVED Incident
+      ansible.builtin.assert:
+        that:
+          - incident_platform_alert_delivery.incident_count | int == 1
+          - incident_platform_alert_delivery.received_count | int == 1
+          - incident_platform_alert_delivery.created_audit_count | int == 1
+        fail_msg: Alertmanager delivery was not persisted exactly once.
+  always:
+    - name: Resolve the controlled Alertmanager verification alert
+      ansible.builtin.uri:
+        url: http://127.0.0.1:19093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': incident_platform_alert_labels,
+            'annotations': {
+              'summary': 'Controlled Agent RCA receiver verification resolved'
+            },
+            'startsAt': incident_platform_alert_started_at,
+            'endsAt': incident_platform_alert_started_at,
+            'generatorURL': 'https://prometheus.invalid/agent-rca-verification'
+          }] }}
+        status_code: 200
+      changed_when: true
+      when:
+        - incident_platform_alertmanager_port_forward is defined
+        - incident_platform_alertmanager_port_forward.stdout | trim is match('^[0-9]+$')
+
+    - name: Stop the temporary Alertmanager port-forward
+      ansible.builtin.command:
+        argv:
+          - kill
+          - --
+          - "{{ incident_platform_alertmanager_port_forward.stdout | trim }}"
+      changed_when: true
+      failed_when: false
+      when:
+        - incident_platform_alertmanager_port_forward is defined
+        - incident_platform_alertmanager_port_forward.stdout | trim is match('^[0-9]+$')
+
+    - name: Remove the temporary Alertmanager port-forward log
+      ansible.builtin.file:
+        path: /tmp/agent-rca-alertmanager-port-forward.log
+        state: absent
+
 - name: Read the StateGraph reconciler CronJob
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf
@@ -254,6 +489,11 @@
         {{ incident_platform_postgresql_journal_result.cycle_count }}
       durable_evidence_count: >-
         {{ incident_platform_postgresql_journal_result.evidence_count }}
+      alertmanager_delivery:
+        incident_count: "{{ incident_platform_alert_delivery.incident_count }}"
+        received_count: "{{ incident_platform_alert_delivery.received_count }}"
+        created_audit_count: >-
+          {{ incident_platform_alert_delivery.created_audit_count }}
       reconciliation:
         status: "{{ incident_platform_reconciler_result.status }}"
         evidence_count: "{{ incident_platform_reconciler_result.evidence_count }}"

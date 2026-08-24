@@ -176,6 +176,9 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: stategraph-reconciler
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: incident-webhook
       ports:
         - protocol: TCP
           port: 5432

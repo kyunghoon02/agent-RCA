@@ -941,10 +941,17 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-b93c1640cb34",
+            "image_tag": "runtime-7d5583643ad9",
             "image_digest": (
-                "sha256:43e2cf186cf66c2e6884b1b2eb84179793c5fea0676cec2f7efd26e95d491f4e"
+                "sha256:dbea51ced7c30b6b17f58c19c2ddcce7a76cb9b438b43a6afd9283782a9478fd"
             ),
+        },
+        "webhook": {
+            "server": "gunicorn",
+            "server_version": "26.0.0",
+            "max_body_bytes": 1048576,
+            "max_alerts_per_request": 100,
+            "alert_matcher": "rca_enabled=true",
         },
     }
     if versions.get("incident_platform") != expected_runtime:
@@ -956,6 +963,8 @@ def validate_incident_platform_manifest() -> None:
     kustomization = load_yaml_documents(directory / "kustomization.yaml")[0]
     if kustomization.get("resources") != [
         "postgresql.yaml",
+        "incident-webhook.yaml",
+        "alertmanager-routing.yaml",
         "stategraph-reconciler.yaml",
     ]:
         raise ValidationFailure("Incident Platform Kustomize resource set drifted")
@@ -1032,6 +1041,130 @@ def validate_incident_platform_manifest() -> None:
         or ingress[0]["ports"] != [{"protocol": "TCP", "port": 5432}]
     ):
         raise ValidationFailure("PostgreSQL ingress boundary drifted")
+    allowed_postgresql_clients = {
+        source.get("podSelector", {}).get("matchLabels", {}).get(
+            "app.kubernetes.io/name"
+        )
+        for source in ingress[0].get("from", [])
+    }
+    if allowed_postgresql_clients != {
+        "stategraph-reconciler",
+        "incident-webhook",
+    }:
+        raise ValidationFailure("PostgreSQL client allowlist drifted")
+
+    webhook_documents = load_yaml_documents(directory / "incident-webhook.yaml")
+    if any(document.get("kind") == "Secret" for document in webhook_documents):
+        raise ValidationFailure("Incident webhook credentials must not be committed")
+    webhook_service_account = next(
+        document
+        for document in webhook_documents
+        if document.get("kind") == "ServiceAccount"
+    )
+    if webhook_service_account.get("automountServiceAccountToken") is not False:
+        raise ValidationFailure("Incident webhook ServiceAccount token must stay disabled")
+    webhook_service = next(
+        document for document in webhook_documents if document.get("kind") == "Service"
+    )
+    if (
+        webhook_service.get("spec", {}).get("type") != "ClusterIP"
+        or webhook_service.get("spec", {}).get("ports") != [
+            {"name": "http", "port": 8080, "targetPort": "http"}
+        ]
+    ):
+        raise ValidationFailure("Incident webhook must expose only internal port 8080")
+    webhook_deployment = next(
+        document
+        for document in webhook_documents
+        if document.get("kind") == "Deployment"
+    )
+    webhook_pod_spec = webhook_deployment["spec"]["template"]["spec"]
+    webhook_container = webhook_pod_spec["containers"][0]
+    if (
+        webhook_deployment["spec"].get("replicas") != 1
+        or webhook_pod_spec.get("serviceAccountName") != "incident-webhook"
+        or webhook_pod_spec.get("automountServiceAccountToken") is not False
+        or webhook_container.get("image")
+        != "agent-rca-runtime@sha256:" + "0" * 64
+        or webhook_container.get("command") != ["gunicorn"]
+        or "tools.run_incident_receiver:application"
+        not in webhook_container.get("args", [])
+        or webhook_container.get("resources", {})
+        .get("requests", {})
+        .get("cpu")
+        != "0"
+        or not webhook_container.get("securityContext", {}).get(
+            "readOnlyRootFilesystem"
+        )
+    ):
+        raise ValidationFailure("Incident webhook runtime boundary drifted")
+    webhook_env = {
+        item["name"]: item for item in webhook_container.get("env", [])
+    }
+    if (
+        webhook_env.get("WEBHOOK_BEARER_TOKEN", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "incident-webhook-auth", "key": "token"}
+        or webhook_env.get("POSTGRES_PASSWORD", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "postgresql-auth", "key": "password"}
+        or webhook_env.get("WEBHOOK_MAX_BODY_BYTES", {}).get("value")
+        != "1048576"
+        or webhook_env.get("WEBHOOK_MAX_ALERTS_PER_REQUEST", {}).get("value")
+        != "100"
+    ):
+        raise ValidationFailure("Incident webhook Secret or request bounds drifted")
+    webhook_network_policy = next(
+        document
+        for document in webhook_documents
+        if document.get("kind") == "NetworkPolicy"
+    )
+    webhook_ingress = webhook_network_policy["spec"]["ingress"]
+    if (
+        webhook_network_policy["spec"]["podSelector"]["matchLabels"].get(
+            "app.kubernetes.io/name"
+        )
+        != "incident-webhook"
+        or webhook_ingress[0]["from"] != [
+            {
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": "observability"
+                    }
+                }
+            }
+        ]
+        or webhook_ingress[0]["ports"] != [{"protocol": "TCP", "port": 8080}]
+    ):
+        raise ValidationFailure("Incident webhook ingress boundary drifted")
+
+    alertmanager_config = load_yaml_documents(
+        directory / "alertmanager-routing.yaml"
+    )[0]
+    alert_route = alertmanager_config.get("spec", {}).get("route", {})
+    webhook_config = alertmanager_config["spec"]["receivers"][0][
+        "webhookConfigs"
+    ][0]
+    authorization = webhook_config["httpConfig"]["authorization"]
+    if (
+        alertmanager_config.get("kind") != "AlertmanagerConfig"
+        or alertmanager_config.get("metadata", {}).get("namespace")
+        != "online-boutique"
+        or alert_route.get("matchers")
+        != [{"name": "rca_enabled", "matchType": "=", "value": "true"}]
+        or webhook_config.get("url")
+        != "http://incident-webhook.incident-platform.svc.cluster.local:8080/v1/alertmanager/webhook"
+        or webhook_config.get("sendResolved") is not True
+        or webhook_config.get("maxAlerts") != 20
+        or authorization
+        != {
+            "type": "Bearer",
+            "credentials": {"name": "incident-webhook-auth", "key": "token"},
+        }
+    ):
+        raise ValidationFailure("Alertmanager Incident routing boundary drifted")
 
     cronjob = load_yaml_documents(directory / "stategraph-reconciler.yaml")[0]
     job_pod_spec = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
@@ -1068,9 +1201,13 @@ def validate_incident_platform_manifest() -> None:
     dockerfile = (directory / "Dockerfile").read_text(encoding="utf-8")
     if (
         "python:3.12.11-slim-bookworm@sha256:" not in dockerfile
+        or "run_incident_receiver.py" not in dockerfile
         or "USER 65532:65532" not in dockerfile
     ):
         raise ValidationFailure("Incident Platform runtime image boundary drifted")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    if "gunicorn==26.0.0\n" not in requirements:
+        raise ValidationFailure("Incident webhook WSGI server must remain pinned")
 
 
 def validate_observability_values() -> None:

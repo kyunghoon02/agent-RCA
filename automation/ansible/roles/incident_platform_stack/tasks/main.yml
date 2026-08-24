@@ -89,6 +89,75 @@
   changed_when: true
   when: incident_platform_postgresql_secret_status.rc != 0
 
+- name: Check whether the Incident webhook authentication Secret exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ incident_platform_webhook_secret }}
+    --namespace {{ incident_platform_namespace }}
+  register: incident_platform_webhook_secret_status
+  changed_when: false
+  failed_when: false
+
+- name: Generate the initial Incident webhook bearer token
+  ansible.builtin.command: openssl rand -hex 32
+  register: incident_platform_webhook_token
+  changed_when: false
+  no_log: true
+  when: incident_platform_webhook_secret_status.rc != 0
+
+- name: Create the Incident webhook authentication Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ incident_platform_webhook_secret }}
+        namespace: {{ incident_platform_namespace }}
+      type: Opaque
+      stringData:
+        token: {{ incident_platform_webhook_token.stdout | trim }}
+  no_log: true
+  changed_when: true
+  when: incident_platform_webhook_secret_status.rc != 0
+
+- name: Read the Incident webhook authentication Secret
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ incident_platform_webhook_secret }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_webhook_secret_result
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the Alertmanager namespace webhook Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ incident_platform_webhook_secret }}
+        namespace: {{ online_boutique_namespace }}
+      type: Opaque
+      data:
+        token: "{{ (incident_platform_webhook_secret_result.stdout | from_json).data.token }}"
+  register: incident_platform_alertmanager_secret_apply
+  changed_when: >-
+    ' created' in incident_platform_alertmanager_secret_apply.stdout
+    or ' configured' in incident_platform_alertmanager_secret_apply.stdout
+  no_log: true
+
 - name: Read the Neo4j runtime credential
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf

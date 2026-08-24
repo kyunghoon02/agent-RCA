@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: agent-rca-incidents
+  namespace: online-boutique
+  labels:
+    app.kubernetes.io/name: incident-webhook
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  route:
+    receiver: incident-platform
+    groupBy:
+      - alertname
+      - namespace
+      - service
+    groupWait: 1s
+    groupInterval: 30s
+    repeatInterval: 4h
+    matchers:
+      - name: rca_enabled
+        matchType: "="
+        value: "true"
+  receivers:
+    - name: incident-platform
+      webhookConfigs:
+        - url: http://incident-webhook.incident-platform.svc.cluster.local:8080/v1/alertmanager/webhook
+          sendResolved: true
+          maxAlerts: 20
+          timeout: 10s
+          httpConfig:
+            authorization:
+              type: Bearer
+              credentials:
+                name: incident-webhook-auth
+                key: token
+            followRedirects: false
+            enableHttp2: false
