@@ -20,6 +20,7 @@ from incident_platform.stategraph import (
     EntityLookup,
     InvestigationScope,
     StateGraphHistoryRepository,
+    StateGraphReconciliationRepository,
     StateGraphRepository,
     stable_graph_id,
     state_content_hash,
@@ -84,6 +85,7 @@ class Neo4jStateGraphStaticTests(unittest.TestCase):
 
         self.assertIsInstance(repository, StateGraphRepository)
         self.assertIsInstance(repository, StateGraphHistoryRepository)
+        self.assertIsInstance(repository, StateGraphReconciliationRepository)
 
     def test_ingest_validates_before_opening_a_database_session(self) -> None:
         driver = _RecordingDriver()

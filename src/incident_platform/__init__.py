@@ -66,6 +66,12 @@ from .krca_runtime import (
     load_krca_runtime_config,
 )
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
+from .reconciliation import (
+    KUBERNETES_RECONCILED_ENTITY_TYPES,
+    KUBERNETES_RECONCILED_RELATION_TYPES,
+    KubernetesStateGraphReconciler,
+    KubernetesStateGraphReconciliationRun,
+)
 from .stategraph import (
     EntityIdentity,
     EntityLookup,
@@ -73,6 +79,9 @@ from .stategraph import (
     GraphProjection,
     InMemoryStateGraphRepository,
     InvestigationScope,
+    StateGraphReconciliationRepository,
+    StateGraphReconciliationResult,
+    StateGraphReconciliationScope,
     StateGraphRepository,
     stable_graph_id,
     state_content_hash,
@@ -179,7 +188,11 @@ __all__ = [
     "KubernetesResourcePage",
     "KubernetesEvidenceProjector",
     "KubernetesResourceSpec",
+    "KubernetesStateGraphReconciler",
+    "KubernetesStateGraphReconciliationRun",
     "KubernetesStateProvider",
+    "KUBERNETES_RECONCILED_ENTITY_TYPES",
+    "KUBERNETES_RECONCILED_RELATION_TYPES",
     "KnowledgeVectorPolicy",
     "KnowledgeVectorSyncResult",
     "KRCACandidate",
@@ -213,6 +226,9 @@ __all__ = [
     "ResolvedIncidentLocalizationService",
     "ReceiverConfig",
     "StateGraphRepository",
+    "StateGraphReconciliationRepository",
+    "StateGraphReconciliationResult",
+    "StateGraphReconciliationScope",
     "ServiceToEntityResolver",
     "apply_migrations",
     "apply_vector_migrations",

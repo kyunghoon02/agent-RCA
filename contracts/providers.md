@@ -157,6 +157,7 @@ MVP에서는 Kubernetes Deployment/ReplicaSet 상태만 사용한다. GitHub와 
 ingest(graph_records)
 find_entities(exact_bounded_lookup)
 find_state_paths(investigation_scope)
+reconcile_projection(complete_graph_records, bounded_ownership_scope, observed_at)
 ```
 
 현재 Port는 Evidence projection 저장, exact/time-bounded Entity resolution과 bounded
@@ -172,13 +173,21 @@ Service를 fallback으로 사용하며, 복수 후보를 `AMBIGUOUS`로 반환�
 pin과 garbage collection은 persistent backend 단계에서 별도 capability로 확장한다.
 아직 구현되지 않은 capability를 현재 Port의 runtime 보장으로 표현하지 않는다.
 
+`StateGraphReconciliationRepository`는 일반 `ingest`와 별도 capability다. Kubernetes
+inventory가 `SUCCEEDED`이고 비어 있지 않을 때만 현재 projection을 반영하고, 동일한
+`cluster_id + namespace + exact roots/root-derived prefixes + projector + managed types`
+경계 안에서 사라진 Entity의 open Snapshot과 Relation interval을 한 transaction으로
+닫는다. `PARTIAL`, timeout, 빈 결과나 범위 위반은 삭제로 해석하지 않으며 Graph를
+변경하기 전에 실패한다.
+
 | 단계 | 구현 |
 |---|---|
 | Port | `StateGraphRepository` Protocol |
 | fixture test | `InMemoryStateGraphRepository` adapter |
 | Incident 연결 | `IncidentLocalizationService`가 Projector, Port와 Context 저장 연결 |
 | seed resolution | `ResolvedIncidentLocalizationService`가 exact resolver 결과로 scope 생성 |
-| GCP/kubeadm runtime | capability/topology 확인 뒤 persistent adapter 고정 |
+| complete-set reconciliation | `KubernetesStateGraphReconciler`와 InMemory/Neo4j atomic adapter 구현 |
+| GCP/kubeadm runtime | Neo4j adapter와 수동 bounded inventory smoke 연결; 주기 scheduler는 미연결 |
 
 ### IncidentRepository
 

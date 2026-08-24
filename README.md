@@ -230,7 +230,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature와 bounded Kubernetes topology inventory는 live 연결, 지속 collector orchestration과 일반 metric provider는 미연결 |
 | PostgreSQL repository | migration과 repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile과 Evidence-to-Top-N fixture 구현 | browse/cart/checkout 3개 profile의 23개 edge가 모두 Prometheus→normalized Evidence→KRCA drilldown live smoke에서 `HAS_DATA` |
-| Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, Neo4j repository, exact resolver와 Frozen Context 구현 | 실제 cluster에서 66개 Evidence→304개 record→76개 Entity/66개 Snapshot/86개 Relation, 10개 logical Service, exact 단일 후보와 Frozen Context까지 one-shot smoke 통과; 주기적 projection과 relation disappearance reconciliation은 미연결 |
+| Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | 실제 cluster에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation reconcile, exact 단일 후보와 Frozen Context 통과. 격리된 live contract에서 disappearance 시 Entity/Snapshot/Relation 종료와 재등장 interval 재생성 검증; 주기 scheduler와 지속 Evidence 저장은 미연결 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
@@ -263,9 +263,12 @@ short-lived read-only ServiceAccount token
 → IncidentLocalizationService → Frozen Context
 ```
 
-이 경로는 같은 inventory를 두 번 ingest해 Entity/Snapshot/Relation 수가 증가하지 않는
-idempotence까지 확인한다. 다만 현재 실행기는 수동 one-shot smoke이며, watch 또는 주기
-reconciliation으로 사라진 relation의 `valid_to`를 닫는 상시 controller는 아직 아니다.
+이 경로의 complete-set Reconciler는 inventory Provider가 `SUCCEEDED`인 경우에만 현재
+projection 반영과 사라진 Entity/Snapshot/Relation interval 종료를 같은 repository
+transaction으로 수행한다. `PARTIAL`, timeout과 빈 projection은 absence로 해석하지 않아
+아무 interval도 닫지 않는다. 같은 complete inventory의 반복 실행은 idempotent하다.
+다만 현재 실행기는 수동 one-shot smoke이며, Kubernetes CronJob/watch 같은 주기 scheduler와
+reconciliation Evidence의 지속 저장은 아직 연결하지 않았다.
 
 ```text
 Validated Evidence

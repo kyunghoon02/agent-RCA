@@ -23,8 +23,13 @@ from .stategraph import (
     InvestigationScope,
     LocalizedPath,
     StateGraphPruneResult,
+    StateGraphReconciliationResult,
+    StateGraphReconciliationScope,
     StateGraphRetentionPolicy,
+    _StateGraphReconciliationPlan,
+    _build_reconciliation_plan,
     _format_time,
+    _group_graph_records,
     _merged_ids,
     _parse_time,
     stable_graph_id,
@@ -197,31 +202,205 @@ class Neo4jStateGraphRepository:
         self._retention_policy = retention_policy or StateGraphRetentionPolicy()
 
     def ingest(self, records: Sequence[Mapping[str, Any]]) -> None:
-        grouped: Dict[str, List[Dict[str, Any]]] = {
-            "entity": [],
-            "snapshot_interval": [],
-            "relation_interval": [],
-            "event_aggregate": [],
-        }
-        for record in records:
-            candidate = copy.deepcopy(dict(record))
-            validate_graph_record(candidate)
-            record_type = candidate.get("record_type")
-            if record_type not in grouped:
-                raise ContractViolation(f"unsupported Graph record type: {record_type}")
-            grouped[record_type].append(candidate)
+        grouped = _group_graph_records(records)
 
         def work(transaction: Any) -> None:
-            for entity in grouped["entity"]:
-                self._upsert_entity_tx(transaction, entity)
-            for snapshot in grouped["snapshot_interval"]:
-                self._upsert_snapshot_tx(transaction, snapshot)
-            for relation in grouped["relation_interval"]:
-                self._upsert_relation_tx(transaction, relation)
-            for event in grouped["event_aggregate"]:
-                self._upsert_event_tx(transaction, event)
+            self._ingest_grouped_tx(transaction, grouped)
 
         self._execute_write(work)
+
+    def reconcile_projection(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        *,
+        scope: StateGraphReconciliationScope,
+        observed_at: datetime,
+    ) -> StateGraphReconciliationResult:
+        """Atomically ingest one complete set and close disappeared intervals."""
+
+        plan = _build_reconciliation_plan(records, scope, observed_at)
+
+        def work(transaction: Any) -> StateGraphReconciliationResult:
+            self._ingest_grouped_tx(transaction, plan.grouped)
+            return self._reconcile_projection_tx(transaction, scope, plan)
+
+        return self._execute_write(work)
+
+    def _ingest_grouped_tx(
+        self,
+        transaction: Any,
+        grouped: Mapping[str, Sequence[Mapping[str, Any]]],
+    ) -> None:
+        for entity in grouped["entity"]:
+            self._upsert_entity_tx(transaction, entity)
+        for snapshot in grouped["snapshot_interval"]:
+            self._upsert_snapshot_tx(transaction, snapshot)
+        for relation in grouped["relation_interval"]:
+            self._upsert_relation_tx(transaction, relation)
+        for event in grouped["event_aggregate"]:
+            self._upsert_event_tx(transaction, event)
+
+    def _reconcile_projection_tx(
+        self,
+        transaction: Any,
+        scope: StateGraphReconciliationScope,
+        plan: _StateGraphReconciliationPlan,
+    ) -> StateGraphReconciliationResult:
+        parameters = {
+            "cluster_id": scope.cluster_id,
+            "namespace": scope.namespace,
+            "resource_names": list(scope.resource_names),
+            "resource_name_prefixes": list(scope.resource_name_prefixes),
+            "managed_entity_types": list(scope.managed_entity_types),
+        }
+        entity_rows = _rows(
+            transaction.run(
+                """
+                MATCH (entity:StateGraphEntity)
+                WHERE entity.cluster_id = $cluster_id
+                  AND entity.namespace = $namespace
+                  AND entity.entity_type IN $managed_entity_types
+                  AND (
+                    entity.name IN $resource_names
+                    OR any(prefix IN $resource_name_prefixes
+                           WHERE entity.name STARTS WITH prefix)
+                  )
+                RETURN entity.entity_id AS entity_id,
+                       entity.document_json AS document_json
+                ORDER BY entity.entity_id
+                """,
+                **parameters,
+            )
+        )
+        observed_text = _format_time(plan.observed_at)
+        retired_entities = 0
+        closed_snapshots = 0
+        for row in entity_rows:
+            entity_id = _row_value(row, "entity_id")
+            if entity_id in plan.current_entity_ids:
+                continue
+            entity = _decode_document(_row_value(row, "document_json"))
+            if plan.observed_at < _parse_time(
+                entity["last_seen_at"], "Entity.last_seen_at"
+            ):
+                raise ContractViolation(
+                    "StateGraph reconciliation observations went backward"
+                )
+            if entity["exists"]:
+                entity["exists"] = False
+                entity["last_seen_at"] = observed_text
+                validate_graph_record(entity)
+                transaction.run(
+                    """
+                    MATCH (entity:StateGraphEntity {entity_id: $entity_id})
+                    SET entity.document_json = $document_json,
+                        entity.last_seen_at = $last_seen_at
+                    """,
+                    entity_id=entity_id,
+                    document_json=_json(entity),
+                    last_seen_at=plan.observed_at,
+                ).consume()
+                retired_entities += 1
+
+            snapshot_row = _single(
+                transaction.run(
+                    """
+                    MATCH (:StateGraphEntity {entity_id: $entity_id})
+                          -[:HAS_SNAPSHOT]->(snapshot:StateGraphSnapshot)
+                    WHERE snapshot.valid_to IS NULL
+                    RETURN snapshot.document_json AS document_json
+                    ORDER BY snapshot.valid_from DESC, snapshot.snapshot_id DESC
+                    LIMIT 1
+                    """,
+                    entity_id=entity_id,
+                )
+            )
+            if snapshot_row is None:
+                continue
+            snapshot = _decode_document(
+                _row_value(snapshot_row, "document_json")
+            )
+            if plan.observed_at < _parse_time(
+                snapshot["valid_from"], "Snapshot.valid_from"
+            ):
+                raise ContractViolation("Snapshot cannot close before valid_from")
+            snapshot["valid_to"] = observed_text
+            snapshot["observed_at"] = observed_text
+            validate_graph_record(snapshot)
+            transaction.run(
+                """
+                MATCH (snapshot:StateGraphSnapshot {snapshot_id: $snapshot_id})
+                SET snapshot.document_json = $document_json,
+                    snapshot.observed_at = $observed_at,
+                    snapshot.valid_to = $valid_to
+                """,
+                snapshot_id=snapshot["snapshot_id"],
+                document_json=_json(snapshot),
+                observed_at=plan.observed_at,
+                valid_to=plan.observed_at,
+            ).consume()
+            closed_snapshots += 1
+
+        relation_rows = _rows(
+            transaction.run(
+                """
+                MATCH (source:StateGraphEntity)
+                      -[relation:STATEGRAPH_RELATION]->()
+                WHERE source.cluster_id = $cluster_id
+                  AND source.namespace = $namespace
+                  AND source.entity_type IN $managed_entity_types
+                  AND (
+                    source.name IN $resource_names
+                    OR any(prefix IN $resource_name_prefixes
+                           WHERE source.name STARTS WITH prefix)
+                  )
+                  AND relation.valid_to IS NULL
+                  AND relation.relation_type IN $managed_relation_types
+                RETURN relation.document_json AS document_json
+                ORDER BY relation.relation_key, relation.valid_from
+                """,
+                **parameters,
+                managed_relation_types=list(scope.managed_relation_types),
+            )
+        )
+        closed_relations = 0
+        for row in relation_rows:
+            relation = _decode_document(_row_value(row, "document_json"))
+            if (
+                relation["projector"] != scope.projector
+                or relation["relation_key"] in plan.current_relation_keys
+            ):
+                continue
+            if plan.observed_at < _parse_time(
+                relation["valid_from"], "Relation.valid_from"
+            ):
+                raise ContractViolation("Relation cannot close before valid_from")
+            relation["valid_to"] = observed_text
+            relation["observed_at"] = observed_text
+            validate_graph_record(relation)
+            transaction.run(
+                """
+                MATCH ()-[relation:STATEGRAPH_RELATION]->()
+                WHERE relation.relation_id = $relation_id
+                SET relation.document_json = $document_json,
+                    relation.observed_at = $observed_at,
+                    relation.valid_to = $valid_to
+                """,
+                relation_id=relation["relation_id"],
+                document_json=_json(relation),
+                observed_at=plan.observed_at,
+                valid_to=plan.observed_at,
+            ).consume()
+            closed_relations += 1
+
+        return StateGraphReconciliationResult(
+            ingested_records=plan.record_count,
+            current_entities=len(plan.current_entity_ids),
+            current_relations=len(plan.current_relation_keys),
+            retired_entities=retired_entities,
+            closed_snapshot_intervals=closed_snapshots,
+            closed_relation_intervals=closed_relations,
+        )
 
     def find_entities(self, lookup: EntityLookup) -> Tuple[Mapping[str, Any], ...]:
         parameters = {
@@ -945,12 +1124,14 @@ class Neo4jStateGraphRepository:
                 WHERE relation.relation_id = $relation_id
                 SET relation.document_json = $document_json,
                     relation.observed_at = $observed_at,
-                    relation.evidence_ids = $evidence_ids
+                    relation.evidence_ids = $evidence_ids,
+                    relation.projector = $projector
                 """,
                 relation_id=updated["relation_id"],
                 document_json=_json(updated),
                 observed_at=_parse_time(updated["observed_at"], "Relation.observed_at"),
                 evidence_ids=updated["evidence_ids"],
+                projector=updated["projector"],
             ).consume()
             return updated
         self._create_relation_tx(transaction, candidate)
@@ -966,6 +1147,7 @@ class Neo4jStateGraphRepository:
               relation_id: $relation_id,
               relation_key: $relation_key,
               relation_type: $relation_type,
+              projector: $projector,
               source_entity_id: $source_entity_id,
               destination_entity_id: $destination_entity_id,
               document_json: $document_json,
@@ -978,6 +1160,7 @@ class Neo4jStateGraphRepository:
             relation_id=relation["relation_id"],
             relation_key=relation["relation_key"],
             relation_type=relation["relation_type"],
+            projector=relation["projector"],
             source_entity_id=relation["source_entity_id"],
             destination_entity_id=relation["destination_entity_id"],
             document_json=_json(relation),

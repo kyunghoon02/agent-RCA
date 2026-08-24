@@ -349,6 +349,198 @@ class StateGraphPruneResult:
     unreferenced_entities: int = 0
 
 
+@dataclass(frozen=True)
+class StateGraphReconciliationScope:
+    """Authoritative bounded ownership for one complete projection cycle."""
+
+    cluster_id: str
+    namespace: str
+    resource_names: Tuple[str, ...]
+    resource_name_prefixes: Tuple[str, ...]
+    projector: str
+    managed_entity_types: Tuple[str, ...]
+    managed_relation_types: Tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "resource_names",
+            "managed_entity_types",
+            "managed_relation_types",
+        ):
+            values = tuple(getattr(self, field_name))
+            object.__setattr__(self, field_name, values)
+            if not values or any(
+                not isinstance(value, str) or not value.strip() for value in values
+            ):
+                raise ContractViolation(
+                    f"StateGraphReconciliationScope.{field_name} must be non-empty"
+                )
+            if len(values) != len(set(values)):
+                raise ContractViolation(
+                    f"StateGraphReconciliationScope.{field_name} must be unique"
+                )
+        prefixes = tuple(self.resource_name_prefixes)
+        object.__setattr__(self, "resource_name_prefixes", prefixes)
+        if any(
+            not isinstance(prefix, str) or not prefix.strip() for prefix in prefixes
+        ):
+            raise ContractViolation(
+                "StateGraphReconciliationScope.resource_name_prefixes must not "
+                "contain empty values"
+            )
+        if len(prefixes) != len(set(prefixes)):
+            raise ContractViolation(
+                "StateGraphReconciliationScope.resource_name_prefixes must be unique"
+            )
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in (self.cluster_id, self.namespace, self.projector)
+        ):
+            raise ContractViolation(
+                "StateGraph reconciliation cluster, namespace, and projector are required"
+            )
+        allowed_prefixes = {f"{name}-" for name in self.resource_names}
+        if set(self.resource_name_prefixes) - allowed_prefixes:
+            raise ContractViolation(
+                "StateGraph reconciliation prefixes must derive from exact roots"
+            )
+
+    def contains_name(self, name: object) -> bool:
+        return isinstance(name, str) and (
+            name in self.resource_names
+            or any(name.startswith(prefix) for prefix in self.resource_name_prefixes)
+        )
+
+    def owns_entity(self, entity: Mapping[str, Any]) -> bool:
+        scope = entity.get("scope", {})
+        return (
+            isinstance(scope, Mapping)
+            and scope.get("cluster_id") == self.cluster_id
+            and scope.get("namespace") == self.namespace
+            and entity.get("entity_type") in self.managed_entity_types
+            and self.contains_name(entity.get("name"))
+        )
+
+
+@dataclass(frozen=True)
+class StateGraphReconciliationResult:
+    """Bounded mutation counts from one complete reconciliation transaction."""
+
+    ingested_records: int
+    current_entities: int
+    current_relations: int
+    retired_entities: int
+    closed_snapshot_intervals: int
+    closed_relation_intervals: int
+
+
+@dataclass(frozen=True)
+class _StateGraphReconciliationPlan:
+    grouped: Mapping[str, Tuple[Dict[str, Any], ...]]
+    current_entity_ids: frozenset[str]
+    current_snapshot_entity_ids: frozenset[str]
+    current_relation_keys: frozenset[str]
+    observed_at: datetime
+
+    @property
+    def record_count(self) -> int:
+        return sum(len(records) for records in self.grouped.values())
+
+
+def _group_graph_records(
+    records: Sequence[Mapping[str, Any]],
+) -> Dict[str, Tuple[Dict[str, Any], ...]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {
+        "entity": [],
+        "snapshot_interval": [],
+        "relation_interval": [],
+        "event_aggregate": [],
+    }
+    for record in records:
+        candidate = copy.deepcopy(dict(record))
+        validate_graph_record(candidate)
+        record_type = candidate.get("record_type")
+        if record_type not in grouped:
+            raise ContractViolation(f"unsupported Graph record type: {record_type}")
+        grouped[record_type].append(candidate)
+    return {key: tuple(value) for key, value in grouped.items()}
+
+
+def _build_reconciliation_plan(
+    records: Sequence[Mapping[str, Any]],
+    scope: StateGraphReconciliationScope,
+    observed_at: datetime,
+) -> _StateGraphReconciliationPlan:
+    observed_text = _format_time(observed_at)
+    observed_utc = _parse_time(
+        observed_text, "StateGraph reconciliation observed_at"
+    )
+    grouped = _group_graph_records(records)
+    if grouped["event_aggregate"]:
+        raise ContractViolation(
+            "StateGraph reconciliation accepts state and relation records only"
+        )
+    entities_by_id: Dict[str, Dict[str, Any]] = {}
+    for entity in grouped["entity"]:
+        entities_by_id[entity["entity_id"]] = entity
+        if _parse_time(entity["last_seen_at"], "Entity.last_seen_at") > observed_utc:
+            raise ContractViolation(
+                "StateGraph reconciliation cannot precede Entity observation"
+            )
+
+    current_entity_ids = frozenset(
+        entity_id
+        for entity_id, entity in entities_by_id.items()
+        if scope.owns_entity(entity)
+    )
+    current_snapshot_entity_ids = set()
+    for snapshot in grouped["snapshot_interval"]:
+        entity = entities_by_id.get(snapshot["entity_id"])
+        if entity is None:
+            raise ContractViolation(
+                "StateGraph reconciliation Snapshot requires its Entity in the cycle"
+            )
+        if _parse_time(snapshot["observed_at"], "Snapshot.observed_at") > observed_utc:
+            raise ContractViolation(
+                "StateGraph reconciliation cannot precede Snapshot observation"
+            )
+        if scope.owns_entity(entity):
+            current_snapshot_entity_ids.add(snapshot["entity_id"])
+
+    current_relation_keys = set()
+    for relation in grouped["relation_interval"]:
+        source = entities_by_id.get(relation["source_entity_id"])
+        if source is None or not scope.owns_entity(source):
+            raise ContractViolation(
+                "StateGraph reconciliation Relation source is outside ownership scope"
+            )
+        if relation["projector"] != scope.projector:
+            raise ContractViolation(
+                "StateGraph reconciliation Relation projector does not match scope"
+            )
+        if relation["relation_type"] not in scope.managed_relation_types:
+            raise ContractViolation(
+                "StateGraph reconciliation Relation type is outside managed scope"
+            )
+        if _parse_time(relation["observed_at"], "Relation.observed_at") > observed_utc:
+            raise ContractViolation(
+                "StateGraph reconciliation cannot precede Relation observation"
+            )
+        current_relation_keys.add(relation["relation_key"])
+
+    if not current_entity_ids or not current_snapshot_entity_ids:
+        raise ContractViolation(
+            "StateGraph reconciliation requires a non-empty complete state projection"
+        )
+    return _StateGraphReconciliationPlan(
+        grouped=grouped,
+        current_entity_ids=current_entity_ids,
+        current_snapshot_entity_ids=frozenset(current_snapshot_entity_ids),
+        current_relation_keys=frozenset(current_relation_keys),
+        observed_at=observed_utc,
+    )
+
+
 @runtime_checkable
 class StateGraphRepository(Protocol):
     """Storage port required by projection and bounded Graph localization.
@@ -390,6 +582,20 @@ class StateGraphHistoryRepository(Protocol):
         ...
 
 
+@runtime_checkable
+class StateGraphReconciliationRepository(Protocol):
+    """Atomic complete-set reconciliation kept outside localization reads."""
+
+    def reconcile_projection(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        *,
+        scope: StateGraphReconciliationScope,
+        observed_at: datetime,
+    ) -> StateGraphReconciliationResult:
+        ...
+
+
 class InMemoryStateGraphRepository:
     """Thread-safe reference repository implementing temporal interval semantics."""
 
@@ -403,17 +609,12 @@ class InMemoryStateGraphRepository:
     def ingest(self, records: Sequence[Mapping[str, Any]]) -> None:
         """Ingest one projection while resolving entity references first."""
 
-        grouped: Dict[str, List[Mapping[str, Any]]] = {
-            "entity": [],
-            "snapshot_interval": [],
-            "relation_interval": [],
-            "event_aggregate": [],
-        }
-        for record in records:
-            record_type = record.get("record_type")
-            if record_type not in grouped:
-                raise ContractViolation(f"unsupported Graph record type: {record_type}")
-            grouped[record_type].append(record)
+        grouped = _group_graph_records(records)
+        self._ingest_grouped(grouped)
+
+    def _ingest_grouped(
+        self, grouped: Mapping[str, Sequence[Mapping[str, Any]]]
+    ) -> None:
         for record in grouped["entity"]:
             self.upsert_entity(record)
         for record in grouped["snapshot_interval"]:
@@ -422,6 +623,102 @@ class InMemoryStateGraphRepository:
             self.append_or_extend_relation(record)
         for record in grouped["event_aggregate"]:
             self.upsert_event_aggregate(record)
+
+    def reconcile_projection(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        *,
+        scope: StateGraphReconciliationScope,
+        observed_at: datetime,
+    ) -> StateGraphReconciliationResult:
+        plan = _build_reconciliation_plan(records, scope, observed_at)
+        observed_text = _format_time(plan.observed_at)
+        with self._lock:
+            backup = (
+                copy.deepcopy(self._entities),
+                copy.deepcopy(self._snapshots_by_entity),
+                copy.deepcopy(self._relations_by_key),
+                copy.deepcopy(self._events),
+            )
+            try:
+                self._ingest_grouped(plan.grouped)
+                retired_entities = 0
+                closed_snapshots = 0
+                for entity_id, entity in tuple(self._entities.items()):
+                    if (
+                        not scope.owns_entity(entity)
+                        or entity_id in plan.current_entity_ids
+                    ):
+                        continue
+                    if plan.observed_at < _parse_time(
+                        entity["last_seen_at"], "Entity.last_seen_at"
+                    ):
+                        raise ContractViolation(
+                            "StateGraph reconciliation observations went backward"
+                        )
+                    if entity["exists"]:
+                        updated_entity = copy.deepcopy(entity)
+                        updated_entity["exists"] = False
+                        updated_entity["last_seen_at"] = observed_text
+                        validate_graph_record(updated_entity)
+                        self._entities[entity_id] = updated_entity
+                        retired_entities += 1
+                    history = self._snapshots_by_entity.get(entity_id, [])
+                    if history and history[-1]["valid_to"] is None:
+                        latest = copy.deepcopy(history[-1])
+                        if plan.observed_at < _parse_time(
+                            latest["valid_from"], "Snapshot.valid_from"
+                        ):
+                            raise ContractViolation(
+                                "Snapshot cannot close before valid_from"
+                            )
+                        latest["valid_to"] = observed_text
+                        latest["observed_at"] = observed_text
+                        validate_graph_record(latest)
+                        history[-1] = latest
+                        closed_snapshots += 1
+
+                closed_relations = 0
+                for relation_key, history in self._relations_by_key.items():
+                    latest = history[-1]
+                    source = self._entities.get(latest["source_entity_id"])
+                    if (
+                        latest["valid_to"] is not None
+                        or latest["projector"] != scope.projector
+                        or latest["relation_type"] not in scope.managed_relation_types
+                        or source is None
+                        or not scope.owns_entity(source)
+                        or relation_key in plan.current_relation_keys
+                    ):
+                        continue
+                    if plan.observed_at < _parse_time(
+                        latest["valid_from"], "Relation.valid_from"
+                    ):
+                        raise ContractViolation(
+                            "Relation cannot close before valid_from"
+                        )
+                    updated_relation = copy.deepcopy(latest)
+                    updated_relation["valid_to"] = observed_text
+                    updated_relation["observed_at"] = observed_text
+                    validate_graph_record(updated_relation)
+                    history[-1] = updated_relation
+                    closed_relations += 1
+            except Exception:
+                (
+                    self._entities,
+                    self._snapshots_by_entity,
+                    self._relations_by_key,
+                    self._events,
+                ) = backup
+                raise
+        return StateGraphReconciliationResult(
+            ingested_records=plan.record_count,
+            current_entities=len(plan.current_entity_ids),
+            current_relations=len(plan.current_relation_keys),
+            retired_entities=retired_entities,
+            closed_snapshot_intervals=closed_snapshots,
+            closed_relation_intervals=closed_relations,
+        )
 
     def upsert_entity(self, record: Mapping[str, Any]) -> Dict[str, Any]:
         candidate = copy.deepcopy(dict(record))
@@ -991,9 +1288,6 @@ class GraphLocalizer:
             raise ContractViolation(
                 "Graph localization did not retain any stored Evidence references"
             )
-        missing_ids = sorted(graph_evidence - set(evidence_by_id))
-        reference_coverage = len(available) / len(graph_evidence) if graph_evidence else 0.0
-        completeness = round(localized.entity_coverage * reference_coverage, 6)
 
         source = localized.entities[scope.seed_entity_ids[0]]
         state_paths = []
@@ -1016,6 +1310,12 @@ class GraphLocalizer:
                     "evidence_ids": path_evidence,
                 }
             )
+        covered_paths = sum(bool(path["evidence_ids"]) for path in state_paths)
+        path_coverage = covered_paths / len(state_paths) if state_paths else 0.0
+        completeness = round(localized.entity_coverage * path_coverage, 6)
+        missing_paths = [
+            path["path_id"] for path in state_paths if not path["evidence_ids"]
+        ]
         failure_items = [dict(item) for item in collector_failures]
         context_identity = {
             "scope": scope.to_contract(),
@@ -1038,9 +1338,12 @@ class GraphLocalizer:
             "missing_evidence": [
                 {
                     "source": "stategraph",
-                    "reason": f"Graph record references unavailable Evidence {evidence_id}",
+                    "reason": (
+                        "Localized path has no Evidence from the current Incident: "
+                        f"{path_id}"
+                    ),
                 }
-                for evidence_id in missing_ids
+                for path_id in missing_paths
             ],
             "collector_failures": failure_items,
             "localization": {

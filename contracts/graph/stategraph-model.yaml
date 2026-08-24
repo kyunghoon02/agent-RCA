@@ -135,6 +135,29 @@ temporal_semantics:
       - merge_evidence_ids
     on_disappearance: close_interval
     on_reappearance: create_new_interval
+  complete_set_reconciliation:
+    authoritative_scope:
+      - trusted_cluster_id
+      - exact_namespace
+      - exact_resource_roots
+      - root_derived_name_prefixes
+      - projector
+      - managed_entity_types
+      - managed_relation_types
+    accepted_provider_status:
+      - SUCCEEDED
+    reject_before_mutation:
+      - PARTIAL
+      - empty_projection
+      - out_of_scope_source_entity
+      - projector_mismatch
+      - backward_observation_time
+    one_transaction:
+      - upsert_current_projection
+      - mark_absent_owned_entities_not_existing
+      - close_absent_snapshot_intervals
+      - close_absent_relation_intervals
+    partial_or_failed_collection_closes_intervals: false
   event:
     identity_fields:
       - entity_id
@@ -169,6 +192,10 @@ localization:
     - relation_types
     - correlation_keys
   output: frozen-context-package
+  context_completeness:
+    formula: entity_coverage_times_current_incident_path_coverage
+    repeated_prior_cycle_evidence_ids_in_denominator: false
+    uncovered_path_requires_missing_evidence_entry: true
   adaptive_expansion:
     assessor_input: current-frozen-context-only
     expand_when_any:
@@ -217,3 +244,4 @@ persistence:
     - relation_merge
     - event_aggregate_upsert
     - placeholder_reconciliation
+    - complete_set_disappearance_reconciliation

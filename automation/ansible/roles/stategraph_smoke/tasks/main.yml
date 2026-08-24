@@ -157,6 +157,21 @@
       - stategraph_live_smoke_result.graph_counts.entities | int >= 10
       - stategraph_live_smoke_result.graph_counts.snapshots | int >= 10
       - stategraph_live_smoke_result.graph_counts.relations | int >= 10
+      - >-
+        stategraph_live_smoke_result.reconciliation_contract.disappeared_entities
+        | int == 1
+      - >-
+        stategraph_live_smoke_result.reconciliation_contract.closed_snapshots
+        | int == 1
+      - >-
+        stategraph_live_smoke_result.reconciliation_contract.closed_relations
+        | int == 1
+      - >-
+        stategraph_live_smoke_result.reconciliation_contract.relation_intervals
+        | int == 2
+      - >-
+        stategraph_live_smoke_result.reconciliation_contract.active_relations
+        | int == 1
       - "'REPRESENTED_BY' in stategraph_live_smoke_result.relation_types"
       - "'OWNS' in stategraph_live_smoke_result.relation_types"
       - "'SELECTS' in stategraph_live_smoke_result.relation_types"
@@ -176,5 +191,8 @@
       application_service_count: >-
         {{ stategraph_live_smoke_result.application_service_count }}
       relation_types: "{{ stategraph_live_smoke_result.relation_types }}"
+      reconciliation: "{{ stategraph_live_smoke_result.reconciliation }}"
+      reconciliation_contract: >-
+        {{ stategraph_live_smoke_result.reconciliation_contract }}
       resolution: "{{ stategraph_live_smoke_result.resolution }}"
       context: "{{ stategraph_live_smoke_result.context }}"

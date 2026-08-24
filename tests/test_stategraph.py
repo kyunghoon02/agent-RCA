@@ -92,10 +92,14 @@ def graph_snapshot(
     }
 
 
-def build_evidence(draft: EvidenceDraft) -> dict:
+def build_evidence(
+    draft: EvidenceDraft,
+    *,
+    incident_id: str = "inc-stategraph-fixture-0001",
+) -> dict:
     request = CollectionRequest(
-        request_id="req-stategraph-fixture-0001",
-        incident_id="inc-stategraph-fixture-0001",
+        request_id=f"req-{incident_id[4:]}",
+        incident_id=incident_id,
         window=WINDOW,
         scope=ResourceScope(
             namespace="online-boutique",
@@ -111,7 +115,10 @@ def build_evidence(draft: EvidenceDraft) -> dict:
     )
 
 
-def kubernetes_evidence() -> tuple[dict, dict]:
+def kubernetes_evidence(
+    *,
+    incident_id: str = "inc-stategraph-fixture-0001",
+) -> tuple[dict, dict]:
     event = build_evidence(
         EvidenceDraft(
             source="kubernetes",
@@ -140,7 +147,8 @@ def kubernetes_evidence() -> tuple[dict, dict]:
             query="list Event for checkoutservice",
             locator="k8s://online-boutique/Event/checkout-missing-config",
             freshness="recent",
-        )
+        ),
+        incident_id=incident_id,
     )
     resource = build_evidence(
         EvidenceDraft(
@@ -161,7 +169,8 @@ def kubernetes_evidence() -> tuple[dict, dict]:
             provider="kubernetes-http-api",
             query="get ConfigMap checkout-settings",
             locator="k8s://online-boutique/ConfigMap/checkout-settings",
-        )
+        ),
+        incident_id=incident_id,
     )
     return event, resource
 
@@ -413,6 +422,45 @@ class KubernetesProjectorAndLocalizerTests(unittest.TestCase):
                 (event,),
                 frozen_at=datetime(2026, 8, 12, 1, 7, tzinfo=UTC),
             )
+
+    def test_repeated_prior_cycles_do_not_reduce_current_path_coverage(self) -> None:
+        prior_event, _ = kubernetes_evidence(
+            incident_id="inc-stategraph-prior-cycle-0001"
+        )
+        event, resource = kubernetes_evidence()
+        projector = KubernetesEvidenceProjector()
+        repository = InMemoryStateGraphRepository()
+        repository.ingest(projector.project(prior_event).records)
+        event_projection = projector.project(event)
+        repository.ingest(event_projection.records)
+        repository.ingest(projector.project(resource).records)
+        pod = next(
+            record
+            for record in event_projection.records
+            if record["record_type"] == "entity" and record["entity_type"] == "Pod"
+        )
+        scope = InvestigationScope(
+            incident_id=event["incident_id"],
+            seed_entity_ids=(pod["entity_id"],),
+            window=WINDOW,
+            domains=("kubernetes",),
+            relation_types=("REFERENCES",),
+            max_entities=2,
+            max_depth=1,
+        )
+
+        context = GraphLocalizer(repository).build_context(
+            scope,
+            (event, resource),
+            frozen_at=datetime(2026, 8, 12, 1, 7, tzinfo=UTC),
+        )
+
+        self.assertEqual(context["localization"]["context_completeness"], 1.0)
+        self.assertEqual(context["missing_evidence"], [])
+        self.assertEqual(
+            set(context["evidence_ids"]),
+            {event["evidence_id"], resource["evidence_id"]},
+        )
 
 
 if __name__ == "__main__":
