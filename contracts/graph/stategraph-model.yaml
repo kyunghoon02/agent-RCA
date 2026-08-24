@@ -260,7 +260,12 @@ persistence:
       retry_staged_cycle_reapplies_graph_idempotently: true
       retry_applied_cycle_mutates_graph: false
     distributed_transaction: false
-    runtime_status: adapter-implemented-postgresql-not-deployed
+    runtime_status: deployed-cluster-local-postgresql
+    scheduler:
+      kind: KubernetesCronJob
+      schedule: "*/5 * * * *"
+      concurrency_policy: Forbid
+      runtime_status: deployed
   graph_record_json_is_interchange_contract: true
   agent_backend_query_language_access: false
   transaction_boundary:

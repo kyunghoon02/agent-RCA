@@ -1,0 +1,13 @@
+---
+- name: Deploy and verify the persistent Incident Platform runtime
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../../../platform/versions.yaml
+
+  roles:
+    - role: stategraph_verify
+    - role: incident_platform_stack
+    - role: incident_platform_verify

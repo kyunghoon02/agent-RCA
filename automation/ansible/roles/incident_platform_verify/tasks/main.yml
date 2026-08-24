@@ -1,0 +1,262 @@
+---
+- name: Wait for the PostgreSQL StatefulSet
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status statefulset/{{ incident_platform_postgresql_statefulset }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+
+- name: Read the PostgreSQL StatefulSet image
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get statefulset {{ incident_platform_postgresql_statefulset }}
+    --namespace {{ incident_platform_namespace }}
+    --output jsonpath={.spec.template.spec.containers[0].image}
+  register: incident_platform_postgresql_image
+  changed_when: false
+
+- name: Require the pinned PostgreSQL image
+  ansible.builtin.assert:
+    that:
+      - (incident_platform.postgresql.version | string) in incident_platform_postgresql_image.stdout
+      - incident_platform.postgresql.image_digest in incident_platform_postgresql_image.stdout
+    fail_msg: The live PostgreSQL image does not match the pinned version and digest.
+
+- name: Read the private PostgreSQL Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ incident_platform_postgresql_service }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_postgresql_service_result
+  changed_when: false
+
+- name: Require a private PostgreSQL ClusterIP Service
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_postgresql_service_result.stdout | from_json).spec.type == 'ClusterIP'
+      - (incident_platform_postgresql_service_result.stdout | from_json).spec.ports | length == 1
+      - (incident_platform_postgresql_service_result.stdout | from_json).spec.ports[0].port == 5432
+    fail_msg: PostgreSQL must remain an internal ClusterIP Service.
+
+- name: Read the PostgreSQL persistent volume claim
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get persistentvolumeclaim --namespace {{ incident_platform_namespace }}
+    --selector app.kubernetes.io/name=postgresql --output json
+  register: incident_platform_postgresql_pvcs
+  changed_when: false
+
+- name: Require one Bound PostgreSQL persistent volume claim
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_postgresql_pvcs.stdout | from_json)['items'] | length == 1
+      - (incident_platform_postgresql_pvcs.stdout | from_json)['items'][0].status.phase == 'Bound'
+      - >-
+        (incident_platform_postgresql_pvcs.stdout | from_json)['items'][0].spec.storageClassName
+        == local_path_storage_class
+    fail_msg: The PostgreSQL PVC is missing, unbound, or uses the wrong StorageClass.
+
+- name: Read the PostgreSQL Pod state
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get pod --namespace {{ incident_platform_namespace }}
+    --selector app.kubernetes.io/name=postgresql --output json
+  register: incident_platform_postgresql_pods
+  changed_when: false
+
+- name: Require a stable PostgreSQL container
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_postgresql_pods.stdout | from_json)['items'] | length == 1
+      - >-
+        (incident_platform_postgresql_pods.stdout | from_json)['items'][0].status.containerStatuses[0].ready
+        | bool
+      - >-
+        (incident_platform_postgresql_pods.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
+        | int == 0
+    fail_msg: The PostgreSQL container is not Ready or has restarted.
+
+- name: Read the StateGraph reconciler CronJob
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get cronjob {{ incident_platform_reconciler_cronjob }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_reconciler_cronjob_result
+  changed_when: false
+
+- name: Require a serialized, digest-pinned reconciler schedule
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.schedule == '*/5 * * * *'
+      - (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.concurrencyPolicy == 'Forbid'
+      - not ((incident_platform_reconciler_cronjob_result.stdout | from_json).spec.suspend | default(false))
+      - >-
+        incident_platform.reconciler.image_digest in
+        (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.containers[0].image
+      - >-
+        (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.serviceAccountName
+        == 'incident-platform-reader'
+      - >-
+        (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.automountServiceAccountToken
+        | bool
+    fail_msg: The StateGraph reconciler schedule or runtime boundary drifted.
+
+- name: Verify the reconciler can list target Pods
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i list pods
+    --namespace {{ online_boutique_namespace }}
+    --as system:serviceaccount:{{ incident_platform_namespace }}:incident-platform-reader
+  register: incident_platform_reader_can_list_pods
+  changed_when: false
+  failed_when: incident_platform_reader_can_list_pods.stdout != 'yes'
+
+- name: Verify the reconciler cannot read Secrets
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i get secrets
+    --namespace {{ online_boutique_namespace }}
+    --as system:serviceaccount:{{ incident_platform_namespace }}:incident-platform-reader
+  register: incident_platform_reader_can_read_secrets
+  changed_when: false
+  failed_when: incident_platform_reader_can_read_secrets.stdout != 'no'
+
+- name: Verify one serialized persistent reconciliation cycle
+  block:
+    - name: Suspend scheduled reconciliation during the verification cycle
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        patch cronjob {{ incident_platform_reconciler_cronjob }}
+        --namespace {{ incident_platform_namespace }}
+        --type merge --patch '{"spec":{"suspend":true}}'
+      changed_when: true
+
+    - name: Wait for previously scheduled reconciliation Jobs to finish
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          kubectl --kubeconfig /etc/kubernetes/admin.conf
+          get jobs --namespace {{ incident_platform_namespace }}
+          --selector app.kubernetes.io/name=stategraph-reconciler
+          --output json
+          | jq '[.items[] | select(
+              ([.status.conditions[]?
+              | select((.type == "Complete" or .type == "Failed")
+              and .status == "True")] | length) == 0
+            )] | length'
+        executable: /bin/bash
+      register: incident_platform_existing_reconciler_jobs
+      changed_when: false
+      until: incident_platform_existing_reconciler_jobs.stdout | int == 0
+      retries: 48
+      delay: 5
+
+    - name: Create a one-shot reconciler verification Job
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        create job --from=cronjob/{{ incident_platform_reconciler_cronjob }}
+        {{ incident_platform_reconciler_cronjob }}-verify-{{ ansible_facts.date_time.epoch }}
+        --namespace {{ incident_platform_namespace }}
+      register: incident_platform_reconciler_verify_job_create
+      changed_when: true
+
+    - name: Wait for the one-shot reconciler verification Job
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        wait --for=condition=complete
+        job/{{ incident_platform_reconciler_cronjob }}-verify-{{ ansible_facts.date_time.epoch }}
+        --namespace {{ incident_platform_namespace }}
+        --timeout={{ incident_platform_wait_timeout }}
+      register: incident_platform_reconciler_verify_job_wait
+      changed_when: false
+      failed_when: false
+
+    - name: Read the one-shot reconciler result
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        logs job/{{ incident_platform_reconciler_cronjob }}-verify-{{ ansible_facts.date_time.epoch }}
+        --namespace {{ incident_platform_namespace }}
+      register: incident_platform_reconciler_verify_job_logs
+      changed_when: false
+      no_log: true
+
+    - name: Decode the one-shot reconciler result
+      ansible.builtin.set_fact:
+        incident_platform_reconciler_result: >-
+          {{ incident_platform_reconciler_verify_job_logs.stdout | from_json }}
+      no_log: true
+
+    - name: Require an applied persistent StateGraph observation
+      ansible.builtin.assert:
+        that:
+          - incident_platform_reconciler_verify_job_wait.rc == 0
+          - incident_platform_reconciler_result.status == 'APPLIED'
+          - incident_platform_reconciler_result.evidence_count | int >= 10
+          - incident_platform_reconciler_result.projected_record_count | int >= 10
+        fail_msg: The persistent StateGraph reconciliation Job did not complete.
+  always:
+    - name: Resume the serialized StateGraph reconciliation schedule
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        patch cronjob {{ incident_platform_reconciler_cronjob }}
+        --namespace {{ incident_platform_namespace }}
+        --type merge --patch '{"spec":{"suspend":false}}'
+      changed_when: true
+
+- name: Read the durable PostgreSQL journal state
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - statefulset/{{ incident_platform_postgresql_statefulset }}
+      - --
+      - /bin/sh
+      - -ec
+      - >-
+        PGPASSWORD="$POSTGRES_PASSWORD" psql
+        --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+        --tuples-only --no-align
+        --command="SELECT json_build_object(
+          'migration_count', (SELECT count(*) FROM schema_migrations),
+          'cycle_count', (SELECT count(*) FROM stategraph_observation_cycles),
+          'evidence_count', (SELECT count(*) FROM stategraph_observation_evidence),
+          'latest_status', (SELECT status FROM stategraph_observation_cycles ORDER BY staged_at DESC LIMIT 1)
+        )"
+  register: incident_platform_postgresql_journal
+  changed_when: false
+  no_log: true
+
+- name: Decode the durable PostgreSQL journal state
+  ansible.builtin.set_fact:
+    incident_platform_postgresql_journal_result: >-
+      {{ incident_platform_postgresql_journal.stdout | trim | from_json }}
+  no_log: true
+
+- name: Require all migrations and durable observation Evidence
+  ansible.builtin.assert:
+    that:
+      - incident_platform_postgresql_journal_result.migration_count | int == 3
+      - incident_platform_postgresql_journal_result.cycle_count | int >= 1
+      - incident_platform_postgresql_journal_result.evidence_count | int >= 10
+      - incident_platform_postgresql_journal_result.latest_status == 'APPLIED'
+    fail_msg: PostgreSQL migrations or the durable observation journal are incomplete.
+
+- name: Report the sanitized Incident Platform runtime result
+  ansible.builtin.debug:
+    msg:
+      postgresql_status: Ready
+      migration_count: >-
+        {{ incident_platform_postgresql_journal_result.migration_count }}
+      durable_cycle_count: >-
+        {{ incident_platform_postgresql_journal_result.cycle_count }}
+      durable_evidence_count: >-
+        {{ incident_platform_postgresql_journal_result.evidence_count }}
+      reconciliation:
+        status: "{{ incident_platform_reconciler_result.status }}"
+        evidence_count: "{{ incident_platform_reconciler_result.evidence_count }}"
+        projected_record_count: >-
+          {{ incident_platform_reconciler_result.projected_record_count }}
+        result: "{{ incident_platform_reconciler_result.reconciliation }}"

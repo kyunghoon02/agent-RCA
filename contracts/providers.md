@@ -209,8 +209,10 @@ prune_observations(now, batch_size)
 24시간이다. Graph ordinary history를 먼저 정리한 뒤 journal을 batch 단위로 정리한다.
 complete-set reconciliation이 연장한 open Entity/Snapshot/Relation은 최신 cycle의
 Evidence ID로 교체하며 일반 `ingest`의 Evidence ID merge 의미는 바꾸지 않는다. 현재
-InMemory adapter, PostgreSQL migration/adapter와 fixture/live one-shot 경계까지 구현했고
-cluster PostgreSQL runtime과 주기 scheduler는 아직 연결하지 않았다.
+InMemory adapter와 PostgreSQL migration/adapter를 모두 구현했고, cluster-local
+PostgreSQL journal과 Neo4j를 5분 Kubernetes CronJob에 연결했다. CronJob은
+`concurrencyPolicy=Forbid`이며 각 실행이 migration을 idempotent하게 확인한 뒤 full
+inventory cycle을 수행한다.
 
 | 단계 | 구현 |
 |---|---|
@@ -219,8 +221,8 @@ cluster PostgreSQL runtime과 주기 scheduler는 아직 연결하지 않았다.
 | Incident 연결 | `IncidentLocalizationService`가 Projector, Port와 Context 저장 연결 |
 | seed resolution | `ResolvedIncidentLocalizationService`가 exact resolver 결과로 scope 생성 |
 | complete-set reconciliation | `KubernetesStateGraphReconciler`와 InMemory/Neo4j atomic adapter 구현 |
-| observation journal | InMemory/PostgreSQL adapter와 `STAGED -> APPLIED` retry contract 구현; runtime PostgreSQL 미배포 |
-| GCP/kubeadm runtime | Neo4j adapter와 InMemory journal을 사용한 수동 bounded inventory smoke 연결; 주기 scheduler는 미연결 |
+| observation journal | InMemory/PostgreSQL adapter와 `STAGED -> APPLIED` retry contract 구현; cluster-local PostgreSQL live 배포 |
+| GCP/kubeadm runtime | PostgreSQL journal→Neo4j projection을 수행하는 5분 serialized CronJob 배포 및 one-shot 검증 |
 
 ### IncidentRepository
 
@@ -233,9 +235,9 @@ store_report(rca_report)
 append_audit_event(incident_id, audit_event)
 ```
 
-목표 runtime은 cluster 내부 PostgreSQL adapter다. managed database는 MVP 범위가
-아니며, storage class와 backup 경계는 GCP/kubeadm storage topology 확인 뒤
-고정한다.
+현재 MVP runtime은 cluster 내부 PostgreSQL adapter와 `agent-rca-local` 5Gi PVC다.
+managed database는 범위가 아니며 single-node local-path `Retain`은 backup이 아니다.
+VM disk 장애를 포함하는 backup/restore와 HA는 별도 운영 과제다.
 
 ### KnowledgeRetriever
 

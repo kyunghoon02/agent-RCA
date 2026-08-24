@@ -102,7 +102,7 @@
       --from-file=auth=/dev/stdin --dry-run=client --output json
       | kubectl --kubeconfig /etc/kubernetes/admin.conf apply --filename -
     executable: /bin/bash
-    stdin: "neo4j/{{ stategraph_generated_password.stdout }}"
+    stdin: "neo4j/{{ stategraph_generated_password.stdout | trim }}"
     stdin_add_newline: false
   no_log: true
   changed_when: true

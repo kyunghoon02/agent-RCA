@@ -8,10 +8,12 @@ ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
 	smoke-live-krca smoke-live-stategraph \
 	sync-knowledge-vectors evaluate-knowledge-retrieval gcp-readiness \
 	render-online-boutique build-online-boutique-otel-images terraform-fmt terraform-validate \
+	render-incident-platform build-incident-platform-image \
 	bootstrap-ansible ansible-syntax ansible-ping bootstrap-kubernetes \
 	verify-kubernetes render-observability deploy-observability \
 	verify-observability deploy-online-boutique verify-online-boutique \
-	render-stategraph deploy-stategraph verify-stategraph
+	render-stategraph deploy-stategraph verify-stategraph \
+	deploy-incident-platform verify-incident-platform
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -51,8 +53,14 @@ render-online-boutique:
 render-stategraph:
 	kubectl kustomize platform/stategraph
 
+render-incident-platform:
+	kubectl kustomize platform/incident-platform
+
 build-online-boutique-otel-images:
 	GCLOUD_BIN=$(GCLOUD_BIN) tools/build_online_boutique_otel_images.sh
+
+build-incident-platform-image:
+	GCLOUD_BIN=$(GCLOUD_BIN) tools/build_incident_platform_image.sh
 
 render-observability:
 	helm template local-path-provisioner \
@@ -113,6 +121,12 @@ ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/smoke-live-stategraph.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/deploy-incident-platform.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/verify-incident-platform.yml
 
 ansible-ping:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible \
@@ -155,3 +169,13 @@ verify-stategraph:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-stategraph.yml
+
+deploy-incident-platform:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/deploy-incident-platform.yml
+
+verify-incident-platform:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/verify-incident-platform.yml

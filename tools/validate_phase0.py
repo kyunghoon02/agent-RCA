@@ -925,6 +925,154 @@ def validate_stategraph_manifest() -> None:
         raise ValidationFailure("StateGraph inventory read-only RBAC is incomplete")
 
 
+def validate_incident_platform_manifest() -> None:
+    versions = load_yaml_documents(ROOT / "platform" / "versions.yaml")[0]
+    expected_runtime = {
+        "namespace": "incident-platform",
+        "artifact_repository_id": "agent-rca-dev-workloads",
+        "postgresql": {
+            "version": 17.6,
+            "image_digest": (
+                "sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3"
+            ),
+            "database": "agent_rca",
+            "storage": "5Gi",
+        },
+        "reconciler": {
+            "schedule": "*/5 * * * *",
+            "concurrency_policy": "Forbid",
+            "image_tag": "runtime-b93c1640cb34",
+            "image_digest": (
+                "sha256:43e2cf186cf66c2e6884b1b2eb84179793c5fea0676cec2f7efd26e95d491f4e"
+            ),
+        },
+    }
+    if versions.get("incident_platform") != expected_runtime:
+        raise ValidationFailure(
+            "Incident Platform runtime version or storage boundary drifted"
+        )
+
+    directory = ROOT / "platform" / "incident-platform"
+    kustomization = load_yaml_documents(directory / "kustomization.yaml")[0]
+    if kustomization.get("resources") != [
+        "postgresql.yaml",
+        "stategraph-reconciler.yaml",
+    ]:
+        raise ValidationFailure("Incident Platform Kustomize resource set drifted")
+
+    documents = load_yaml_documents(directory / "postgresql.yaml")
+    if any(document.get("kind") == "Secret" for document in documents):
+        raise ValidationFailure("PostgreSQL credentials must not be committed")
+    service_account = next(
+        document for document in documents if document.get("kind") == "ServiceAccount"
+    )
+    if service_account.get("automountServiceAccountToken") is not False:
+        raise ValidationFailure("PostgreSQL ServiceAccount token must stay disabled")
+    services = [
+        document for document in documents if document.get("kind") == "Service"
+    ]
+    if {service["metadata"]["name"] for service in services} != {
+        "postgresql",
+        "postgresql-headless",
+    }:
+        raise ValidationFailure("PostgreSQL private Service set drifted")
+    for service in services:
+        ports = service.get("spec", {}).get("ports", [])
+        if (
+            service.get("spec", {}).get("type") != "ClusterIP"
+            or len(ports) != 1
+            or ports[0].get("port") != 5432
+        ):
+            raise ValidationFailure("PostgreSQL must expose only internal port 5432")
+
+    statefulset = next(
+        document for document in documents if document.get("kind") == "StatefulSet"
+    )
+    pod_spec = statefulset["spec"]["template"]["spec"]
+    if (
+        statefulset["spec"].get("replicas") != 1
+        or pod_spec.get("automountServiceAccountToken") is not False
+        or pod_spec.get("enableServiceLinks") is not False
+    ):
+        raise ValidationFailure("PostgreSQL single-node Pod safety boundary drifted")
+    container = pod_spec["containers"][0]
+    expected_postgresql_image = (
+        "docker.io/library/postgres:17.6-bookworm@"
+        f"{expected_runtime['postgresql']['image_digest']}"
+    )
+    if container.get("image") != expected_postgresql_image:
+        raise ValidationFailure("PostgreSQL image is not digest-pinned")
+    env = {item["name"]: item for item in container.get("env", [])}
+    for env_name, secret_key in (
+        ("POSTGRES_DB", "database"),
+        ("POSTGRES_USER", "username"),
+        ("POSTGRES_PASSWORD", "password"),
+    ):
+        if env.get(env_name, {}).get("valueFrom", {}).get("secretKeyRef") != {
+            "name": "postgresql-auth",
+            "key": secret_key,
+        }:
+            raise ValidationFailure("PostgreSQL auth must come from the runtime Secret")
+    claim = statefulset["spec"]["volumeClaimTemplates"][0]["spec"]
+    if (
+        claim.get("storageClassName") != "agent-rca-local"
+        or claim.get("accessModes") != ["ReadWriteOnce"]
+        or claim.get("resources", {}).get("requests", {}).get("storage") != "5Gi"
+    ):
+        raise ValidationFailure("PostgreSQL PVC boundary drifted")
+    network_policy = next(
+        document for document in documents if document.get("kind") == "NetworkPolicy"
+    )
+    ingress = network_policy.get("spec", {}).get("ingress", [])
+    if (
+        network_policy.get("spec", {}).get("podSelector", {}).get("matchLabels", {}).get(
+            "app.kubernetes.io/name"
+        )
+        != "postgresql"
+        or ingress[0]["ports"] != [{"protocol": "TCP", "port": 5432}]
+    ):
+        raise ValidationFailure("PostgreSQL ingress boundary drifted")
+
+    cronjob = load_yaml_documents(directory / "stategraph-reconciler.yaml")[0]
+    job_pod_spec = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    if (
+        cronjob["spec"].get("schedule") != expected_runtime["reconciler"]["schedule"]
+        or cronjob["spec"].get("suspend") is not False
+        or cronjob["spec"].get("concurrencyPolicy")
+        != expected_runtime["reconciler"]["concurrency_policy"]
+        or job_pod_spec.get("serviceAccountName") != "incident-platform-reader"
+        or job_pod_spec.get("automountServiceAccountToken") is not True
+        or job_pod_spec.get("restartPolicy") != "Never"
+    ):
+        raise ValidationFailure("StateGraph reconciler schedule or RBAC drifted")
+    reconciler = job_pod_spec["containers"][0]
+    if reconciler.get("image") != "agent-rca-runtime@sha256:" + "0" * 64:
+        raise ValidationFailure(
+            "StateGraph reconciler base image must require the Ansible digest overlay"
+        )
+    if not reconciler.get("securityContext", {}).get("readOnlyRootFilesystem"):
+        raise ValidationFailure("StateGraph reconciler root filesystem must be read-only")
+    reconciler_env = {item["name"]: item for item in reconciler.get("env", [])}
+    if (
+        reconciler_env.get("POSTGRES_PASSWORD", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "postgresql-auth", "key": "password"}
+        or reconciler_env.get("NEO4J_PASSWORD", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "stategraph-runtime-auth", "key": "neo4j-password"}
+    ):
+        raise ValidationFailure("StateGraph runtime credentials must use Secret refs")
+
+    dockerfile = (directory / "Dockerfile").read_text(encoding="utf-8")
+    if (
+        "python:3.12.11-slim-bookworm@sha256:" not in dockerfile
+        or "USER 65532:65532" not in dockerfile
+    ):
+        raise ValidationFailure("Incident Platform runtime image boundary drifted")
+
+
 def validate_observability_values() -> None:
     directory = ROOT / "platform" / "observability"
     local_path = load_yaml_documents(directory / "local-path-values.yaml")[0]
@@ -1237,6 +1385,7 @@ def main() -> None:
     validate_versions_and_manifests()
     validate_krca_runtime_config()
     validate_stategraph_manifest()
+    validate_incident_platform_manifest()
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
     print("Phase 0 validation passed:")
@@ -1245,7 +1394,7 @@ def main() -> None:
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
-    print("- private observability, Neo4j StateGraph, and live KRCA pins are consistent")
+    print("- private observability, Neo4j, PostgreSQL, reconciler, and live KRCA pins are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 

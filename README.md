@@ -228,9 +228,9 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 |---|---|---|
 | Incident lifecycle, Collector, Evidence, Fast Path Report | fixture와 unit test 구현 | production server/cluster 미연결 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Prometheus API feature와 bounded Kubernetes topology inventory는 live 연결, 지속 collector orchestration과 일반 metric provider는 미연결 |
-| PostgreSQL repository | Incident artifact와 StateGraph observation journal migration/repository contract 구현 | test DSN 선택 검증, runtime 미배포 |
+| PostgreSQL repository | Incident artifact와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC 배포, migration 3개 적용 및 observation journal live 검증. Incident server는 아직 미연결 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile과 Evidence-to-Top-N fixture 구현 | browse/cart/checkout 3개 profile의 23개 edge가 모두 Prometheus→normalized Evidence→KRCA drilldown live smoke에서 `HAS_DATA` |
-| Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | 실제 cluster에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation reconcile, exact 단일 후보와 Frozen Context 통과. 격리된 live contract에서 disappearance 시 Entity/Snapshot/Relation 종료와 재등장 interval 재생성 검증; journal은 live smoke에서 InMemory로만 검증했으며 PostgreSQL runtime과 주기 scheduler는 미연결 |
+| Entity resolver와 Temporal StateGraph | Kubernetes inventory Provider, Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation 및 `APPLIED` journal을 검증. 격리된 contract에서 disappearance와 재등장 interval도 검증 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
@@ -280,9 +280,13 @@ Graph를 다시 실행하지 않는다.
 않는다. `APPLIED` cycle/Evidence는 72시간, 적용되지 않은 `STAGED` cycle은 24시간 보존한
 뒤 Graph ordinary history GC 다음에 정리한다. Reconciler가 갱신하는 open interval은 최신
 cycle Evidence ID로 교체해 ID가 무한히 누적되지 않게 하고, 일반 Incident `ingest`는 기존
-merge 의미를 유지한다. 현재 실행기는 수동 one-shot smoke이며 journal의 PostgreSQL
-adapter/migration까지 구현했지만 cluster PostgreSQL runtime과 Kubernetes CronJob/watch
-scheduler는 아직 연결하지 않았다.
+merge 의미를 유지한다. 현재 runtime은 cluster-local PostgreSQL journal에 migration을
+idempotent하게 적용하고 Kubernetes CronJob으로 5분마다 one-shot reconciliation을
+실행한다. `concurrencyPolicy=Forbid`와 verification 중 명시적 suspend/resume으로 같은
+시각 구간의 동시 projection을 막는다. Watch 기반 증분 수집은 아직 연결하지 않았으며
+주기 full inventory가 누락 보정 경계다. 2026-08-24 live 검증에서는 one-shot 직후 다음
+예약 Job이 성공해 PostgreSQL journal이 cycle `1→2`, Evidence `66→132`로 증가했고 두
+cycle 모두 `APPLIED`였다.
 
 ```text
 Validated Evidence
@@ -398,6 +402,10 @@ make render-stategraph
 make deploy-stategraph
 make verify-stategraph
 make smoke-live-stategraph
+make render-incident-platform
+make build-incident-platform-image GCLOUD_BIN=/path/to/gcloud
+make deploy-incident-platform
+make verify-incident-platform
 make smoke-agent-rca
 make smoke-live-krca
 make sync-knowledge-vectors
@@ -412,11 +420,14 @@ deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval 
 비롯해 Agent Evidence Gate와 read-only Viewer query fixture를 확인한다.
 
 `make deploy-stategraph`는 digest-pinned Neo4j Community StatefulSet, 내부 Bolt Service와
-5Gi PVC를 배포하고 인증·Pod 안정성·read-only RBAC를 검증한다. 이어서
-`make smoke-live-stategraph`가 실제 Online Boutique inventory를 Evidence로 정규화해
-InMemory observation journal에 `STAGED`한 뒤 Neo4j에 투영하고, `APPLIED` 확정, exact
-resolver와 Frozen Context까지 one-shot으로 확인한다. 이 성공은 PostgreSQL journal의
-runtime 배포, 지속 reconciliation이나 fault RCA 정확도를 뜻하지 않는다.
+5Gi PVC를 배포하고 인증·Pod 안정성·read-only RBAC를 검증한다.
+`make smoke-live-stategraph`는 InMemory journal을 사용하는 격리된 one-shot 경로로 exact
+resolver와 Frozen Context까지 확인한다. 실제 지속 경로는
+`make deploy-incident-platform`이 digest-pinned runtime image, 내부 PostgreSQL 17.6,
+5Gi PVC와 5분 CronJob을 적용한 뒤 one-shot Job으로 Kubernetes Evidence→PostgreSQL
+`STAGED/APPLIED` journal→Neo4j projection 전체를 검증한다. 두 StatefulSet의
+`agent-rca-local` PVC는 single-node VM disk에 묶이며 `Retain`은 backup이 아니다. VM
+disk 삭제나 손상에 대비한 backup/restore와 HA는 아직 구현하지 않았다.
 
 `make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
 fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가

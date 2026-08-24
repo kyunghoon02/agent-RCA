@@ -1,0 +1,241 @@
+---
+- name: Create the remote Incident Platform manifest directory
+  ansible.builtin.file:
+    path: "{{ incident_platform_remote_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check whether the Incident Platform namespace exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get namespace {{ incident_platform_namespace }}
+  register: incident_platform_namespace_status
+  changed_when: false
+  failed_when: false
+
+- name: Create the Incident Platform namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ incident_platform_namespace }}
+  when: incident_platform_namespace_status.rc != 0
+  changed_when: true
+
+- name: Reconcile the Incident Platform namespace labels
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    label namespace {{ incident_platform_namespace }}
+    app.kubernetes.io/part-of=agent-rca
+    kyunghoon02.github.io/boundary=control
+    app.kubernetes.io/managed-by=ansible
+    --overwrite
+  register: incident_platform_namespace_labels
+  changed_when: "'not labeled' not in incident_platform_namespace_labels.stdout"
+
+- name: Copy the Incident Platform read-only RBAC manifest
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../platform/rbac/incident-platform-readonly.yaml"
+    dest: "{{ incident_platform_readonly_manifest }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply the Incident Platform read-only RBAC
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    apply --filename {{ incident_platform_readonly_manifest }}
+  register: incident_platform_rbac_apply
+  changed_when: >-
+    ' created' in incident_platform_rbac_apply.stdout
+    or ' configured' in incident_platform_rbac_apply.stdout
+
+- name: Check whether the PostgreSQL authentication Secret exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ incident_platform_postgresql_secret }}
+    --namespace {{ incident_platform_namespace }}
+  register: incident_platform_postgresql_secret_status
+  changed_when: false
+  failed_when: false
+
+- name: Generate the initial PostgreSQL password
+  ansible.builtin.command: openssl rand -hex 32
+  register: incident_platform_postgresql_password
+  changed_when: false
+  no_log: true
+  when: incident_platform_postgresql_secret_status.rc != 0
+
+- name: Create the PostgreSQL authentication Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ incident_platform_postgresql_secret }}
+        namespace: {{ incident_platform_namespace }}
+      type: Opaque
+      stringData:
+        database: agent_rca
+        username: agent_rca
+        password: {{ incident_platform_postgresql_password.stdout }}
+  no_log: true
+  changed_when: true
+  when: incident_platform_postgresql_secret_status.rc != 0
+
+- name: Read the Neo4j runtime credential
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ stategraph_auth_secret_name }}
+    --namespace {{ stategraph_namespace }} --output json
+  register: incident_platform_neo4j_secret
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the namespace-local Neo4j runtime Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ incident_platform_stategraph_secret }}
+        namespace: {{ incident_platform_namespace }}
+      type: Opaque
+      data:
+        neo4j-username: "{{ (((incident_platform_neo4j_secret.stdout | from_json).data.auth | b64decode).split('/', 1))[0] | b64encode }}"
+        neo4j-password: "{{ (((incident_platform_neo4j_secret.stdout | from_json).data.auth | b64decode).split('/', 1))[1] | b64encode }}"
+  register: incident_platform_stategraph_secret_apply
+  changed_when: >-
+    ' created' in incident_platform_stategraph_secret_apply.stdout
+    or ' configured' in incident_platform_stategraph_secret_apply.stdout
+  no_log: true
+
+- name: Read the GCP project identity from instance metadata
+  ansible.builtin.uri:
+    url: http://metadata.google.internal/computeMetadata/v1/project/project-id
+    headers:
+      Metadata-Flavor: Google
+    return_content: true
+  register: incident_platform_gcp_project
+  no_log: true
+
+- name: Read a short-lived VM access token for Artifact Registry
+  ansible.builtin.uri:
+    url: >-
+      http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+    headers:
+      Metadata-Flavor: Google
+    return_content: true
+  register: incident_platform_registry_token
+  no_log: true
+
+- name: Reconcile the short-lived Artifact Registry pull Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: artifact-registry
+        namespace: {{ incident_platform_namespace }}
+      type: kubernetes.io/dockerconfigjson
+      stringData:
+        .dockerconfigjson: >-
+          {"auths":{"{{ execution_target.location }}-docker.pkg.dev":{"username":"oauth2accesstoken","password":"{{ (incident_platform_registry_token.content | from_json).access_token }}","auth":"{{ ('oauth2accesstoken:' + (incident_platform_registry_token.content | from_json).access_token) | b64encode }}"}}}
+  register: incident_platform_registry_secret_apply
+  changed_when: >-
+    ' created' in incident_platform_registry_secret_apply.stdout
+    or ' configured' in incident_platform_registry_secret_apply.stdout
+  no_log: true
+
+- name: Render a project-local, digest-pinned Incident Platform image overlay
+  block:
+    - name: Create a temporary local Incident Platform overlay
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ playbook_dir }}/../../../platform"
+        prefix: .incident-platform-image-overlay-
+      delegate_to: localhost
+      become: false
+      register: incident_platform_image_overlay
+
+    - name: Write the digest-pinned Incident Platform image override
+      ansible.builtin.copy:
+        content: |
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../incident-platform
+          images:
+            - name: agent-rca-runtime
+              newName: {{ execution_target.location }}-docker.pkg.dev/{{ incident_platform_gcp_project.content }}/{{ incident_platform.artifact_repository_id }}/agent-rca-runtime
+              digest: {{ incident_platform.reconciler.image_digest }}
+        dest: "{{ incident_platform_image_overlay.path }}/kustomization.yaml"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Render the pinned Incident Platform manifests locally
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - kustomize
+          - "{{ incident_platform_image_overlay.path }}"
+          - --load-restrictor=LoadRestrictionsNone
+      delegate_to: localhost
+      become: false
+      register: incident_platform_rendered_manifest
+      changed_when: false
+      no_log: true
+  always:
+    - name: Remove the temporary local Incident Platform overlay
+      ansible.builtin.file:
+        path: "{{ incident_platform_image_overlay.path }}"
+        state: absent
+      when: incident_platform_image_overlay.path is defined
+      delegate_to: localhost
+      become: false
+
+- name: Copy the rendered Incident Platform manifest
+  ansible.builtin.copy:
+    content: "{{ incident_platform_rendered_manifest.stdout }}\n"
+    dest: "{{ incident_platform_remote_manifest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Apply the Incident Platform manifest
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    apply --filename {{ incident_platform_remote_manifest }}
+  register: incident_platform_apply
+  changed_when: >-
+    ' created' in incident_platform_apply.stdout
+    or ' configured' in incident_platform_apply.stdout
+
+- name: Wait for the PostgreSQL StatefulSet
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status statefulset/{{ incident_platform_postgresql_statefulset }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false

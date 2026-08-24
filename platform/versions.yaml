@@ -86,6 +86,20 @@ stategraph:
     database: neo4j
     storage: 5Gi
 
+incident_platform:
+  namespace: incident-platform
+  artifact_repository_id: agent-rca-dev-workloads
+  postgresql:
+    version: 17.6
+    image_digest: sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    database: agent_rca
+    storage: 5Gi
+  reconciler:
+    schedule: "*/5 * * * *"
+    concurrency_policy: Forbid
+    image_tag: runtime-b93c1640cb34
+    image_digest: sha256:43e2cf186cf66c2e6884b1b2eb84179793c5fea0676cec2f7efd26e95d491f4e
+
 online_boutique:
   repository: "https://github.com/GoogleCloudPlatform/microservices-demo.git"
   release_tag: "v0.10.6"

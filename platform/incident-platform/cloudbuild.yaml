@@ -1,0 +1,20 @@
+steps:
+  - id: build-agent-rca-runtime
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --platform=linux/amd64
+      - --tag=${_REGISTRY_PREFIX}/agent-rca-runtime:${_IMAGE_TAG}
+      - .
+
+images:
+  - ${_REGISTRY_PREFIX}/agent-rca-runtime:${_IMAGE_TAG}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _REGISTRY_PREFIX: invalid.example/agent-rca-dev-workloads
+  _IMAGE_TAG: runtime-local
+
+timeout: 1200s

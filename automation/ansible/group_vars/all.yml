@@ -111,3 +111,11 @@ stategraph_smoke_remote_directory: /opt/agent-rca/stategraph-smoke
 stategraph_smoke_seed_service: checkoutservice
 incident_platform_namespace: incident-platform
 incident_platform_readonly_manifest: /etc/agent-rca/stategraph/incident-platform-readonly.yaml
+incident_platform_remote_directory: /etc/agent-rca/incident-platform
+incident_platform_remote_manifest: /etc/agent-rca/incident-platform/runtime.yaml
+incident_platform_postgresql_statefulset: postgresql
+incident_platform_postgresql_service: postgresql
+incident_platform_postgresql_secret: postgresql-auth
+incident_platform_stategraph_secret: stategraph-runtime-auth
+incident_platform_reconciler_cronjob: stategraph-reconciler
+incident_platform_wait_timeout: 10m
