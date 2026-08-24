@@ -29,8 +29,10 @@ from .incidents import (
     IngestionResult,
 )
 from .incident_work import (
+    IncidentLocalizationWorkRepository,
     IncidentWorkClaim,
     IncidentWorkRepository,
+    InMemoryIncidentLocalizationWorkRepository,
     InMemoryIncidentWorkRepository,
 )
 from .http_receiver import (
@@ -42,6 +44,7 @@ from .http_receiver import (
 from .fast_path import FastPathRun, IncidentFastPathService
 from .repository import InMemoryIncidentRepository
 from .postgresql import (
+    PostgreSQLIncidentLocalizationWorkRepository,
     PostgreSQLIncidentWorkRepository,
     PostgreSQLIncidentRepository,
     PostgreSQLStateGraphObservationRepository,
@@ -190,7 +193,9 @@ __all__ = [
     "InMemoryStateGraphRepository",
     "InMemoryStateGraphObservationRepository",
     "InMemoryIncidentRepository",
+    "InMemoryIncidentLocalizationWorkRepository",
     "IncidentCollectionService",
+    "IncidentLocalizationWorkRepository",
     "IncidentWorkClaim",
     "IncidentWorkRepository",
     "InMemoryIncidentWorkRepository",
@@ -233,6 +238,7 @@ __all__ = [
     "LocalizationAssessment",
     "LocalizationAssessor",
     "ProviderBatch",
+    "PostgreSQLIncidentLocalizationWorkRepository",
     "PostgreSQLIncidentWorkRepository",
     "PostgreSQLIncidentRepository",
     "PostgreSQLStateGraphObservationRepository",

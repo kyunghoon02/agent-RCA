@@ -17,16 +17,25 @@ from incident_platform.collectors import (
     CollectorSpec,
     IncidentCollectionService,
 )
-from incident_platform.evidence import ResourceScope
+from incident_platform.evidence import EvidenceWindow, ResourceScope, format_time, parse_time
 from incident_platform.incident_work import (
+    IncidentLocalizationWorkRepository,
     IncidentWorkRepository,
     validate_claim_request,
 )
+from incident_platform.localization import IncidentLocalizationService
+from incident_platform.neo4j_stategraph import (
+    Neo4jStateGraphRepository,
+    apply_neo4j_schema,
+    create_neo4j_driver,
+)
 from incident_platform.postgresql import (
+    PostgreSQLIncidentLocalizationWorkRepository,
     PostgreSQLIncidentRepository,
     PostgreSQLIncidentWorkRepository,
     apply_migrations,
 )
+from incident_platform.projectors.kubernetes import KubernetesEvidenceProjector
 from incident_platform.providers.http import BoundedJSONTransport
 from incident_platform.providers.kubernetes import (
     KubernetesHTTPAPI,
@@ -37,6 +46,12 @@ from incident_platform.providers.prometheus import (
     PrometheusHTTPAPI,
     PrometheusMetricProvider,
     PrometheusQuerySpec,
+)
+from incident_platform.repository import IncidentRepository
+from incident_platform.resolution import (
+    EntityResolutionRequest,
+    ResolvedIncidentLocalizationService,
+    ServiceToEntityResolver,
 )
 
 
@@ -71,6 +86,13 @@ class IncidentWorkerRuntimeConfig:
     kubernetes_token_file: str
     kubernetes_ca_file: str
     prometheus_base_url: str
+    neo4j_uri: str
+    neo4j_username: str
+    neo4j_password: str
+    neo4j_database: str
+    localization_max_candidates: int
+    localization_max_entities: int
+    localization_max_depth: int
     postgres_host: str
     postgres_port: int
     postgres_database: str
@@ -94,6 +116,12 @@ class IncidentWorkerRuntimeConfig:
             raise ValueError("provider timeout must fit safely inside the work lease")
         if not 8 <= self.max_evidence_items <= 100:
             raise ValueError("worker Evidence budget must be between 8 and 100")
+        if not 2 <= self.localization_max_candidates <= 99:
+            raise ValueError("localization candidates must be between 2 and 99")
+        if not 1 <= self.localization_max_entities <= 1000:
+            raise ValueError("localization entities must be between 1 and 1000")
+        if not 0 <= self.localization_max_depth <= 16:
+            raise ValueError("localization depth must be between 0 and 16")
         if not 1 <= self.postgres_port <= 65535:
             raise ValueError("PostgreSQL port is invalid")
 
@@ -126,6 +154,19 @@ class IncidentWorkerRuntimeConfig:
                 "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
             ),
             prometheus_base_url=_required_environment("PROMETHEUS_BASE_URL"),
+            neo4j_uri=_required_environment("NEO4J_URI"),
+            neo4j_username=_required_environment("NEO4J_USERNAME"),
+            neo4j_password=_required_secret_environment("NEO4J_PASSWORD"),
+            neo4j_database=os.environ.get("NEO4J_DATABASE", "neo4j"),
+            localization_max_candidates=int(
+                os.environ.get("INCIDENT_WORKER_LOCALIZATION_MAX_CANDIDATES", "10")
+            ),
+            localization_max_entities=int(
+                os.environ.get("INCIDENT_WORKER_LOCALIZATION_MAX_ENTITIES", "40")
+            ),
+            localization_max_depth=int(
+                os.environ.get("INCIDENT_WORKER_LOCALIZATION_MAX_DEPTH", "4")
+            ),
             postgres_host=_required_environment("POSTGRES_HOST"),
             postgres_port=int(os.environ.get("POSTGRES_PORT", "5432")),
             postgres_database=_required_environment("POSTGRES_DATABASE"),
@@ -244,9 +285,11 @@ class IncidentWorker:
     def __init__(
         self,
         config: IncidentWorkerRuntimeConfig,
-        incident_repository: PostgreSQLIncidentRepository,
+        incident_repository: IncidentRepository,
         work_repository: IncidentWorkRepository,
         collection_service: IncidentCollectionService,
+        localization_work_repository: IncidentLocalizationWorkRepository | None = None,
+        localization_service: ResolvedIncidentLocalizationService | None = None,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -254,14 +297,37 @@ class IncidentWorker:
         self._incidents = incident_repository
         self._work = work_repository
         self._collection = collection_service
+        if (localization_work_repository is None) != (localization_service is None):
+            raise ValueError(
+                "localization work repository and service must be configured together"
+            )
+        self._localization_work = localization_work_repository
+        self._localization = localization_service
         self._clock = clock
 
     def process_one(self) -> Mapping[str, Any]:
         now = self._clock()
-        reaped = self._work.reap_exhausted(
+        collection_reaped = self._work.reap_exhausted(
             now=now,
             max_attempts=self._config.max_attempts,
         )
+        localization_reaped = 0
+        if self._localization_work is not None:
+            localization_reaped = self._localization_work.reap_exhausted(
+                now=now,
+                max_attempts=self._config.max_attempts,
+            )
+            localization_claim = self._localization_work.claim_next(
+                worker_id=self._config.worker_id,
+                now=now,
+                lease_duration=timedelta(seconds=self._config.lease_seconds),
+                max_attempts=self._config.max_attempts,
+            )
+            if localization_claim is not None:
+                return self._process_localization(
+                    localization_claim,
+                    reaped=collection_reaped + localization_reaped,
+                )
         claim = self._work.claim_next(
             worker_id=self._config.worker_id,
             now=now,
@@ -269,7 +335,10 @@ class IncidentWorker:
             max_attempts=self._config.max_attempts,
         )
         if claim is None:
-            return {"status": "IDLE", "reaped": reaped}
+            return {
+                "status": "IDLE",
+                "reaped": collection_reaped + localization_reaped,
+            }
 
         incident = claim.incident
         source = incident["source_entity"]
@@ -295,6 +364,7 @@ class IncidentWorker:
             )
             return {
                 "status": "PROCESSED",
+                "stage": "COLLECTION",
                 "incident_id": claim.incident_id,
                 "attempt": claim.attempt_count,
                 "collection_status": run.status,
@@ -302,7 +372,7 @@ class IncidentWorker:
                 "collector_statuses": {
                     execution.name: execution.status for execution in run.executions
                 },
-                "reaped": reaped,
+                "reaped": collection_reaped + localization_reaped,
             }
         except Exception as error:
             error_code = type(error).__name__.upper()
@@ -315,6 +385,111 @@ class IncidentWorker:
             except Exception:
                 return {
                     "status": "FAILURE_PERSISTENCE_FAILED",
+                    "stage": "COLLECTION",
+                    "incident_id": claim.incident_id,
+                    "attempt": claim.attempt_count,
+                    "error_code": error_code,
+                    "reaped": collection_reaped + localization_reaped,
+                }
+            return {
+                "status": "FAILED",
+                "stage": "COLLECTION",
+                "incident_id": claim.incident_id,
+                "attempt": claim.attempt_count,
+                "error_code": error_code,
+                "reaped": collection_reaped + localization_reaped,
+            }
+
+    def _process_localization(
+        self,
+        claim: Any,
+        *,
+        reaped: int,
+    ) -> Mapping[str, Any]:
+        assert self._localization_work is not None
+        assert self._localization is not None
+        incident = claim.incident
+        source = incident["source_entity"]
+        try:
+            if source["namespace"] != self._config.target_namespace:
+                raise ValueError("Incident namespace is outside worker scope")
+            if source["kind"] != "Service":
+                raise ValueError("initial worker supports only Service-scoped Incidents")
+            frozen_at = self._clock()
+            known_end = (
+                incident["window"]["recovery_end"]
+                or incident["window"]["incident_end"]
+            )
+            if known_end is not None and parse_time(
+                known_end, "Incident.window.end"
+            ) <= frozen_at:
+                window_end = known_end
+            else:
+                window_end = format_time(frozen_at)
+            run = self._localization.localize_service(
+                EntityResolutionRequest(
+                    incident_id=claim.incident_id,
+                    cluster_id=self._config.cluster_id,
+                    namespace=source["namespace"],
+                    service_name=source["name"],
+                    window=EvidenceWindow(
+                        start=incident["window"]["baseline_start"],
+                        end=window_end,
+                    ),
+                    max_candidates=self._config.localization_max_candidates,
+                ),
+                frozen_at=frozen_at,
+                max_entities=self._config.localization_max_entities,
+                max_depth=self._config.localization_max_depth,
+            )
+            if run.localization is None:
+                error_code = f"ENTITY_{run.resolution.status}"
+                self._localization_work.fail(
+                    claim,
+                    now=self._clock(),
+                    error_code=error_code,
+                )
+                return {
+                    "status": "FAILED",
+                    "stage": "LOCALIZATION",
+                    "incident_id": claim.incident_id,
+                    "attempt": claim.attempt_count,
+                    "error_code": error_code,
+                    "candidate_count": len(run.resolution.candidates),
+                    "reaped": reaped,
+                }
+            localization = run.localization
+            self._localization_work.complete(
+                claim,
+                now=self._clock(),
+                outcome="SUCCEEDED",
+            )
+            return {
+                "status": "PROCESSED",
+                "stage": "LOCALIZATION",
+                "incident_id": claim.incident_id,
+                "attempt": claim.attempt_count,
+                "resolution_method": run.resolution.method,
+                "context_id": localization.context["context_id"],
+                "entity_count": localization.context["localization"][
+                    "candidate_entities_after"
+                ],
+                "path_count": len(localization.context["state_paths"]),
+                "evidence_count": len(localization.context["evidence_ids"]),
+                "reaped": reaped,
+            }
+        except Exception as error:
+            error_code = type(error).__name__.upper()
+            try:
+                self._localization_work.fail(
+                    claim,
+                    now=self._clock(),
+                    error_code=error_code,
+                )
+            except Exception:
+                return {
+                    "status": "FAILURE_PERSISTENCE_FAILED",
+                    "stage": "LOCALIZATION",
                     "incident_id": claim.incident_id,
                     "attempt": claim.attempt_count,
                     "error_code": error_code,
@@ -322,6 +497,7 @@ class IncidentWorker:
                 }
             return {
                 "status": "FAILED",
+                "stage": "LOCALIZATION",
                 "incident_id": claim.incident_id,
                 "attempt": claim.attempt_count,
                 "error_code": error_code,
@@ -334,12 +510,36 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
     apply_migrations(connection_factory)
     incident_repository = PostgreSQLIncidentRepository(connection_factory)
     work_repository = PostgreSQLIncidentWorkRepository(connection_factory)
+    localization_work_repository = PostgreSQLIncidentLocalizationWorkRepository(
+        connection_factory
+    )
     collection_service = build_collection_service(config, incident_repository)
+    driver = create_neo4j_driver(
+        config.neo4j_uri,
+        config.neo4j_username,
+        config.neo4j_password,
+    )
+    driver.verify_connectivity()
+    apply_neo4j_schema(driver, database=config.neo4j_database)
+    graph_repository = Neo4jStateGraphRepository(
+        driver,
+        database=config.neo4j_database,
+    )
+    localization_service = ResolvedIncidentLocalizationService(
+        ServiceToEntityResolver(graph_repository),
+        IncidentLocalizationService(
+            incident_repository,
+            graph_repository,
+            (KubernetesEvidenceProjector(),),
+        ),
+    )
     return IncidentWorker(
         config,
         incident_repository,
         work_repository,
         collection_service,
+        localization_work_repository,
+        localization_service,
     )
 
 

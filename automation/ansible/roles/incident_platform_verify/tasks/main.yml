@@ -169,6 +169,11 @@
       - >-
         (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].resources.requests.cpu
         == '100m'
+      - >-
+        ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'NEO4J_PASSWORD')
+        | map(attribute='valueFrom.secretKeyRef.name') | first)
+        == incident_platform_stategraph_secret
     fail_msg: The Incident worker image, readiness, identity, or resource boundary drifted.
 
 - name: Read the Agent RCA Alertmanager routing resource
@@ -254,7 +259,7 @@
         status_code: 200
       changed_when: true
 
-    - name: Wait for the worker to collect the controlled Incident
+    - name: Wait for the worker to collect and localize the controlled Incident
       ansible.builtin.command:
         argv:
           - kubectl
@@ -273,7 +278,7 @@
             --tuples-only --no-align
             --command="SELECT json_build_object(
               'incident_count', count(*),
-              'localizing_count', count(*) FILTER (WHERE status = 'LOCALIZING'),
+              'analyzing_count', count(*) FILTER (WHERE status = 'ANALYZING'),
               'created_audit_count', (
                 SELECT count(*) FROM incident_audit_events audit
                 WHERE audit.incident_id IN (
@@ -300,6 +305,15 @@
                 ) AND audit.event_type = 'STATUS_TRANSITIONED'
                   AND audit.details->>'to' = 'LOCALIZING'
               ),
+              'analyzing_audit_count', (
+                SELECT count(*) FROM incident_audit_events audit
+                WHERE audit.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND audit.event_type = 'STATUS_TRANSITIONED'
+                  AND audit.details->>'to' = 'ANALYZING'
+              ),
               'evidence_count', (
                 SELECT count(*) FROM evidence_items evidence
                 WHERE evidence.incident_id IN (
@@ -316,6 +330,40 @@
                     = '{{ incident_platform_alert_verification_id }}'
                 ) AND work.state = 'SUCCEEDED'
               ),
+              'localization_work_succeeded_count', (
+                SELECT count(*) FROM incident_localization_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND work.state = 'SUCCEEDED'
+              ),
+              'context_count', (
+                SELECT count(*) FROM context_packages context
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+              ),
+              'context_evidence_count', (
+                SELECT COALESCE(sum(jsonb_array_length(context.document->'evidence_ids')), 0)
+                FROM context_packages context
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+              ),
+              'context_path_count', (
+                SELECT COALESCE(sum(jsonb_array_length(context.document->'state_paths')), 0)
+                FROM context_packages context
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+              ),
               'collector_count', COALESCE(sum(jsonb_array_length(document->'collector_statuses')), 0)
             ) FROM incidents
             WHERE document->'alert'->'labels'->>'verification_id'
@@ -325,8 +373,10 @@
       no_log: true
       until: >-
         ((incident_platform_alert_delivery_result.stdout | trim | from_json).incident_count | int == 1)
-        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).localizing_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analyzing_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).localization_work_succeeded_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).evidence_count | int >= 5)
       retries: 60
       delay: 2
@@ -337,18 +387,23 @@
           {{ incident_platform_alert_delivery_result.stdout | trim | from_json }}
       no_log: true
 
-    - name: Require one auditable collected Incident
+    - name: Require one auditable localized Incident
       ansible.builtin.assert:
         that:
           - incident_platform_alert_delivery.incident_count | int == 1
-          - incident_platform_alert_delivery.localizing_count | int == 1
+          - incident_platform_alert_delivery.analyzing_count | int == 1
           - incident_platform_alert_delivery.created_audit_count | int == 1
           - incident_platform_alert_delivery.collecting_audit_count | int == 1
           - incident_platform_alert_delivery.localizing_audit_count | int == 1
+          - incident_platform_alert_delivery.analyzing_audit_count | int == 1
           - incident_platform_alert_delivery.evidence_count | int >= 5
           - incident_platform_alert_delivery.work_succeeded_count | int == 1
+          - incident_platform_alert_delivery.localization_work_succeeded_count | int == 1
+          - incident_platform_alert_delivery.context_count | int == 1
+          - incident_platform_alert_delivery.context_evidence_count | int >= 1
+          - incident_platform_alert_delivery.context_path_count | int >= 1
           - incident_platform_alert_delivery.collector_count | int == 2
-        fail_msg: Alertmanager delivery or Incident Evidence collection was incomplete.
+        fail_msg: Alertmanager delivery, Evidence collection, or StateGraph localization was incomplete.
   always:
     - name: Resolve the controlled Alertmanager verification alert
       ansible.builtin.uri:
@@ -549,7 +604,7 @@
 - name: Require all migrations and durable observation Evidence
   ansible.builtin.assert:
     that:
-      - incident_platform_postgresql_journal_result.migration_count | int == 4
+      - incident_platform_postgresql_journal_result.migration_count | int == 5
       - incident_platform_postgresql_journal_result.cycle_count | int >= 1
       - incident_platform_postgresql_journal_result.evidence_count | int >= 10
       - incident_platform_postgresql_journal_result.latest_status == 'APPLIED'
@@ -567,12 +622,19 @@
         {{ incident_platform_postgresql_journal_result.evidence_count }}
       alertmanager_delivery:
         incident_count: "{{ incident_platform_alert_delivery.incident_count }}"
-        localizing_count: "{{ incident_platform_alert_delivery.localizing_count }}"
+        analyzing_count: "{{ incident_platform_alert_delivery.analyzing_count }}"
         created_audit_count: >-
           {{ incident_platform_alert_delivery.created_audit_count }}
         evidence_count: "{{ incident_platform_alert_delivery.evidence_count }}"
         work_succeeded_count: >-
           {{ incident_platform_alert_delivery.work_succeeded_count }}
+        localization_work_succeeded_count: >-
+          {{ incident_platform_alert_delivery.localization_work_succeeded_count }}
+        context_count: "{{ incident_platform_alert_delivery.context_count }}"
+        context_evidence_count: >-
+          {{ incident_platform_alert_delivery.context_evidence_count }}
+        context_path_count: >-
+          {{ incident_platform_alert_delivery.context_path_count }}
         collector_count: "{{ incident_platform_alert_delivery.collector_count }}"
       reconciliation:
         status: "{{ incident_platform_reconciler_result.status }}"

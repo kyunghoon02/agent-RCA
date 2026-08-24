@@ -962,9 +962,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-1facd6ecc4bb",
+            "image_tag": "runtime-3245378fd99a",
             "image_digest": (
-                "sha256:075c34e4542912892fc546af71c9c034b5838dbe009c8b7c77f9004e124826f4"
+                "sha256:19775547dd69667fc2e4d2319ef6ee48b370109c2d023a911e9011307b2e1d2b"
             ),
         },
         "webhook": {
@@ -980,6 +980,9 @@ def validate_incident_platform_manifest() -> None:
             "max_attempts": 3,
             "provider_timeout_seconds": 20,
             "max_evidence_items": 32,
+            "localization_max_candidates": 10,
+            "localization_max_entities": 40,
+            "localization_max_depth": 4,
         },
     }
     if versions.get("incident_platform") != expected_runtime:
@@ -1203,6 +1206,26 @@ def validate_incident_platform_manifest() -> None:
         != {"name": "postgresql-auth", "key": "password"}
         or worker_env.get("PROMETHEUS_BASE_URL", {}).get("value")
         != "http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090"
+        or worker_env.get("NEO4J_URI", {}).get("value")
+        != "bolt://neo4j.graph-rca.svc.cluster.local:7687"
+        or worker_env.get("NEO4J_USERNAME", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "stategraph-runtime-auth", "key": "neo4j-username"}
+        or worker_env.get("NEO4J_PASSWORD", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "stategraph-runtime-auth", "key": "neo4j-password"}
+        or worker_env.get("INCIDENT_WORKER_LOCALIZATION_MAX_CANDIDATES", {}).get(
+            "value"
+        )
+        != "10"
+        or worker_env.get("INCIDENT_WORKER_LOCALIZATION_MAX_ENTITIES", {}).get(
+            "value"
+        )
+        != "40"
+        or worker_env.get("INCIDENT_WORKER_LOCALIZATION_MAX_DEPTH", {}).get("value")
+        != "4"
     ):
         raise ValidationFailure("Incident worker provider or lease boundary drifted")
     worker_network_policy = next(

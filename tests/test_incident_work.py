@@ -10,7 +10,10 @@ from incident_platform.collectors import (
 )
 from incident_platform.errors import InvalidTransition
 from incident_platform.evidence import EvidenceDraft, ProviderBatch, ResourceScope
-from incident_platform.incident_work import InMemoryIncidentWorkRepository
+from incident_platform.incident_work import (
+    InMemoryIncidentLocalizationWorkRepository,
+    InMemoryIncidentWorkRepository,
+)
 from incident_platform.incidents import AlertmanagerIngestionService
 from incident_platform.repository import InMemoryIncidentRepository
 
@@ -189,6 +192,93 @@ class IncidentWorkClaimTests(unittest.TestCase):
                 now=NOW + timedelta(seconds=32),
                 outcome="SUCCEEDED",
             )
+
+
+class IncidentLocalizationWorkClaimTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.incidents = InMemoryIncidentRepository()
+        self.collection_work = InMemoryIncidentWorkRepository(self.incidents)
+        incident = AlertmanagerIngestionService(self.incidents).ingest(
+            incident_payload("incident-localization-work-contract"),
+            received_at=NOW,
+        )[0].incident
+        self.collection_work.enqueue(incident["incident_id"], available_at=NOW)
+        claim = self.collection_work.claim_next(
+            worker_id="collection-worker",
+            now=NOW,
+            lease_duration=timedelta(seconds=30),
+            max_attempts=3,
+        )
+        service = IncidentCollectionService(
+            self.incidents,
+            CollectorOrchestrator(
+                [CollectorSpec("prometheus", StaticProvider())]
+            ),
+        )
+        service.collect_claimed_incident(
+            claim.incident_id,
+            scope=ResourceScope(
+                namespace="online-boutique",
+                resource_names=("frontend",),
+                max_items=8,
+            ),
+            observed_at=NOW + timedelta(seconds=1),
+        )
+        self.incident = self.incidents.get(incident["incident_id"])
+        self.work = InMemoryIncidentLocalizationWorkRepository(self.incidents)
+        self.work.enqueue(
+            self.incident["incident_id"],
+            available_at=NOW + timedelta(seconds=1),
+        )
+
+    def claim(self, *, worker_id: str = "worker-a", now=NOW + timedelta(seconds=1)):
+        return self.work.claim_next(
+            worker_id=worker_id,
+            now=now,
+            lease_duration=timedelta(seconds=30),
+            max_attempts=3,
+        )
+
+    def test_claim_is_exclusive_and_fenced(self) -> None:
+        stale = self.claim()
+        self.assertIsNone(self.claim(worker_id="worker-b"))
+
+        reclaimed = self.claim(
+            worker_id="worker-b",
+            now=NOW + timedelta(seconds=32),
+        )
+
+        self.assertEqual(reclaimed.attempt_count, 2)
+        with self.assertRaisesRegex(InvalidTransition, "stale"):
+            self.work.fail(
+                stale,
+                now=NOW + timedelta(seconds=33),
+                error_code="STALE_WORKER",
+            )
+
+    def test_reaper_recovers_committed_localization(self) -> None:
+        claim = self.claim()
+        self.incidents.transition(
+            claim.incident_id,
+            expected_status="LOCALIZING",
+            next_status="ANALYZING",
+            occurred_at=NOW + timedelta(seconds=2),
+        )
+
+        reaped = self.work.reap_exhausted(
+            now=NOW + timedelta(seconds=32),
+            max_attempts=3,
+        )
+        collection_reaped = self.collection_work.reap_exhausted(
+            now=NOW + timedelta(seconds=32),
+            max_attempts=3,
+        )
+
+        self.assertEqual(reaped, 1)
+        self.assertEqual(collection_reaped, 1)
+        self.assertEqual(
+            self.incidents.get(claim.incident_id)["status"], "ANALYZING"
+        )
 
 
 if __name__ == "__main__":

@@ -35,6 +35,9 @@ OBSERVATION_MIGRATION = (
     ROOT / "db" / "migrations" / "003_stategraph_observations.sql"
 )
 INCIDENT_WORK_MIGRATION = ROOT / "db" / "migrations" / "004_incident_work_items.sql"
+LOCALIZATION_WORK_MIGRATION = (
+    ROOT / "db" / "migrations" / "005_incident_localization_work_items.sql"
+)
 
 
 def contract_incident() -> dict:
@@ -135,6 +138,16 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertIn("lease_expires_at TIMESTAMPTZ", sql)
         self.assertIn("state IN ('READY', 'RUNNING', 'SUCCEEDED', 'FAILED')", sql)
 
+    def test_localization_work_is_enqueued_by_the_localizing_transition(self) -> None:
+        sql = LOCALIZATION_WORK_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE incident_localization_work_items", sql)
+        self.assertIn("stage = 'LOCALIZATION'", sql)
+        self.assertIn("AFTER UPDATE OF status ON incidents", sql)
+        self.assertIn("NEW.status = 'LOCALIZING'", sql)
+        self.assertIn("CREATE TRIGGER incidents_enqueue_localization_work", sql)
+        self.assertIn("claim_token TEXT", sql)
+        self.assertIn("lease_expires_at TIMESTAMPTZ", sql)
+
     def test_viewer_list_query_keeps_search_text_in_sql_parameters(self) -> None:
         class RecordingCursor:
             def __init__(self) -> None:
@@ -229,6 +242,7 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
             "002_agent_runs.sql",
             "003_stategraph_observations.sql",
             "004_incident_work_items.sql",
+            "005_incident_localization_work_items.sql",
         ]:
             raise AssertionError(f"unexpected applied migrations: {applied}")
         if apply_migrations(cls.connection_factory) != []:

@@ -54,6 +54,26 @@ spec:
               value: "32"
             - name: PROMETHEUS_BASE_URL
               value: http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090
+            - name: NEO4J_URI
+              value: bolt://neo4j.graph-rca.svc.cluster.local:7687
+            - name: NEO4J_DATABASE
+              value: neo4j
+            - name: NEO4J_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: stategraph-runtime-auth
+                  key: neo4j-username
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: stategraph-runtime-auth
+                  key: neo4j-password
+            - name: INCIDENT_WORKER_LOCALIZATION_MAX_CANDIDATES
+              value: "10"
+            - name: INCIDENT_WORKER_LOCALIZATION_MAX_ENTITIES
+              value: "40"
+            - name: INCIDENT_WORKER_LOCALIZATION_MAX_DEPTH
+              value: "4"
             - name: POSTGRES_HOST
               value: postgresql.incident-platform.svc.cluster.local
             - name: POSTGRES_PORT

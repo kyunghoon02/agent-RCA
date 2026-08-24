@@ -97,8 +97,8 @@ incident_platform:
   reconciler:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
-    image_tag: runtime-1facd6ecc4bb
-    image_digest: sha256:075c34e4542912892fc546af71c9c034b5838dbe009c8b7c77f9004e124826f4
+    image_tag: runtime-3245378fd99a
+    image_digest: sha256:19775547dd69667fc2e4d2319ef6ee48b370109c2d023a911e9011307b2e1d2b
   webhook:
     server: gunicorn
     server_version: 26.0.0
@@ -111,6 +111,9 @@ incident_platform:
     max_attempts: 3
     provider_timeout_seconds: 20
     max_evidence_items: 32
+    localization_max_candidates: 10
+    localization_max_entities: 40
+    localization_max_depth: 4
 
 online_boutique:
   repository: "https://github.com/GoogleCloudPlatform/microservices-demo.git"
