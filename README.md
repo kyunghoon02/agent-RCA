@@ -3,7 +3,7 @@
 > Evidence-grounded infrastructure incident analysis for Kubernetes and
 > cloud-native systems.
 
-## 해결하려는 문제
+## Problem
 
 Cloud-native 장애의 원인은 metric 하나나 log 한 줄에만 있지 않다. 배포 변경, workload,
 Prometheus metric, log, trace, Kubernetes Event와 Cilium/Hubble network flow를 같은
@@ -43,7 +43,7 @@ read-only이며 write/admin tool과 자동 복구는 허용하지 않는다. 복
 Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtime Evidence로 다시
 검증해야 한다.
 
-## 현재 검증 요약
+## Verified Scope
 
 - **Infrastructure runtime:** Terraform과 Ansible로 GCP 단일 VM, kubeadm Kubernetes,
   Cilium/Hubble과 observability stack을 구성하고 재부팅 후 복구 및 주요 component
@@ -56,16 +56,16 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   controlled fault에 대한 RCA 정확도, 성공한 external LLM live run과 자동 복구는 아직
   검증하지 않았다.
 
-세부 구현과 runtime 상태는 [현재 구현 상태](#현재-구현-상태)에서 분리해 기록한다.
+세부 구현과 runtime 상태는 [Implementation Status](#implementation-status)에서 분리해 기록한다.
 
-## 목표 아키텍처
+## Target Architecture
 
 ![Agent RCA cloud-neutral logical architecture with a Kubernetes reference runtime](assets/agent-rca-target-architecture.svg)
 
 > Cloud-neutral logical architecture이며, single-node kubeadm Kubernetes는 현재
 > reference runtime이다.
 
-## Incident 조사 흐름
+## Incident Investigation Flow
 
 ```mermaid
 sequenceDiagram
@@ -115,7 +115,7 @@ seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Fro
 고정한다. Operational Knowledge는 localized Entity 범위 안의 조사 reference로만
 사용하며 root cause는 실제 `evidence_id` 없이는 확정하지 않는다.
 
-## Evidence와 안전 경계
+## Evidence and Safety Boundaries
 
 | 입력 계층 | 역할 | 원인 증명 가능 여부 |
 |---|---|---|
@@ -157,7 +157,7 @@ Ansible은 containerd와 kubeadm host/cluster bootstrap을 소유하고, Ansible
 workload와 Agent RCA 배포는 그 다음 Kubernetes deployment 계층이 담당한다. Reference runtime은 교체할 수 있으며 RCA core와
 Evidence contract는 GCP나 특정 workload ontology에 종속되지 않는다.
 
-## 대표 Incident 실증 계획
+## Representative Incident Validation Plan
 
 전체 평가는 최소 15개 Incident를 반복하지만, 포트폴리오에서는 다음 4개 scenario를
 깊이 있는 case study로 먼저 제시한다. 아래 항목은 아직 성과값이 아니라 controlled
@@ -220,7 +220,7 @@ hash는 세 variant에서 동일한 hard filter로 고정하며 Vector 검색은
 성과값이 아니다. 승인 문서 20개와 frozen query 30개 이상으로 확장한 뒤 생성되는
 corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수치로 승격한다.
 
-## 현재 구현 상태
+## Implementation Status
 
 > 기준일: 2026-08-23. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
@@ -243,7 +243,7 @@ production HA, cross-node networking, node pool autoscaling, zone 장애 또는 
 control-plane 장애를 증명하지 않는다. VM 장애까지 분석하려면 Agent control plane을
 별도 failure domain으로 분리해야 한다.
 
-## Core Localization 설계
+## Core Localization Design
 
 Provider는 `GraphRecord`를 직접 만들지 않는다. `EvidenceDraft`를 반환하면
 `EvidenceBuilder`가 provenance, redaction, hash와 schema를 검증하고, domain
@@ -352,7 +352,7 @@ Entity, reference-only 결론, 낮은 completeness, collector failure와 budget 
 [KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph record 구조는
 [StateGraph Model](contracts/graph/stategraph-model.yaml)에 기록한다.
 
-## 검증
+## Verification
 
 ```bash
 make bootstrap-dev
@@ -395,7 +395,7 @@ pgvector migration/index에 hash와 embedding model을 함께 저장한다. 이�
 backend runtime evidence를 검사한다. Online Boutique remote base render에는 GitHub
 접근이 필요하다.
 
-## 저장소 구조
+## Repository Structure
 
 ```text
 config/              프로젝트 범위, GCP/cluster readiness, RCA routing 정책
@@ -412,7 +412,7 @@ tests/               deterministic fixture와 core unit test
 tools/               정적 검증 도구
 ```
 
-## 상세 설계 및 재현 자료
+## Design and Reproduction Guides
 
 - [Provider Contract](contracts/providers.md)
 - [KRCA-style API Drilldown](contracts/krca-drilldown.md)
