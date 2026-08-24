@@ -17,7 +17,7 @@ read-only Agent가 이 Context 안에서 Evidence를 조사하고, 모든 결론
 scope를 다시 검사하며, Evidence가 부족하거나 충돌하면 원인을 추측하지 않고
 `ABSTAIN`한다.
 
-## 시스템 한눈에 보기
+## How Agent RCA Works
 
 ```mermaid
 flowchart LR
