@@ -13,6 +13,7 @@ RUN python -m pip install --no-cache-dir --requirement /app/requirements.txt
 COPY src /app/src
 COPY contracts /app/contracts
 COPY db /app/db
+COPY config/online-boutique-krca.yaml /app/config/online-boutique-krca.yaml
 COPY tools/run_stategraph_reconciler.py /app/tools/run_stategraph_reconciler.py
 COPY tools/run_incident_receiver.py /app/tools/run_incident_receiver.py
 COPY tools/run_incident_worker.py /app/tools/run_incident_worker.py

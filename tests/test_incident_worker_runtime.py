@@ -9,13 +9,27 @@ from incident_platform.collectors import (
     CollectorSpec,
     IncidentCollectionService,
 )
-from incident_platform.evidence import EvidenceDraft, ProviderBatch
+from incident_platform.evidence import EvidenceDraft, ProviderBatch, ResourceScope
 from incident_platform.incident_work import (
     InMemoryIncidentLocalizationWorkRepository,
     InMemoryIncidentWorkRepository,
 )
 from incident_platform.localization import IncidentLocalizationService
-from incident_platform.projectors import KubernetesEvidenceProjector
+from incident_platform.krca import APIRef
+from incident_platform.krca_pipeline import KRCAGuidedIncidentLocalizationService
+from incident_platform.krca_runtime import (
+    KRCARuntimeCollectionPolicy,
+    KRCARuntimeConfig,
+    KRCARuntimeProfile,
+)
+from incident_platform.projectors import (
+    KRCAPIEdgeEvidenceProjector,
+    KubernetesEvidenceProjector,
+)
+from incident_platform.providers.krca_metrics import (
+    APIDependencySpec,
+    PrometheusAPIFeatureQuerySpec,
+)
 from incident_platform.incidents import AlertmanagerIngestionService
 from incident_platform.repository import InMemoryIncidentRepository
 from incident_platform.resolution import (
@@ -48,6 +62,7 @@ def config() -> IncidentWorkerRuntimeConfig:
         kubernetes_token_file="/not-used/token",
         kubernetes_ca_file="/not-used/ca",
         prometheus_base_url="http://prometheus.observability.svc.cluster.local:9090",
+        krca_config_path="config/online-boutique-krca.yaml",
         neo4j_uri="bolt://neo4j:7687",
         neo4j_username="neo4j",
         neo4j_password="test-only",
@@ -63,17 +78,20 @@ def config() -> IncidentWorkerRuntimeConfig:
     )
 
 
-def payload(*, source_label: str = "service") -> dict:
+def payload(*, source_label: str = "service", krca_profile: str | None = None) -> dict:
+    labels = {
+        "alertname": "IncidentWorkerRuntime",
+        "namespace": "online-boutique",
+        source_label: "frontend",
+        "severity": "warning",
+    }
+    if krca_profile is not None:
+        labels["krca_profile"] = krca_profile
     return {
         "alerts": [
             {
                 "status": "firing",
-                "labels": {
-                    "alertname": "IncidentWorkerRuntime",
-                    "namespace": "online-boutique",
-                    source_label: "frontend",
-                    "severity": "warning",
-                },
+                "labels": labels,
                 "annotations": {},
                 "startsAt": "2026-08-24T08:55:00Z",
                 "endsAt": "2099-01-01T00:00:00Z",
@@ -136,6 +154,79 @@ class KubernetesStaticProvider:
         )
 
 
+class KRCAInsufficientStaticProvider:
+    def collect(self, request):
+        return ProviderBatch(
+            items=(
+                EvidenceDraft(
+                    source="prometheus",
+                    kind="metric-summary",
+                    observed_at=request.window.end,
+                    subject={
+                        "cluster_id": "agent-rca-dev",
+                        "api_version": "v1",
+                        "kind": "Service",
+                        "namespace": request.scope.namespace,
+                        "name": "frontend",
+                        "uid": None,
+                        "exists": True,
+                    },
+                    summary="KRCA feature data was insufficient.",
+                    facts={
+                        "metric": "krca_api_edge_features",
+                        "feature_set": "krca-api-edge-v1",
+                        "edge_id": "frontend-checkout",
+                        "parent": {"service": "frontend", "operation": "POST"},
+                        "child": {
+                            "service": "checkoutservice",
+                            "operation": "PlaceOrder",
+                        },
+                        "result_status": "INSUFFICIENT_DATA",
+                        "reason_codes": ["TOO_FEW_ALIGNED_SAMPLES"],
+                    },
+                    provider="prometheus-krca-api-feature-provider",
+                    query="allowlisted fixture query",
+                    locator="prometheus://krca/edge/frontend-checkout",
+                    completeness=0.0,
+                ),
+            ),
+            status="PARTIAL",
+            error="too few aligned samples",
+        )
+
+
+def krca_config() -> KRCARuntimeConfig:
+    parent = APIRef("frontend", "POST")
+    child = APIRef("checkoutservice", "PlaceOrder")
+    return KRCARuntimeConfig(
+        cluster_id="agent-rca-dev",
+        namespace="online-boutique",
+        query_spec=PrometheusAPIFeatureQuerySpec(
+            failure_rate_template="failure{{scope}}",
+            latency_template="latency{{scope}}",
+            qps_template="qps{{scope}}",
+            latency_baseline_template="baseline{{scope}}",
+        ),
+        collection=KRCARuntimeCollectionPolicy(
+            window_seconds=900,
+            timeout_seconds=30,
+            max_evidence_items=4,
+            max_edges=4,
+            max_queries=16,
+        ),
+        profiles=(
+            KRCARuntimeProfile(
+                profile_id="checkout-fixture",
+                alerting_api=parent,
+                resource_names=("frontend", "checkoutservice"),
+                dependencies=(
+                    APIDependencySpec("frontend-checkout", parent, child),
+                ),
+            ),
+        ),
+    )
+
+
 class IncidentWorkerRuntimeTests(unittest.TestCase):
     def test_environment_preserves_postgresql_secret_bytes(self) -> None:
         environment = {
@@ -143,6 +234,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             "INCIDENT_WORKER_CLUSTER_ID": "agent-rca-dev",
             "INCIDENT_WORKER_TARGET_NAMESPACE": "online-boutique",
             "PROMETHEUS_BASE_URL": "http://prometheus:9090",
+            "INCIDENT_WORKER_KRCA_CONFIG": "config/online-boutique-krca.yaml",
             "NEO4J_URI": "bolt://neo4j:7687",
             "NEO4J_USERNAME": "neo4j",
             "NEO4J_PASSWORD": "neo4j-password-with-newline\n",
@@ -241,6 +333,72 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             incidents.get(incident["incident_id"])["status"], "ANALYZING"
         )
         self.assertEqual(localized["evidence_count"], 1)
+
+    def test_profiled_worker_runs_krca_then_uses_safe_source_fallback(self) -> None:
+        incidents = InMemoryIncidentRepository()
+        collection_work = InMemoryIncidentWorkRepository(incidents)
+        localization_work = InMemoryIncidentLocalizationWorkRepository(incidents)
+        incident = AlertmanagerIngestionService(incidents).ingest(
+            payload(krca_profile="checkout-fixture"), received_at=NOW
+        )[0].incident
+        collection_work.enqueue(incident["incident_id"], available_at=NOW)
+        collection = IncidentCollectionService(
+            incidents,
+            CollectorOrchestrator(
+                [
+                    CollectorSpec("kubernetes", KubernetesStaticProvider()),
+                    CollectorSpec(
+                        "prometheus-api",
+                        KRCAInsufficientStaticProvider(),
+                        request_scope=ResourceScope(
+                            namespace="online-boutique",
+                            resource_names=("frontend", "checkoutservice"),
+                        ),
+                        lookback_seconds=900,
+                    ),
+                ]
+            ),
+        )
+        graph = InMemoryStateGraphRepository()
+        resolver = ServiceToEntityResolver(graph)
+        core_localization = IncidentLocalizationService(
+            incidents,
+            graph,
+            (KubernetesEvidenceProjector(), KRCAPIEdgeEvidenceProjector()),
+        )
+        worker = IncidentWorker(
+            config(),
+            incidents,
+            collection_work,
+            collection,
+            localization_work,
+            ResolvedIncidentLocalizationService(resolver, core_localization),
+            krca_config(),
+            KRCAGuidedIncidentLocalizationService(resolver, core_localization),
+            clock=lambda: NOW + timedelta(seconds=1),
+        )
+
+        collected = worker.process_one()
+        evidence = incidents.list_evidence(incident["incident_id"])
+        kubernetes_evidence = next(item for item in evidence if item["source"] == "kubernetes")
+        graph.ingest(KubernetesEvidenceProjector().project(kubernetes_evidence).records)
+        localization_work.enqueue(
+            incident["incident_id"],
+            available_at=NOW + timedelta(seconds=1),
+        )
+        localized = worker.process_one()
+
+        self.assertEqual(collected["collection_status"], "PARTIAL")
+        self.assertEqual(localized["status"], "PROCESSED")
+        self.assertEqual(localized["resolution_method"], "source-entity-krca-fallback")
+        self.assertEqual(localized["krca_profile"], "checkout-fixture")
+        self.assertEqual(localized["krca_stop_reason"], "NO_SUSPICIOUS_DOWNSTREAM")
+        context = incidents.get_context(localized["context_id"])
+        self.assertEqual(len(context["evidence_ids"]), 2)
+        self.assertEqual(
+            context["scope"]["correlation_keys"]["seed_source"],
+            "source-entity-krca-fallback",
+        )
 
     def test_worker_fails_closed_for_an_unsupported_source_kind(self) -> None:
         incidents = InMemoryIncidentRepository()

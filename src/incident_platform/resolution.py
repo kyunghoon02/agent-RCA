@@ -196,6 +196,7 @@ class InvestigationScopeFactory:
         self,
         resolution: EntityResolutionResult,
         *,
+        additional_correlation_keys: Optional[Mapping[str, str]] = None,
         domains: Tuple[str, ...] = ("web-service", "kubernetes"),
         relation_types: Tuple[str, ...] = (
             "REPRESENTED_BY",
@@ -216,16 +217,23 @@ class InvestigationScopeFactory:
                 "InvestigationScope requires a RESOLVED EntityResolutionResult"
             )
         request = resolution.request
+        correlation_keys = {
+            "cluster_id": request.cluster_id,
+            "namespace": request.namespace,
+            "service_name": request.service_name,
+        }
+        for key, value in (additional_correlation_keys or {}).items():
+            if key in correlation_keys:
+                raise ContractViolation(
+                    f"additional correlation key cannot replace trusted identity: {key}"
+                )
+            correlation_keys[key] = value
         return InvestigationScope(
             incident_id=request.incident_id,
             seed_entity_ids=resolution.seed_entity_ids,
             window=request.window,
             domains=domains,
-            correlation_keys={
-                "cluster_id": request.cluster_id,
-                "namespace": request.namespace,
-                "service_name": request.service_name,
-            },
+            correlation_keys=correlation_keys,
             relation_types=relation_types,
             max_entities=max_entities,
             max_depth=max_depth,

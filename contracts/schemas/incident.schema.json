@@ -146,6 +146,7 @@
           "collector": {
             "enum": [
               "prometheus",
+              "prometheus-api",
               "logs",
               "kubernetes",
               "deployment",

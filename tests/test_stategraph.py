@@ -92,6 +92,35 @@ def graph_snapshot(
     }
 
 
+def graph_relation(
+    source_entity_id: str,
+    destination_entity_id: str,
+    *,
+    reference_key: str,
+    evidence_id: str,
+) -> dict:
+    identity = {
+        "source_entity_id": source_entity_id,
+        "relation_type": "CALLS",
+        "destination_entity_id": destination_entity_id,
+        "reference_key": reference_key,
+        "projector": "web-service-projector",
+    }
+    relation_key = stable_graph_id("relkey", identity)
+    return {
+        "record_type": "relation_interval",
+        "relation_id": stable_graph_id(
+            "rel", {"relation_key": relation_key, "at": WINDOW.start}
+        ),
+        "relation_key": relation_key,
+        **identity,
+        "observed_at": "2026-08-12T01:01:00Z",
+        "valid_from": "2026-08-12T01:01:00Z",
+        "valid_to": None,
+        "evidence_ids": [evidence_id],
+    }
+
+
 def build_evidence(
     draft: EvidenceDraft,
     *,
@@ -340,6 +369,67 @@ class StateGraphRepositoryTests(unittest.TestCase):
         self.assertEqual(
             repository.list_relations()[0]["valid_to"],
             "2026-08-12T01:04:00Z",
+        )
+
+    def test_localization_retains_converging_non_tree_relation_evidence(self) -> None:
+        repository = InMemoryStateGraphRepository()
+        source_id = graph_entity_id("frontend")
+        branch_id = graph_entity_id("recommendation")
+        destination_id = graph_entity_id("catalog")
+        for entity_id, name in (
+            (source_id, "frontend"),
+            (branch_id, "recommendation"),
+            (destination_id, "catalog"),
+        ):
+            repository.upsert_entity(
+                graph_entity(
+                    entity_id,
+                    name=name,
+                    evidence_id=f"ev-stategraph-{name}-identity-0001",
+                )
+            )
+        repository.ingest(
+            (
+                graph_relation(
+                    source_id,
+                    branch_id,
+                    reference_key="frontend-recommendation",
+                    evidence_id="ev-stategraph-frontend-recommendation-0001",
+                ),
+                graph_relation(
+                    source_id,
+                    destination_id,
+                    reference_key="frontend-catalog",
+                    evidence_id="ev-stategraph-frontend-catalog-0001",
+                ),
+                graph_relation(
+                    branch_id,
+                    destination_id,
+                    reference_key="recommendation-catalog",
+                    evidence_id="ev-stategraph-recommendation-catalog-0001",
+                ),
+            )
+        )
+
+        localized = repository.find_state_paths(
+            InvestigationScope(
+                incident_id="inc-stategraph-converging-0001",
+                seed_entity_ids=(source_id,),
+                window=WINDOW,
+                domains=("web-service",),
+                relation_types=("CALLS",),
+                max_entities=4,
+                max_depth=2,
+            )
+        )
+
+        self.assertEqual(
+            set(localized.evidence_ids),
+            {
+                "ev-stategraph-frontend-recommendation-0001",
+                "ev-stategraph-frontend-catalog-0001",
+                "ev-stategraph-recommendation-catalog-0001",
+            },
         )
 
 

@@ -87,9 +87,22 @@ time window, edge/query/sample limit을 강제한다. 호출 전에 예상 query
 
 `APIEdgeEvidenceProjector`는 `HAS_DATA`인 contract-valid Evidence만
 `APIEdgeSignal`로 바꾼다. 필수 series 누락, sample truncation과 정렬 표본 부족은
-`INSUFFICIENT_DATA` Evidence로 남고 KRCA signal이 되지 않는다. Online Boutique의
-allowlisted 23개 edge는 별도 live smoke에서 검증했지만 이 feature Provider는 아직
-Alertmanager Incident worker의 collection/localization 경로에는 연결하지 않았다.
+`INSUFFICIENT_DATA` Evidence로 남고 KRCA signal이 되지 않는다. Incident worker는 Alert의
+명시적 `krca_profile`만 버전 관리되는 profile로 해석하며, `prometheus-api` collector에
+profile 전용 Service scope, 15분 lookback, edge/query/sample budget을 부여한다. profile
+누락 시 기존 Service 수집만 수행하고, 알 수 없는 profile이나 Alert source와 alerting API가
+다르면 fail-closed한다.
+
+`KRCAPIEdgeEvidenceProjector`는 trusted runtime `cluster_id`가 있는 feature Evidence만
+logical Service 간 `CALLS` relation으로 변환한다. 원본 sample, PromQL과 계산 feature를
+Graph attribute로 복사하지 않으며, 이 metric-derived relation은
+`recent_change_evidence_ids`에서 제외한다. 정확히 하나의 profile edge set이 모두 저장된
+경우에만 KRCA drilldown을 실행한다. 완전히 resolve된 Top-N은 multi-seed scope가 되고,
+Top-N이 없거나 budget이 소진되거나 Entity resolution이 불완전하면 exact source Service
+scope로 fallback한다. 선택한 profile, seed source와 fallback reason은 Frozen Context의
+correlation key로 고정한다. bounded BFS가 spanning tree를 만들더라도 선택된 subgraph에서
+실제로 관측한 수렴·교차 relation의 현재 Incident Evidence는 버리지 않고 Context 전체
+Evidence 집합에 포함한다.
 
 ### LogsProvider
 

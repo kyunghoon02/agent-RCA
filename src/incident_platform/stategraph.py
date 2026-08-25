@@ -1143,7 +1143,7 @@ class InMemoryStateGraphRepository:
                         f"InvestigationScope seed is absent from the selected Graph: {seed}"
                     )
 
-            relations = [
+            observed_relations = [
                 copy.deepcopy(relation)
                 for history in self._relations_by_key.values()
                 for relation in history
@@ -1155,7 +1155,7 @@ class InMemoryStateGraphRepository:
                     or relation["relation_type"] in scope.relation_types
                 )
             ]
-            relations.sort(
+            observed_relations.sort(
                 key=lambda item: (
                     item["relation_type"],
                     item["source_entity_id"],
@@ -1163,6 +1163,21 @@ class InMemoryStateGraphRepository:
                     item["relation_id"],
                 )
             )
+            relations_by_path: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+            for relation in observed_relations:
+                key = (
+                    relation["source_entity_id"],
+                    relation["relation_type"],
+                    relation["destination_entity_id"],
+                )
+                existing = relations_by_path.get(key)
+                if existing is None:
+                    relations_by_path[key] = relation
+                    continue
+                existing["evidence_ids"] = _merged_ids(
+                    existing["evidence_ids"], relation["evidence_ids"]
+                )
+            relations = list(relations_by_path.values())
             adjacency: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {
                 entity_id: [] for entity_id in candidates
             }
@@ -1175,6 +1190,7 @@ class InMemoryStateGraphRepository:
                 )
 
             visited = set()
+            observed_relation_evidence: set[str] = set()
             paths: List[LocalizedPath] = []
             queue = deque()
             for seed in scope.seed_entity_ids:
@@ -1191,6 +1207,7 @@ class InMemoryStateGraphRepository:
                 if depth >= scope.max_depth:
                     continue
                 for neighbor, relation in adjacency[current]:
+                    observed_relation_evidence.update(relation["evidence_ids"])
                     if neighbor in visited:
                         continue
                     visited.add(neighbor)
@@ -1226,6 +1243,7 @@ class InMemoryStateGraphRepository:
                     for path in paths
                     for evidence_id in path.evidence_ids
                 }
+                | observed_relation_evidence
             )
             covered = sum(
                 bool(self._entity_evidence(entity_id, scope.window))
@@ -1273,6 +1291,8 @@ class InMemoryStateGraphRepository:
                     relation["source_entity_id"] not in entity_ids
                     or relation["destination_entity_id"] not in entity_ids
                 ):
+                    continue
+                if relation["projector"] == "krca-api-edge-evidence-projector":
                     continue
                 changed_at = _parse_time(relation["valid_from"], "Relation.valid_from")
                 if start <= changed_at <= end:

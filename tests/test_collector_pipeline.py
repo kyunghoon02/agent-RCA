@@ -104,6 +104,24 @@ class StaticProvider:
         return self.batch
 
 
+class RequestRecordingProvider:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def collect(self, request: CollectionRequest) -> ProviderBatch:
+        self.requests.append(request)
+        return ProviderBatch(
+            items=(
+                evidence_draft(
+                    subject={
+                        **SUBJECT,
+                        "name": request.scope.resource_names[0],
+                    }
+                ),
+            )
+        )
+
+
 def collection_window() -> EvidenceWindow:
     return EvidenceWindow(
         start="2026-08-12T00:30:00Z",
@@ -119,6 +137,34 @@ def collection_scope() -> ResourceScope:
 
 
 class CollectorOrchestratorTests(unittest.TestCase):
+    def test_collector_can_use_a_narrower_window_and_trusted_profile_scope(self) -> None:
+        provider = RequestRecordingProvider()
+        profile_scope = ResourceScope(
+            namespace="online-boutique",
+            resource_names=("frontend", "checkoutservice"),
+            max_items=10,
+        )
+        run = CollectorOrchestrator(
+            [
+                CollectorSpec(
+                    "prometheus-api",
+                    provider,
+                    request_scope=profile_scope,
+                    lookback_seconds=900,
+                )
+            ]
+        ).collect(
+            incident_id=INCIDENT_ID,
+            window=collection_window(),
+            scope=collection_scope(),
+            observed_at=FIXED_TIME,
+        )
+
+        self.assertEqual(run.status, "SUCCEEDED")
+        self.assertEqual(provider.requests[0].scope, profile_scope)
+        self.assertEqual(provider.requests[0].window.start, "2026-08-12T00:50:00Z")
+        self.assertEqual(run.evidence[0]["subject"]["name"], "frontend")
+
     def test_collectors_reach_a_barrier_concurrently(self) -> None:
         barrier = threading.Barrier(2)
         metrics = StaticProvider(

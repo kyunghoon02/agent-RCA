@@ -198,6 +198,13 @@ localization:
     formula: entity_coverage_times_current_incident_path_coverage
     repeated_prior_cycle_evidence_ids_in_denominator: false
     uncovered_path_requires_missing_evidence_entry: true
+  relationship_evidence:
+    retain_observed_non_tree_edges: true
+    bounds:
+      - localized_endpoint
+      - time_window
+      - relation_types
+    rationale: converging_edges_must_not_lose_current_incident_evidence
   adaptive_expansion:
     assessor_input: current-frozen-context-only
     expand_when_any:

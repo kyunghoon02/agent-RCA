@@ -14,6 +14,7 @@ from .localization import IncidentLocalizationRun, IncidentLocalizationService
 from .resolution import (
     EntityResolutionRequest,
     EntityResolutionResult,
+    InvestigationScopeFactory,
     ServiceToEntityResolver,
 )
 from .stategraph import InvestigationScope
@@ -161,6 +162,7 @@ class KRCATopServiceScopeResolver:
         *,
         cluster_id: str,
         namespace: str,
+        profile_id: Optional[str] = None,
         max_candidates: int = 10,
         max_entities: int = 100,
         max_depth: int = 4,
@@ -193,16 +195,20 @@ class KRCATopServiceScopeResolver:
         )
         scope = None
         if seed_entity_ids and complete:
+            correlation_keys = {
+                "cluster_id": cluster_id,
+                "namespace": namespace,
+                "seed_source": "krca-top-services",
+                "krca_drilldown_stop": feature_run.drilldown.stop_reason,
+            }
+            if profile_id is not None:
+                correlation_keys["krca_profile"] = profile_id
             scope = InvestigationScope(
                 incident_id=feature_run.incident_id,
                 seed_entity_ids=seed_entity_ids,
                 window=feature_run.window,
                 domains=("web-service", "kubernetes"),
-                correlation_keys={
-                    "cluster_id": cluster_id,
-                    "namespace": namespace,
-                    "seed_source": "krca-top-services",
-                },
+                correlation_keys=correlation_keys,
                 relation_types=(
                     "REPRESENTED_BY",
                     "RESOLVES_TO",
@@ -264,3 +270,165 @@ class KRCATopServiceLocalizationService:
             frozen_at=frozen_at,
         )
         return KRCATopServiceLocalizationRun(resolution, localization)
+
+
+@dataclass(frozen=True)
+class KRCAGuidedIncidentLocalizationRun:
+    """One profiled KRCA decision followed by Top-N or safe source fallback."""
+
+    feature_run: KRCAMetricLocalizationRun
+    top_resolution: Optional[KRCATopServiceResolutionRun]
+    source_resolution: Optional[EntityResolutionResult]
+    localization: Optional[IncidentLocalizationRun]
+    seed_source: str
+    fallback_reason: Optional[str]
+
+
+class KRCAGuidedIncidentLocalizationService:
+    """Use KRCA Top-N seeds when complete; otherwise retain exact source scope."""
+
+    def __init__(
+        self,
+        resolver: ServiceToEntityResolver,
+        localization_service: IncidentLocalizationService,
+        *,
+        drilldown_service: Optional[EvidenceBackedKRCADrilldownService] = None,
+        scope_factory: Optional[InvestigationScopeFactory] = None,
+    ) -> None:
+        self._resolver = resolver
+        self._localization_service = localization_service
+        self._drilldown = drilldown_service or EvidenceBackedKRCADrilldownService()
+        self._scope_factory = scope_factory or InvestigationScopeFactory()
+        self._top_scope_resolver = KRCATopServiceScopeResolver(resolver)
+        self._feature_projector = APIEdgeEvidenceProjector()
+
+    def localize(
+        self,
+        request: EntityResolutionRequest,
+        *,
+        profile_id: str,
+        alerting_api: APIRef,
+        expected_edges: Mapping[str, Tuple[APIRef, APIRef]],
+        evidence: Sequence[Mapping[str, Any]],
+        frozen_at: Optional[datetime] = None,
+        max_entities: int = 100,
+        max_depth: int = 4,
+    ) -> KRCAGuidedIncidentLocalizationRun:
+        feature_evidence, feature_window = self._validated_feature_evidence(
+            request,
+            expected_edges,
+            evidence,
+        )
+        feature_run = self._drilldown.localize(
+            request.incident_id,
+            window=feature_window,
+            alerting_api=alerting_api,
+            evidence=feature_evidence,
+        )
+        top_resolution = None
+        fallback_reason = None
+        if not feature_run.drilldown.requires_fallback:
+            top_resolution = self._top_scope_resolver.resolve(
+                feature_run,
+                cluster_id=request.cluster_id,
+                namespace=request.namespace,
+                profile_id=profile_id,
+                max_candidates=request.max_candidates,
+                max_entities=max_entities,
+                max_depth=max_depth,
+            )
+            if top_resolution.scope is not None:
+                localization = self._localization_service.localize_incident(
+                    request.incident_id,
+                    scope=top_resolution.scope,
+                    frozen_at=frozen_at,
+                )
+                return KRCAGuidedIncidentLocalizationRun(
+                    feature_run=feature_run,
+                    top_resolution=top_resolution,
+                    source_resolution=None,
+                    localization=localization,
+                    seed_source="krca-top-services",
+                    fallback_reason=None,
+                )
+            fallback_reason = "TOP_SERVICE_ENTITY_RESOLUTION_INCOMPLETE"
+        else:
+            fallback_reason = feature_run.drilldown.stop_reason
+
+        source_resolution = self._resolver.resolve(request)
+        if source_resolution.status != "RESOLVED":
+            return KRCAGuidedIncidentLocalizationRun(
+                feature_run=feature_run,
+                top_resolution=top_resolution,
+                source_resolution=source_resolution,
+                localization=None,
+                seed_source="source-entity-krca-fallback",
+                fallback_reason=fallback_reason,
+            )
+        scope = self._scope_factory.create(
+            source_resolution,
+            additional_correlation_keys={
+                "seed_source": "source-entity-krca-fallback",
+                "krca_profile": profile_id,
+                "krca_drilldown_stop": feature_run.drilldown.stop_reason,
+                "krca_fallback_reason": fallback_reason,
+            },
+            max_entities=max_entities,
+            max_depth=max_depth,
+        )
+        localization = self._localization_service.localize_incident(
+            request.incident_id,
+            scope=scope,
+            frozen_at=frozen_at,
+        )
+        return KRCAGuidedIncidentLocalizationRun(
+            feature_run=feature_run,
+            top_resolution=top_resolution,
+            source_resolution=source_resolution,
+            localization=localization,
+            seed_source="source-entity-krca-fallback",
+            fallback_reason=fallback_reason,
+        )
+
+    def _validated_feature_evidence(
+        self,
+        request: EntityResolutionRequest,
+        expected_edges: Mapping[str, Tuple[APIRef, APIRef]],
+        evidence: Sequence[Mapping[str, Any]],
+    ) -> Tuple[Tuple[Mapping[str, Any], ...], EvidenceWindow]:
+        selected = tuple(
+            item for item in evidence if self._feature_projector.supports(item)
+        )
+        by_edge: dict[str, Mapping[str, Any]] = {}
+        windows = set()
+        for item in selected:
+            validate_contract("evidence-item.schema.json", item)
+            if item["incident_id"] != request.incident_id:
+                raise ContractViolation(
+                    "KRCA feature Evidence belongs to a different Incident"
+                )
+            facts = item["facts"]
+            edge_id = facts.get("edge_id")
+            if not isinstance(edge_id, str) or edge_id in by_edge:
+                raise ContractViolation("KRCA feature Evidence edge_id is duplicated")
+            expected = expected_edges.get(edge_id)
+            if expected is None:
+                raise ContractViolation(
+                    "KRCA feature Evidence is outside the selected profile"
+                )
+            parent = self._feature_projector._api_ref(facts.get("parent"), "parent")
+            child = self._feature_projector._api_ref(facts.get("child"), "child")
+            if (parent, child) != expected:
+                raise ContractViolation(
+                    "KRCA feature Evidence dependency does not match its profile"
+                )
+            by_edge[edge_id] = item
+            windows.add((item["window"]["start"], item["window"]["end"]))
+        if set(by_edge) != set(expected_edges):
+            raise ContractViolation(
+                "KRCA feature Evidence does not cover the selected profile"
+            )
+        if len(windows) != 1:
+            raise ContractViolation("KRCA feature Evidence windows are inconsistent")
+        start, end = next(iter(windows))
+        return tuple(by_edge[key] for key in sorted(by_edge)), EvidenceWindow(start, end)

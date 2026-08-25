@@ -1333,6 +1333,7 @@ class Neo4jStateGraphRepository:
                 )
 
         visited: set[str] = set()
+        observed_relation_evidence: set[str] = set()
         discovery_order: List[str] = []
         parent: Dict[str, Tuple[str, Dict[str, Any]]] = {}
         queue: deque[Tuple[str, int]] = deque()
@@ -1356,8 +1357,7 @@ class Neo4jStateGraphRepository:
                     MATCH (current:StateGraphEntity {entity_id: $current_entity_id})
                           -[relation:STATEGRAPH_RELATION]-
                           (neighbor:StateGraphEntity)
-                    WHERE NOT (neighbor.entity_id IN $visited_entity_ids)
-                      AND (size($domains) = 0 OR neighbor.domain IN $domains)
+                    WHERE (size($domains) = 0 OR neighbor.domain IN $domains)
                       AND (
                         size($relation_types) = 0
                         OR relation.relation_type IN $relation_types
@@ -1372,17 +1372,22 @@ class Neo4jStateGraphRepository:
                              relation.source_entity_id,
                              relation.destination_entity_id,
                              relation.relation_id
-                    WITH neighbor, collect(relation)[0] AS relation
+                    WITH neighbor, collect(relation) AS relations
+                    WITH neighbor, relations, relations[0] AS relation
                     RETURN neighbor.entity_id AS entity_id,
                            neighbor.document_json AS entity_json,
                            relation.document_json AS relation_json,
+                           reduce(evidence_ids = [], observed IN relations |
+                             evidence_ids + observed.evidence_ids
+                           ) AS relation_evidence_ids,
                            relation.relation_type AS relation_type,
                            relation.source_entity_id AS source_entity_id,
                            relation.destination_entity_id AS destination_entity_id,
-                           relation.relation_id AS relation_id
-                    ORDER BY relation_type, source_entity_id,
+                           relation.relation_id AS relation_id,
+                           neighbor.entity_id IN $visited_entity_ids AS already_visited
+                    ORDER BY already_visited, relation_type, source_entity_id,
                              destination_entity_id, relation_id
-                    LIMIT $remaining
+                    LIMIT $result_limit
                     """,
                     current_entity_id=current,
                     visited_entity_ids=sorted(visited),
@@ -1390,20 +1395,22 @@ class Neo4jStateGraphRepository:
                     relation_types=list(scope.relation_types),
                     window_start=window_start,
                     window_end=window_end,
-                    remaining=remaining,
+                    result_limit=remaining + len(visited),
                 )
             )
             for row in rows:
+                relation = _decode_document(_row_value(row, "relation_json"))
+                relation["evidence_ids"] = sorted(
+                    _flatten_ids((_row_value(row, "relation_evidence_ids"),))
+                )
+                observed_relation_evidence.update(relation["evidence_ids"])
                 entity_id = _row_value(row, "entity_id")
                 if entity_id in visited:
                     continue
                 visited.add(entity_id)
                 discovery_order.append(entity_id)
                 entities[entity_id] = _decode_document(_row_value(row, "entity_json"))
-                parent[entity_id] = (
-                    current,
-                    _decode_document(_row_value(row, "relation_json")),
-                )
+                parent[entity_id] = (current, relation)
                 queue.append((entity_id, depth + 1))
                 if len(visited) >= scope.max_entities:
                     break
@@ -1456,6 +1463,7 @@ class Neo4jStateGraphRepository:
                     for path in paths
                     for evidence_id in path.evidence_ids
                 }
+                | observed_relation_evidence
             )
         )
         covered = sum(bool(evidence_by_entity.get(entity_id)) for entity_id in visited)
@@ -1545,6 +1553,8 @@ class Neo4jStateGraphRepository:
                       (destination:StateGraphEntity)
                 WHERE source.entity_id IN $entity_ids
                   AND destination.entity_id IN $entity_ids
+                  AND coalesce(relation.projector, '') <>
+                      'krca-api-edge-evidence-projector'
                   AND relation.valid_from >= $window_start
                   AND relation.valid_from <= $window_end
                 RETURN relation.evidence_ids AS evidence_ids

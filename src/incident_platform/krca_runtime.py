@@ -59,6 +59,7 @@ class KRCARuntimeConfig:
             client,
             profile.dependencies,
             self.query_spec,
+            cluster_id=self.cluster_id,
             max_edges=self.collection.max_edges,
             max_queries=self.collection.max_queries,
         )

@@ -97,8 +97,8 @@ incident_platform:
   reconciler:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
-    image_tag: runtime-cee08fe9e7fd
-    image_digest: sha256:37d1ad78f287d9c6945cba3a9739e4b85785027a77d268efa0a74bb452087278
+    image_tag: runtime-841193abea32
+    image_digest: sha256:0d2d85e14629199e674c6ff607239b7ee9f29ebf7b23444e91d97f2419f7551f
   webhook:
     server: gunicorn
     server_version: 26.0.0

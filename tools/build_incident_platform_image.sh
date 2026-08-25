@@ -22,6 +22,7 @@ fi
 runtime_fingerprint="$({
   shasum -a 256 "$repo_root/requirements.txt"
   shasum -a 256 "$repo_root/platform/incident-platform/Dockerfile"
+  shasum -a 256 "$repo_root/config/online-boutique-krca.yaml"
   find "$repo_root/src" "$repo_root/contracts" "$repo_root/db" \
     -type f ! -name '*.pyc' -print0 \
     | LC_ALL=C sort -z \
@@ -43,6 +44,9 @@ cp "$repo_root/platform/incident-platform/cloudbuild.yaml" "$build_context/cloud
 cp -R "$repo_root/src" "$build_context/src"
 cp -R "$repo_root/contracts" "$build_context/contracts"
 cp -R "$repo_root/db" "$build_context/db"
+mkdir -p "$build_context/config"
+cp "$repo_root/config/online-boutique-krca.yaml" \
+  "$build_context/config/online-boutique-krca.yaml"
 mkdir -p "$build_context/tools"
 cp "$repo_root/tools/run_stategraph_reconciler.py" \
   "$build_context/tools/run_stategraph_reconciler.py"

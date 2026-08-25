@@ -123,6 +123,7 @@ class PrometheusAPIFeatureProvider:
         dependencies: Sequence[APIDependencySpec],
         query_spec: PrometheusAPIFeatureQuerySpec,
         *,
+        cluster_id: Optional[str] = None,
         max_edges: int = 100,
         max_queries: int = 400,
     ) -> None:
@@ -136,9 +137,12 @@ class PrometheusAPIFeatureProvider:
             raise ValueError("API dependency edges must be unique")
         if len(edge_ids) != len(set(edge_ids)):
             raise ValueError("API dependency edge_id values must be unique")
+        if cluster_id is not None and not cluster_id.strip():
+            raise ValueError("KRCA cluster_id must not be empty")
         self._client = client
         self._dependencies = tuple(dependencies)
         self._query_spec = query_spec
+        self._cluster_id = cluster_id
         self._max_edges = max_edges
         self._max_queries = max_queries
 
@@ -475,18 +479,21 @@ class PrometheusAPIFeatureProvider:
         observed_at: str,
         completeness: float,
     ) -> EvidenceDraft:
+        subject = {
+            "api_version": "v1",
+            "kind": "Service",
+            "namespace": request.scope.namespace,
+            "name": edge.parent.service,
+            "uid": None,
+            "exists": True,
+        }
+        if self._cluster_id is not None:
+            subject["cluster_id"] = self._cluster_id
         return EvidenceDraft(
             source="prometheus",
             kind="metric-summary",
             observed_at=observed_at,
-            subject={
-                "api_version": "v1",
-                "kind": "Service",
-                "namespace": request.scope.namespace,
-                "name": edge.parent.service,
-                "uid": None,
-                "exists": True,
-            },
+            subject=subject,
             summary=(
                 f"KRCA API edge features were computed for "
                 f"{edge.parent.key} -> {edge.child.key}."
@@ -501,18 +508,21 @@ class PrometheusAPIFeatureProvider:
 
     def _no_dependency_draft(self, request: CollectionRequest) -> EvidenceDraft:
         service = request.scope.resource_names[0]
+        subject = {
+            "api_version": "v1",
+            "kind": "Service",
+            "namespace": request.scope.namespace,
+            "name": service,
+            "uid": None,
+            "exists": True,
+        }
+        if self._cluster_id is not None:
+            subject["cluster_id"] = self._cluster_id
         return EvidenceDraft(
             source="prometheus",
             kind="metric-summary",
             observed_at=request.window.end,
-            subject={
-                "api_version": "v1",
-                "kind": "Service",
-                "namespace": request.scope.namespace,
-                "name": service,
-                "uid": None,
-                "exists": True,
-            },
+            subject=subject,
             summary="No configured API dependency edge matched the bounded scope.",
             facts={
                 "metric": "krca_api_edge_features",

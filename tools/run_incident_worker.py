@@ -10,9 +10,11 @@ import ssl
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional, Protocol
 
 from incident_platform.collectors import (
+    CollectionRun,
     CollectorOrchestrator,
     CollectorSpec,
     IncidentCollectionService,
@@ -24,6 +26,12 @@ from incident_platform.incident_work import (
     validate_claim_request,
 )
 from incident_platform.localization import IncidentLocalizationService
+from incident_platform.krca_pipeline import KRCAGuidedIncidentLocalizationService
+from incident_platform.krca_runtime import (
+    KRCARuntimeConfig,
+    KRCARuntimeProfile,
+    load_krca_runtime_config,
+)
 from incident_platform.neo4j_stategraph import (
     Neo4jStateGraphRepository,
     apply_neo4j_schema,
@@ -36,6 +44,7 @@ from incident_platform.postgresql import (
     apply_migrations,
 )
 from incident_platform.projectors import (
+    KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     PrometheusMetricEvidenceProjector,
 )
@@ -89,6 +98,7 @@ class IncidentWorkerRuntimeConfig:
     kubernetes_token_file: str
     kubernetes_ca_file: str
     prometheus_base_url: str
+    krca_config_path: str
     neo4j_uri: str
     neo4j_username: str
     neo4j_password: str
@@ -127,6 +137,8 @@ class IncidentWorkerRuntimeConfig:
             raise ValueError("localization depth must be between 0 and 16")
         if not 1 <= self.postgres_port <= 65535:
             raise ValueError("PostgreSQL port is invalid")
+        if not self.krca_config_path.strip():
+            raise ValueError("KRCA config path is required")
 
     @classmethod
     def from_environment(cls) -> "IncidentWorkerRuntimeConfig":
@@ -157,6 +169,7 @@ class IncidentWorkerRuntimeConfig:
                 "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
             ),
             prometheus_base_url=_required_environment("PROMETHEUS_BASE_URL"),
+            krca_config_path=_required_environment("INCIDENT_WORKER_KRCA_CONFIG"),
             neo4j_uri=_required_environment("NEO4J_URI"),
             neo4j_username=_required_environment("NEO4J_USERNAME"),
             neo4j_password=_required_secret_environment("NEO4J_PASSWORD"),
@@ -236,10 +249,89 @@ def _prometheus_query_specs() -> tuple[PrometheusQuerySpec, ...]:
     )
 
 
+class ClaimedIncidentCollectionService(Protocol):
+    def collect_claimed_incident(
+        self,
+        incident_id: str,
+        *,
+        scope: ResourceScope,
+        observed_at: Optional[datetime] = None,
+    ) -> CollectionRun:
+        ...
+
+
+def _selected_krca_profile(
+    incident: Mapping[str, Any],
+    config: KRCARuntimeConfig,
+) -> Optional[KRCARuntimeProfile]:
+    profile_id = incident["alert"]["labels"].get("krca_profile", "").strip()
+    if not profile_id:
+        return None
+    profile = config.profile(profile_id)
+    source = incident["source_entity"]
+    if source["namespace"] != config.namespace:
+        raise ValueError("KRCA profile namespace does not match the Incident")
+    if source["kind"] != "Service" or source["name"] != profile.alerting_api.service:
+        raise ValueError("KRCA profile alerting Service does not match the Incident")
+    return profile
+
+
+class ProfileAwareIncidentCollectionService:
+    """Add one isolated KRCA feature collector only for an explicit profile label."""
+
+    def __init__(
+        self,
+        repository: PostgreSQLIncidentRepository,
+        base_specs: tuple[CollectorSpec, ...],
+        prometheus_client: PrometheusHTTPAPI,
+        krca_config: KRCARuntimeConfig,
+    ) -> None:
+        self._repository = repository
+        self._base_specs = base_specs
+        self._prometheus_client = prometheus_client
+        self._krca_config = krca_config
+
+    def collect_claimed_incident(
+        self,
+        incident_id: str,
+        *,
+        scope: ResourceScope,
+        observed_at: Optional[datetime] = None,
+    ) -> CollectionRun:
+        incident = self._repository.get(incident_id)
+        profile = _selected_krca_profile(incident, self._krca_config)
+        specs = list(self._base_specs)
+        if profile is not None:
+            specs.append(
+                CollectorSpec(
+                    "prometheus-api",
+                    self._krca_config.provider(self._prometheus_client, profile),
+                    timeout_seconds=self._krca_config.collection.timeout_seconds,
+                    max_attempts=2,
+                    request_scope=ResourceScope(
+                        namespace=self._krca_config.namespace,
+                        resource_names=profile.resource_names,
+                        max_items=self._krca_config.collection.max_evidence_items,
+                    ),
+                    lookback_seconds=self._krca_config.collection.window_seconds,
+                )
+            )
+        service = IncidentCollectionService(
+            self._repository,
+            CollectorOrchestrator(tuple(specs)),
+        )
+        return service.collect_claimed_incident(
+            incident_id,
+            scope=scope,
+            observed_at=observed_at,
+        )
+
+
 def build_collection_service(
     config: IncidentWorkerRuntimeConfig,
     incident_repository: PostgreSQLIncidentRepository,
-) -> IncidentCollectionService:
+    krca_config: KRCARuntimeConfig,
+) -> ProfileAwareIncidentCollectionService:
     with open(config.kubernetes_token_file, encoding="utf-8") as token_file:
         bearer_token = token_file.read().strip()
     ssl_context = ssl.create_default_context(cafile=config.kubernetes_ca_file)
@@ -259,29 +351,30 @@ def build_collection_service(
         event_page_size=20,
         max_events=20,
     )
+    prometheus_client = PrometheusHTTPAPI(config.prometheus_base_url)
     prometheus_provider = PrometheusMetricProvider(
-        PrometheusHTTPAPI(config.prometheus_base_url),
+        prometheus_client,
         _prometheus_query_specs(),
         cluster_id=config.cluster_id,
     )
-    return IncidentCollectionService(
+    return ProfileAwareIncidentCollectionService(
         incident_repository,
-        CollectorOrchestrator(
-            (
-                CollectorSpec(
-                    "kubernetes",
-                    kubernetes_provider,
-                    timeout_seconds=config.provider_timeout_seconds,
-                    max_attempts=2,
-                ),
-                CollectorSpec(
-                    "prometheus",
-                    prometheus_provider,
-                    timeout_seconds=config.provider_timeout_seconds,
-                    max_attempts=2,
-                ),
-            )
+        (
+            CollectorSpec(
+                "kubernetes",
+                kubernetes_provider,
+                timeout_seconds=config.provider_timeout_seconds,
+                max_attempts=2,
+            ),
+            CollectorSpec(
+                "prometheus",
+                prometheus_provider,
+                timeout_seconds=config.provider_timeout_seconds,
+                max_attempts=2,
+            ),
         ),
+        prometheus_client,
+        krca_config,
     )
 
 
@@ -291,9 +384,11 @@ class IncidentWorker:
         config: IncidentWorkerRuntimeConfig,
         incident_repository: IncidentRepository,
         work_repository: IncidentWorkRepository,
-        collection_service: IncidentCollectionService,
+        collection_service: ClaimedIncidentCollectionService,
         localization_work_repository: IncidentLocalizationWorkRepository | None = None,
         localization_service: ResolvedIncidentLocalizationService | None = None,
+        krca_config: KRCARuntimeConfig | None = None,
+        krca_localization_service: KRCAGuidedIncidentLocalizationService | None = None,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -307,6 +402,12 @@ class IncidentWorker:
             )
         self._localization_work = localization_work_repository
         self._localization = localization_service
+        if (krca_config is None) != (krca_localization_service is None):
+            raise ValueError(
+                "KRCA runtime config and localization service must be configured together"
+            )
+        self._krca_config = krca_config
+        self._krca_localization = krca_localization_service
         self._clock = clock
 
     def process_one(self) -> Mapping[str, Any]:
@@ -430,24 +531,64 @@ class IncidentWorker:
                 window_end = known_end
             else:
                 window_end = format_time(frozen_at)
-            run = self._localization.localize_service(
-                EntityResolutionRequest(
-                    incident_id=claim.incident_id,
-                    cluster_id=self._config.cluster_id,
-                    namespace=source["namespace"],
-                    service_name=source["name"],
-                    window=EvidenceWindow(
-                        start=incident["window"]["baseline_start"],
-                        end=window_end,
-                    ),
-                    max_candidates=self._config.localization_max_candidates,
+            resolution_request = EntityResolutionRequest(
+                incident_id=claim.incident_id,
+                cluster_id=self._config.cluster_id,
+                namespace=source["namespace"],
+                service_name=source["name"],
+                window=EvidenceWindow(
+                    start=incident["window"]["baseline_start"],
+                    end=window_end,
                 ),
-                frozen_at=frozen_at,
-                max_entities=self._config.localization_max_entities,
-                max_depth=self._config.localization_max_depth,
+                max_candidates=self._config.localization_max_candidates,
             )
-            if run.localization is None:
-                error_code = f"ENTITY_{run.resolution.status}"
+            profile = (
+                _selected_krca_profile(incident, self._krca_config)
+                if self._krca_config is not None
+                else None
+            )
+            krca_run = None
+            if profile is not None:
+                assert self._krca_localization is not None
+                krca_run = self._krca_localization.localize(
+                    resolution_request,
+                    profile_id=profile.profile_id,
+                    alerting_api=profile.alerting_api,
+                    expected_edges={
+                        edge.edge_id: (edge.parent, edge.child)
+                        for edge in profile.dependencies
+                    },
+                    evidence=self._incidents.list_evidence(claim.incident_id),
+                    frozen_at=frozen_at,
+                    max_entities=self._config.localization_max_entities,
+                    max_depth=self._config.localization_max_depth,
+                )
+                localization = krca_run.localization
+                resolution = (
+                    krca_run.source_resolution
+                    if krca_run.source_resolution is not None
+                    else None
+                )
+                if resolution is None and krca_run.top_resolution is not None:
+                    candidate_count = len(krca_run.top_resolution.resolutions)
+                    resolution_status = (
+                        "RESOLVED" if krca_run.top_resolution.complete else "NOT_FOUND"
+                    )
+                else:
+                    candidate_count = len(resolution.candidates) if resolution else 0
+                    resolution_status = resolution.status if resolution else "NOT_FOUND"
+            else:
+                run = self._localization.localize_service(
+                    resolution_request,
+                    frozen_at=frozen_at,
+                    max_entities=self._config.localization_max_entities,
+                    max_depth=self._config.localization_max_depth,
+                )
+                localization = run.localization
+                candidate_count = len(run.resolution.candidates)
+                resolution_status = run.resolution.status
+            if localization is None:
+                error_code = f"ENTITY_{resolution_status}"
                 self._localization_work.fail(
                     claim,
                     now=self._clock(),
@@ -459,10 +600,9 @@ class IncidentWorker:
                     "incident_id": claim.incident_id,
                     "attempt": claim.attempt_count,
                     "error_code": error_code,
-                    "candidate_count": len(run.resolution.candidates),
+                    "candidate_count": candidate_count,
                     "reaped": reaped,
                 }
-            localization = run.localization
             self._localization_work.complete(
                 claim,
                 now=self._clock(),
@@ -473,7 +613,17 @@ class IncidentWorker:
                 "stage": "LOCALIZATION",
                 "incident_id": claim.incident_id,
                 "attempt": claim.attempt_count,
-                "resolution_method": run.resolution.method,
+                "resolution_method": (
+                    krca_run.seed_source
+                    if krca_run is not None
+                    else run.resolution.method
+                ),
+                "krca_profile": profile.profile_id if profile is not None else None,
+                "krca_stop_reason": (
+                    krca_run.feature_run.drilldown.stop_reason
+                    if krca_run is not None
+                    else None
+                ),
                 "context_id": localization.context["context_id"],
                 "entity_count": localization.context["localization"][
                     "candidate_entities_after"
@@ -517,7 +667,18 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
     localization_work_repository = PostgreSQLIncidentLocalizationWorkRepository(
         connection_factory
     )
-    collection_service = build_collection_service(config, incident_repository)
+    krca_config = load_krca_runtime_config(Path(config.krca_config_path))
+    if krca_config.cluster_id != config.cluster_id:
+        raise ValueError("KRCA config cluster_id does not match the worker")
+    if krca_config.namespace != config.target_namespace:
+        raise ValueError("KRCA config namespace does not match the worker")
+    if krca_config.collection.timeout_seconds > config.lease_seconds / 2:
+        raise ValueError("KRCA collection timeout does not fit inside the work lease")
+    collection_service = build_collection_service(
+        config,
+        incident_repository,
+        krca_config,
+    )
     driver = create_neo4j_driver(
         config.neo4j_uri,
         config.neo4j_username,
@@ -529,16 +690,23 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
         driver,
         database=config.neo4j_database,
     )
-    localization_service = ResolvedIncidentLocalizationService(
-        ServiceToEntityResolver(graph_repository),
-        IncidentLocalizationService(
-            incident_repository,
-            graph_repository,
-            (
-                KubernetesEvidenceProjector(),
-                PrometheusMetricEvidenceProjector(),
-            ),
+    resolver = ServiceToEntityResolver(graph_repository)
+    incident_localization_service = IncidentLocalizationService(
+        incident_repository,
+        graph_repository,
+        (
+            KubernetesEvidenceProjector(),
+            PrometheusMetricEvidenceProjector(),
+            KRCAPIEdgeEvidenceProjector(),
         ),
+    )
+    localization_service = ResolvedIncidentLocalizationService(
+        resolver,
+        incident_localization_service,
+    )
+    krca_localization_service = KRCAGuidedIncidentLocalizationService(
+        resolver,
+        incident_localization_service,
     )
     return IncidentWorker(
         config,
@@ -547,6 +715,8 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
         collection_service,
         localization_work_repository,
         localization_service,
+        krca_config,
+        krca_localization_service,
     )
 
 

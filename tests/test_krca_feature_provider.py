@@ -8,19 +8,24 @@ from datetime import datetime, timezone
 from incident_platform.evidence import (
     CollectionRequest,
     EvidenceBuilder,
+    EvidenceDraft,
     ResourceScope,
     validate_provider_batch,
 )
-from incident_platform.errors import PermanentProviderError
+from incident_platform.errors import ContractViolation, PermanentProviderError
 from incident_platform.krca import APIEdgeSignal, APIRef, KRCADrilldownLocalizer
 from incident_platform.krca_pipeline import (
     EvidenceBackedKRCADrilldownService,
+    KRCAGuidedIncidentLocalizationService,
     KRCAMetricLocalizationRun,
     KRCATopServiceLocalizationService,
     KRCATopServiceScopeResolver,
 )
 from incident_platform.localization import IncidentLocalizationService
-from incident_platform.projectors import KubernetesEvidenceProjector
+from incident_platform.projectors import (
+    KRCAPIEdgeEvidenceProjector,
+    KubernetesEvidenceProjector,
+)
 from incident_platform.providers.krca_metrics import (
     APIDependencySpec,
     PrometheusAPIFeatureProvider,
@@ -28,7 +33,7 @@ from incident_platform.providers.krca_metrics import (
 )
 from incident_platform.providers.prometheus import PrometheusRangeResult
 from incident_platform.repository import InMemoryIncidentRepository
-from incident_platform.resolution import ServiceToEntityResolver
+from incident_platform.resolution import EntityResolutionRequest, ServiceToEntityResolver
 from incident_platform.stategraph import InMemoryStateGraphRepository
 
 from tests.test_entity_resolution import CLUSTER_ID, service_evidence
@@ -137,7 +142,12 @@ def default_values() -> dict:
 
 def build_feature_evidence(client=None) -> tuple[dict, PrometheusAPIFeatureProvider]:
     client = client or StaticAPIFeatureClient()
-    provider = PrometheusAPIFeatureProvider(client, (EDGE,), query_spec())
+    provider = PrometheusAPIFeatureProvider(
+        client,
+        (EDGE,),
+        query_spec(),
+        cluster_id=CLUSTER_ID,
+    )
     request = feature_request()
     batch = provider.collect(request)
     validate_provider_batch(batch, request)
@@ -150,6 +160,11 @@ def build_feature_evidence(client=None) -> tuple[dict, PrometheusAPIFeatureProvi
 
 
 class PrometheusAPIFeatureProviderTests(unittest.TestCase):
+    def test_runtime_cluster_identity_is_copied_from_trusted_configuration(self) -> None:
+        evidence, _ = build_feature_evidence()
+
+        self.assertEqual(evidence["subject"]["cluster_id"], CLUSTER_ID)
+
     def test_adapter_passes_reusable_provider_contract(self) -> None:
         provider = PrometheusAPIFeatureProvider(
             StaticAPIFeatureClient(),
@@ -249,6 +264,21 @@ class PrometheusAPIFeatureProviderTests(unittest.TestCase):
 
 
 class KRCAMetricPipelineTests(unittest.TestCase):
+    def test_graph_projector_creates_a_calls_edge_without_metric_change_semantics(self) -> None:
+        feature_evidence, _ = build_feature_evidence()
+        projection = KRCAPIEdgeEvidenceProjector().project(feature_evidence)
+
+        relation = next(
+            item for item in projection.records if item["record_type"] == "relation_interval"
+        )
+        entities = [
+            item for item in projection.records if item["record_type"] == "entity"
+        ]
+        self.assertEqual({item["name"] for item in entities}, {"frontend", "checkoutservice"})
+        self.assertEqual(relation["relation_type"], "CALLS")
+        self.assertEqual(relation["projector"], "krca-api-edge-evidence-projector")
+        self.assertNotIn("failure_rate_correlation", relation)
+
     def test_feature_evidence_drives_top_service_resolution_and_localization(self) -> None:
         feature_evidence, _ = build_feature_evidence()
         feature_run = EvidenceBackedKRCADrilldownService().localize(
@@ -276,7 +306,7 @@ class KRCAMetricPipelineTests(unittest.TestCase):
             IncidentLocalizationService(
                 incident_repository,
                 graph_repository,
-                (projector,),
+                (projector, KRCAPIEdgeEvidenceProjector()),
             ),
         )
 
@@ -298,6 +328,134 @@ class KRCAMetricPipelineTests(unittest.TestCase):
         self.assertIsNotNone(run.localization)
         assert run.localization is not None
         self.assertEqual(run.localization.incident["status"], "ANALYZING")
+        self.assertIn(
+            feature_evidence["evidence_id"],
+            run.localization.context["evidence_ids"],
+        )
+        self.assertNotIn(
+            feature_evidence["evidence_id"],
+            run.localization.context["recent_change_evidence_ids"],
+        )
+
+    def test_guided_localization_falls_back_to_source_when_no_edge_is_suspicious(self) -> None:
+        constant_values = {
+            key: [0.0] * 6 if key[0] == "failure_ratio" else [1.0] * 6
+            for key in default_values()
+        }
+        feature_evidence, _ = build_feature_evidence(
+            StaticAPIFeatureClient(constant_values)
+        )
+        request = CollectionRequest(
+            request_id="req-krca-frontend-service-0001",
+            incident_id=INCIDENT_ID,
+            window=WINDOW,
+            scope=ResourceScope(
+                namespace="online-boutique",
+                resource_names=("frontend",),
+            ),
+            timeout_seconds=5,
+        )
+        frontend_evidence = EvidenceBuilder().build(
+            EvidenceDraft(
+                source="kubernetes",
+                kind="resource-state",
+                observed_at=WINDOW.end,
+                subject={
+                    "cluster_id": CLUSTER_ID,
+                    "api_version": "v1",
+                    "kind": "Service",
+                    "namespace": "online-boutique",
+                    "name": "frontend",
+                    "uid": "service-frontend-uid-0001",
+                    "exists": True,
+                },
+                summary="Frontend Kubernetes Service was read.",
+                facts={"result_status": "FOUND", "service_type": "ClusterIP"},
+                provider="kubernetes-http-api",
+                query="get v1/Service frontend",
+                locator="k8s://online-boutique/Service/frontend",
+            ),
+            request,
+            collected_at=datetime(2026, 8, 12, 1, 10, tzinfo=UTC),
+        )
+        incidents = InMemoryIncidentRepository()
+        incident = incident_for((frontend_evidence, feature_evidence))
+        incidents.create_or_get_by_deduplication_key(incident, occurred_at=FROZEN_AT)
+        incidents.store_evidence(
+            incident["incident_id"],
+            (frontend_evidence, feature_evidence),
+        )
+        graph = InMemoryStateGraphRepository()
+        kubernetes_projector = KubernetesEvidenceProjector()
+        graph.ingest(kubernetes_projector.project(frontend_evidence).records)
+        guided = KRCAGuidedIncidentLocalizationService(
+            ServiceToEntityResolver(graph),
+            IncidentLocalizationService(
+                incidents,
+                graph,
+                (kubernetes_projector, KRCAPIEdgeEvidenceProjector()),
+            ),
+        )
+
+        run = guided.localize(
+            EntityResolutionRequest(
+                incident_id=INCIDENT_ID,
+                cluster_id=CLUSTER_ID,
+                namespace="online-boutique",
+                service_name="frontend",
+                window=WINDOW,
+            ),
+            profile_id="checkout-fixture",
+            alerting_api=FRONTEND,
+            expected_edges={EDGE.edge_id: (EDGE.parent, EDGE.child)},
+            evidence=(frontend_evidence, feature_evidence),
+            frozen_at=FROZEN_AT,
+            max_entities=4,
+            max_depth=1,
+        )
+
+        self.assertEqual(run.seed_source, "source-entity-krca-fallback")
+        self.assertEqual(run.fallback_reason, "NO_SUSPICIOUS_DOWNSTREAM")
+        self.assertIsNotNone(run.localization)
+        assert run.localization is not None
+        self.assertEqual(
+            run.localization.context["scope"]["correlation_keys"]["krca_profile"],
+            "checkout-fixture",
+        )
+        self.assertIn(feature_evidence["evidence_id"], run.localization.context["evidence_ids"])
+        self.assertNotIn(
+            feature_evidence["evidence_id"],
+            run.localization.context["recent_change_evidence_ids"],
+        )
+
+    def test_guided_localization_rejects_incomplete_profile_evidence(self) -> None:
+        feature_evidence, _ = build_feature_evidence()
+        guided = KRCAGuidedIncidentLocalizationService(
+            ServiceToEntityResolver(InMemoryStateGraphRepository()),
+            IncidentLocalizationService(
+                InMemoryIncidentRepository(),
+                InMemoryStateGraphRepository(),
+                (KRCAPIEdgeEvidenceProjector(),),
+            ),
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "does not cover"):
+            guided.localize(
+                EntityResolutionRequest(
+                    incident_id=INCIDENT_ID,
+                    cluster_id=CLUSTER_ID,
+                    namespace="online-boutique",
+                    service_name="frontend",
+                    window=WINDOW,
+                ),
+                profile_id="incomplete-fixture",
+                alerting_api=FRONTEND,
+                expected_edges={
+                    EDGE.edge_id: (EDGE.parent, EDGE.child),
+                    "missing-edge": (FRONTEND, APIRef("paymentservice", "Charge")),
+                },
+                evidence=(feature_evidence,),
+            )
 
     def test_one_unresolved_top_service_blocks_partial_scope_creation(self) -> None:
         checkout_signal = APIEdgeSignal(

@@ -287,6 +287,8 @@
         | list | length == 1
       - >-
         'rca_enabled' in online_boutique_rca_alert_rule.stdout
+        and 'krca_profile' in online_boutique_rca_alert_rule.stdout
+        and 'browse-and-cart-read' in online_boutique_rca_alert_rule.stdout
         and 'frontend' in online_boutique_rca_alert_rule.stdout
     fail_msg: The opt-in Agent RCA alerting rule is missing, duplicated, or unhealthy.
 

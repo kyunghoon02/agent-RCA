@@ -170,17 +170,19 @@ StateGraph의 탐색 seed, depth와 entity budget만 제한적으로 확장한�
 | 식 4의 anomaly 계산 | supplied baseline series 기반 adapter 구현·fixture 검증 |
 | 식 4의 live multi-look-back baseline PromQL | query template/runtime 미검증 |
 | 식 5의 QPS·latency fluctuation 계산 | adapter 구현·fixture 검증 |
-| feature Evidence → Top-N → Entity seed | in-memory 연결 fixture 검증 |
+| feature Evidence → Top-N → Entity seed | Incident worker 연결·contract 검증, active-traffic Provider smoke 검증 |
+| feature Evidence → logical Service `CALLS` projection | Incident Context에서 profile 9개 edge live 검증 |
+| Top-N 불완전 또는 무후보 시 exact source fallback | 무 recent traffic 제어 Incident에서 live 검증 |
 
-따라서 현재 fixture 검증은 scoring과 traversal code의 결정성을 증명하지만, 실제
-Prometheus 시계열에서 feature가 올바르게 생성된다는 runtime proof는 아니다.
+정상 traffic의 live smoke는 Prometheus 연결성과 feature 생성만 증명한다. Top-N 결과는
+root cause가 아니며 fault-RCA 정확도는 별도 controlled-fault 평가가 필요하다.
 
 ## Runtime 미구현 경계
 
-- live API metric/operation label과 baseline PromQL 검증
-- API dependency graph discovery, versioning과 `APIDependencySpec` 공급 adapter
+- runtime topology에서 API dependency를 자동 discovery하고 profile 변경을 reconcile하는 adapter
 - Agent assessment와 adaptive 재수집 loop
 - KRCA skeleton graph와 memory-augmented multi-agent의 전체 재현
+- controlled fault에 대한 threshold calibration과 RCA 정확도 평가
 
 ## Reference
 

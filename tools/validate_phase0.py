@@ -774,8 +774,10 @@ def validate_versions_and_manifests() -> None:
             "service": "frontend",
             "severity": "critical",
             "rca_enabled": "true",
+            "krca_profile": "browse-and-cart-read",
         }
         or 'service_name="frontend"' not in opt_in_alert.get("expr", "")
+        or 'span_name="GET"' not in opt_in_alert.get("expr", "")
         or "> 0.05" not in opt_in_alert.get("expr", "")
         or "> 0.1" not in opt_in_alert.get("expr", "")
     ):
@@ -962,9 +964,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-cee08fe9e7fd",
+            "image_tag": "runtime-841193abea32",
             "image_digest": (
-                "sha256:37d1ad78f287d9c6945cba3a9739e4b85785027a77d268efa0a74bb452087278"
+                "sha256:0d2d85e14629199e674c6ff607239b7ee9f29ebf7b23444e91d97f2419f7551f"
             ),
         },
         "webhook": {
@@ -1206,6 +1208,8 @@ def validate_incident_platform_manifest() -> None:
         != {"name": "postgresql-auth", "key": "password"}
         or worker_env.get("PROMETHEUS_BASE_URL", {}).get("value")
         != "http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090"
+        or worker_env.get("INCIDENT_WORKER_KRCA_CONFIG", {}).get("value")
+        != "/app/config/online-boutique-krca.yaml"
         or worker_env.get("NEO4J_URI", {}).get("value")
         != "bolt://neo4j.graph-rca.svc.cluster.local:7687"
         or worker_env.get("NEO4J_USERNAME", {})
@@ -1223,7 +1227,7 @@ def validate_incident_platform_manifest() -> None:
         or worker_env.get("INCIDENT_WORKER_LOCALIZATION_MAX_ENTITIES", {}).get(
             "value"
         )
-        != "40"
+        != "60"
         or worker_env.get("INCIDENT_WORKER_LOCALIZATION_MAX_DEPTH", {}).get("value")
         != "4"
     ):
@@ -1299,6 +1303,7 @@ def validate_incident_platform_manifest() -> None:
         "python:3.12.11-slim-bookworm@sha256:" not in dockerfile
         or "run_incident_receiver.py" not in dockerfile
         or "run_incident_worker.py" not in dockerfile
+        or "config/online-boutique-krca.yaml" not in dockerfile
         or "USER 65532:65532" not in dockerfile
     ):
         raise ValidationFailure("Incident Platform runtime image boundary drifted")

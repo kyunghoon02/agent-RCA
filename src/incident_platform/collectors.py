@@ -6,7 +6,7 @@ import hashlib
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .errors import PermanentProviderError, RetryableProviderError
@@ -16,12 +16,23 @@ from .evidence import (
     EvidenceWindow,
     ProviderBatch,
     ResourceScope,
+    parse_time,
     validate_provider_batch,
 )
 from .repository import IncidentRepository
 
 
-COLLECTOR_NAMES = frozenset({"prometheus", "logs", "kubernetes", "deployment", "trace"})
+COLLECTOR_NAMES = frozenset(
+    {
+        "prometheus",
+        "prometheus-api",
+        "logs",
+        "kubernetes",
+        "deployment",
+        "trace",
+        "hubble",
+    }
+)
 
 
 class EvidenceProvider(Protocol):
@@ -37,6 +48,8 @@ class CollectorSpec:
     provider: EvidenceProvider
     timeout_seconds: float = 5.0
     max_attempts: int = 2
+    request_scope: Optional[ResourceScope] = None
+    lookback_seconds: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.name not in COLLECTOR_NAMES:
@@ -45,6 +58,8 @@ class CollectorSpec:
             raise ValueError("collector timeout must be positive")
         if self.max_attempts <= 0:
             raise ValueError("collector max_attempts must be positive")
+        if self.lookback_seconds is not None and self.lookback_seconds <= 0:
+            raise ValueError("collector lookback_seconds must be positive")
 
 
 @dataclass(frozen=True)
@@ -104,6 +119,18 @@ def _request_id(incident_id: str, collector_name: str, observed_at: datetime) ->
     return f"req-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
 
 
+def _bounded_window(
+    window: EvidenceWindow,
+    lookback_seconds: Optional[int],
+) -> EvidenceWindow:
+    if lookback_seconds is None:
+        return window
+    start = parse_time(window.start, "EvidenceWindow.start")
+    end = parse_time(window.end, "EvidenceWindow.end")
+    bounded_start = max(start, end - timedelta(seconds=lookback_seconds))
+    return EvidenceWindow(start=_format_time(bounded_start), end=window.end)
+
+
 class CollectorOrchestrator:
     """Run independent collectors concurrently under per-collector budgets."""
 
@@ -132,6 +159,15 @@ class CollectorOrchestrator:
         if started.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
 
+        for spec in self._specs:
+            if (
+                spec.request_scope is not None
+                and spec.request_scope.namespace != scope.namespace
+            ):
+                raise ValueError(
+                    "collector request scope must stay in the Incident namespace"
+                )
+
         executor = ThreadPoolExecutor(
             max_workers=len(self._specs),
             thread_name_prefix="evidence-collector",
@@ -139,14 +175,17 @@ class CollectorOrchestrator:
         futures: Dict[str, Future[_WorkerResult]] = {}
         deadlines: Dict[str, float] = {}
         starts: Dict[str, datetime] = {}
+        requests: Dict[str, CollectionRequest] = {}
         for spec in self._specs:
+            request_scope = spec.request_scope or scope
             request = CollectionRequest(
                 request_id=_request_id(incident_id, spec.name, started),
                 incident_id=incident_id,
-                window=window,
-                scope=scope,
+                window=_bounded_window(window, spec.lookback_seconds),
+                scope=request_scope,
                 timeout_seconds=spec.timeout_seconds,
             )
+            requests[spec.name] = request
             starts[spec.name] = datetime.now(timezone.utc)
             deadlines[spec.name] = time.monotonic() + spec.timeout_seconds
             futures[spec.name] = executor.submit(self._collect_with_retries, spec, request)
@@ -161,11 +200,12 @@ class CollectorOrchestrator:
                     if worker_result.completed_monotonic > deadlines[spec.name]:
                         raise TimeoutError
                     ended = datetime.now(timezone.utc)
+                    initial_request = requests[spec.name]
                     request = CollectionRequest(
-                        request_id=_request_id(incident_id, spec.name, started),
+                        request_id=initial_request.request_id,
                         incident_id=incident_id,
-                        window=window,
-                        scope=scope,
+                        window=initial_request.window,
+                        scope=initial_request.scope,
                         timeout_seconds=spec.timeout_seconds,
                         attempt=worker_result.attempts,
                     )

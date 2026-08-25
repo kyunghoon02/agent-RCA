@@ -66,6 +66,8 @@ from .providers import (
 from .krca_pipeline import (
     APIEdgeEvidenceProjector,
     EvidenceBackedKRCADrilldownService,
+    KRCAGuidedIncidentLocalizationRun,
+    KRCAGuidedIncidentLocalizationService,
     KRCAMetricLocalizationRun,
     KRCATopServiceLocalizationRun,
     KRCATopServiceLocalizationService,
@@ -137,7 +139,11 @@ from .krca import (
     KRCADrilldownScorer,
     KRCAScoredEdge,
 )
-from .projectors import KubernetesEvidenceProjector, PrometheusMetricEvidenceProjector
+from .projectors import (
+    KRCAPIEdgeEvidenceProjector,
+    KubernetesEvidenceProjector,
+    PrometheusMetricEvidenceProjector,
+)
 from .viewer import IncidentViewerQueryService, ViewerQueryPolicy, ViewerRepository
 from .vector_knowledge import (
     KnowledgeVectorPolicy,
@@ -222,12 +228,15 @@ __all__ = [
     "KnowledgeVectorPolicy",
     "KnowledgeVectorSyncResult",
     "KRCACandidate",
+    "KRCAPIEdgeEvidenceProjector",
     "KRCADrilldownLocalizer",
     "KRCADrilldownPolicy",
     "KRCADrilldownRun",
     "KRCADrilldownScorer",
     "KRCAScoredEdge",
     "KRCAMetricLocalizationRun",
+    "KRCAGuidedIncidentLocalizationRun",
+    "KRCAGuidedIncidentLocalizationService",
     "KRCARuntimeCollectionPolicy",
     "KRCARuntimeConfig",
     "KRCARuntimeProfile",
