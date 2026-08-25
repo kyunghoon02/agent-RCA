@@ -11,11 +11,13 @@ from incident_platform.collectors import (
 from incident_platform.errors import InvalidTransition
 from incident_platform.evidence import EvidenceDraft, ProviderBatch, ResourceScope
 from incident_platform.incident_work import (
+    InMemoryIncidentAnalysisWorkRepository,
     InMemoryIncidentLocalizationWorkRepository,
     InMemoryIncidentWorkRepository,
 )
 from incident_platform.incidents import AlertmanagerIngestionService
 from incident_platform.repository import InMemoryIncidentRepository
+from tests.test_agent_rca import prepared_repository
 
 
 UTC = timezone.utc
@@ -279,6 +281,91 @@ class IncidentLocalizationWorkClaimTests(unittest.TestCase):
         self.assertEqual(
             self.incidents.get(claim.incident_id)["status"], "ANALYZING"
         )
+
+
+class IncidentAnalysisWorkClaimTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.incidents, self.incident_id, self.context_id = prepared_repository()
+        self.work = InMemoryIncidentAnalysisWorkRepository(self.incidents)
+        self.work.enqueue(
+            self.incident_id,
+            context_id=self.context_id,
+            available_at=NOW,
+        )
+
+    def claim(self, *, worker_id: str = "worker-a", now: datetime = NOW):
+        return self.work.claim_next(
+            worker_id=worker_id,
+            now=now,
+            lease_duration=timedelta(seconds=30),
+            max_attempts=3,
+        )
+
+    def test_claim_is_exclusive_context_pinned_and_fenced(self) -> None:
+        stale = self.claim()
+
+        self.assertEqual(stale.context_id, self.context_id)
+        self.assertIsNone(self.claim(worker_id="worker-b"))
+        reclaimed = self.claim(
+            worker_id="worker-b",
+            now=NOW + timedelta(seconds=31),
+        )
+
+        self.assertEqual(reclaimed.context_id, self.context_id)
+        self.assertEqual(reclaimed.attempt_count, 2)
+        with self.assertRaisesRegex(InvalidTransition, "stale"):
+            self.work.fail(
+                stale,
+                now=NOW + timedelta(seconds=32),
+                error_code="STALE_WORKER",
+            )
+
+    def test_reported_incident_completes_analysis_work(self) -> None:
+        claim = self.claim()
+        self.incidents.transition(
+            claim.incident_id,
+            expected_status="ANALYZING",
+            next_status="REPORTED",
+            occurred_at=NOW + timedelta(seconds=1),
+        )
+
+        self.work.complete(
+            claim,
+            now=NOW + timedelta(seconds=2),
+            outcome="SUCCEEDED",
+        )
+
+        self.assertIsNone(self.claim(worker_id="worker-b"))
+
+    def test_exhausted_analysis_claim_fails_closed(self) -> None:
+        self.claim(now=NOW)
+        self.claim(worker_id="worker-b", now=NOW + timedelta(seconds=31))
+        self.claim(worker_id="worker-c", now=NOW + timedelta(seconds=62))
+
+        reaped = self.work.reap_exhausted(
+            now=NOW + timedelta(seconds=93),
+            max_attempts=3,
+        )
+
+        self.assertEqual(reaped, 1)
+        self.assertEqual(self.incidents.get(self.incident_id)["status"], "FAILED")
+
+    def test_reaper_recovers_when_report_committed_before_work_completion(self) -> None:
+        self.claim()
+        self.incidents.transition(
+            self.incident_id,
+            expected_status="ANALYZING",
+            next_status="REPORTED",
+            occurred_at=NOW + timedelta(seconds=1),
+        )
+
+        reaped = self.work.reap_exhausted(
+            now=NOW + timedelta(seconds=31),
+            max_attempts=3,
+        )
+
+        self.assertEqual(reaped, 1)
+        self.assertEqual(self.incidents.get(self.incident_id)["status"], "REPORTED")
 
 
 if __name__ == "__main__":

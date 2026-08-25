@@ -24,12 +24,14 @@ runtime_fingerprint="$({
   shasum -a 256 "$repo_root/platform/incident-platform/Dockerfile"
   shasum -a 256 "$repo_root/config/online-boutique-krca.yaml"
   find "$repo_root/src" "$repo_root/contracts" "$repo_root/db" \
+    "$repo_root/knowledge" \
     -type f ! -name '*.pyc' -print0 \
     | LC_ALL=C sort -z \
     | xargs -0 shasum -a 256
   shasum -a 256 "$repo_root/tools/run_stategraph_reconciler.py"
   shasum -a 256 "$repo_root/tools/run_incident_receiver.py"
   shasum -a 256 "$repo_root/tools/run_incident_worker.py"
+  shasum -a 256 "$repo_root/tools/run_agent_worker.py"
 } | shasum -a 256 | cut -c1-12)"
 image_tag="${IMAGE_TAG:-runtime-${runtime_fingerprint}}"
 registry_prefix="${region}-docker.pkg.dev/${project_id}/${repository}"
@@ -44,6 +46,7 @@ cp "$repo_root/platform/incident-platform/cloudbuild.yaml" "$build_context/cloud
 cp -R "$repo_root/src" "$build_context/src"
 cp -R "$repo_root/contracts" "$build_context/contracts"
 cp -R "$repo_root/db" "$build_context/db"
+cp -R "$repo_root/knowledge" "$build_context/knowledge"
 mkdir -p "$build_context/config"
 cp "$repo_root/config/online-boutique-krca.yaml" \
   "$build_context/config/online-boutique-krca.yaml"
@@ -54,6 +57,8 @@ cp "$repo_root/tools/run_incident_receiver.py" \
   "$build_context/tools/run_incident_receiver.py"
 cp "$repo_root/tools/run_incident_worker.py" \
   "$build_context/tools/run_incident_worker.py"
+cp "$repo_root/tools/run_agent_worker.py" \
+  "$build_context/tools/run_agent_worker.py"
 find "$build_context" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$build_context" -type f -name '*.pyc' -delete
 

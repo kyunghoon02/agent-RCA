@@ -176,6 +176,51 @@
         == incident_platform_stategraph_secret
     fail_msg: The Incident worker image, readiness, identity, or resource boundary drifted.
 
+- name: Wait for the bounded Agent worker Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/{{ incident_platform_agent_worker_deployment }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Read the bounded Agent worker Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment {{ incident_platform_agent_worker_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_agent_worker_deployment_result
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Require the digest-pinned Context-only Agent worker
+  ansible.builtin.assert:
+    that:
+      - >-
+        (incident_platform_agent_worker_deployment_result.stdout | from_json).status.readyReplicas
+        == 1
+      - >-
+        incident_platform.reconciler.image_digest in
+        (incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].image
+      - >-
+        (incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.serviceAccountName
+        == 'incident-agent-worker'
+      - >-
+        not ((incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.automountServiceAccountToken | bool)
+      - >-
+        ((incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'OPENAI_API_KEY')
+        | map(attribute='valueFrom.secretKeyRef.name') | first)
+        == incident_platform_agent_secret
+      - >-
+        ((incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'AGENT_RCA_MODEL')
+        | map(attribute='value') | first)
+        == 'gpt-5.6-luna'
+    fail_msg: The Agent worker identity, image, credential, or model boundary drifted.
+  when: incident_platform_agent_runtime_enabled | bool
+
 - name: Read the Agent RCA Alertmanager routing resource
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf
@@ -260,7 +305,7 @@
         status_code: 200
       changed_when: true
 
-    - name: Wait for the worker to collect and localize the controlled Incident
+    - name: Wait for the workers to process the controlled Incident
       ansible.builtin.command:
         argv:
           - kubectl
@@ -280,6 +325,8 @@
             --command="SELECT json_build_object(
               'incident_count', count(*),
               'analyzing_count', count(*) FILTER (WHERE status = 'ANALYZING'),
+              'reported_count', count(*) FILTER (WHERE status = 'REPORTED'),
+              'failed_count', count(*) FILTER (WHERE status = 'FAILED'),
               'created_audit_count', (
                 SELECT count(*) FROM incident_audit_events audit
                 WHERE audit.incident_id IN (
@@ -314,6 +361,15 @@
                     = '{{ incident_platform_alert_verification_id }}'
                 ) AND audit.event_type = 'STATUS_TRANSITIONED'
                   AND audit.details->>'to' = 'ANALYZING'
+              ),
+              'reported_audit_count', (
+                SELECT count(*) FROM incident_audit_events audit
+                WHERE audit.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND audit.event_type = 'STATUS_TRANSITIONED'
+                  AND audit.details->>'to' = 'REPORTED'
               ),
               'evidence_count', (
                 SELECT count(*) FROM evidence_items evidence
@@ -366,6 +422,22 @@
               ),
               'localization_work_succeeded_count', (
                 SELECT count(*) FROM incident_localization_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND work.state = 'SUCCEEDED'
+              ),
+              'analysis_work_ready_count', (
+                SELECT count(*) FROM incident_analysis_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                ) AND work.state = 'READY'
+              ),
+              'analysis_work_succeeded_count', (
+                SELECT count(*) FROM incident_analysis_work_items work
                 WHERE work.incident_id IN (
                   SELECT incident_id FROM incidents
                   WHERE document->'alert'->'labels'->>'verification_id'
@@ -484,9 +556,20 @@
       no_log: true
       until: >-
         ((incident_platform_alert_delivery_result.stdout | trim | from_json).incident_count | int == 1)
-        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analyzing_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).localization_work_succeeded_count | int == 1)
+        and (
+          (
+            not (incident_platform_agent_runtime_enabled | bool)
+            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analyzing_count | int == 1)
+            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analysis_work_ready_count | int == 1)
+          )
+          or (
+            (incident_platform_agent_runtime_enabled | bool)
+            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).reported_count | int == 1)
+            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analysis_work_succeeded_count | int == 1)
+          )
+        )
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int >= 14)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_metric_evidence_count | int == 4)
@@ -506,11 +589,11 @@
           {{ incident_platform_alert_delivery_result.stdout | trim | from_json }}
       no_log: true
 
-    - name: Require one auditable localized Incident
+    - name: Require one auditable Incident at the configured runtime boundary
       ansible.builtin.assert:
         that:
           - incident_platform_alert_delivery.incident_count | int == 1
-          - incident_platform_alert_delivery.analyzing_count | int == 1
+          - incident_platform_alert_delivery.failed_count | int == 0
           - incident_platform_alert_delivery.created_audit_count | int == 1
           - incident_platform_alert_delivery.collecting_audit_count | int == 1
           - incident_platform_alert_delivery.localizing_audit_count | int == 1
@@ -523,6 +606,22 @@
             == 9
           - incident_platform_alert_delivery.work_succeeded_count | int == 1
           - incident_platform_alert_delivery.localization_work_succeeded_count | int == 1
+          - >-
+            (
+              not (incident_platform_agent_runtime_enabled | bool)
+              and (incident_platform_alert_delivery.analyzing_count | int == 1)
+              and (incident_platform_alert_delivery.reported_count | int == 0)
+              and (incident_platform_alert_delivery.analysis_work_ready_count | int == 1)
+              and (incident_platform_alert_delivery.analysis_work_succeeded_count | int == 0)
+            )
+            or (
+              (incident_platform_agent_runtime_enabled | bool)
+              and (incident_platform_alert_delivery.analyzing_count | int == 0)
+              and (incident_platform_alert_delivery.reported_count | int == 1)
+              and (incident_platform_alert_delivery.reported_audit_count | int == 1)
+              and (incident_platform_alert_delivery.analysis_work_ready_count | int == 0)
+              and (incident_platform_alert_delivery.analysis_work_succeeded_count | int == 1)
+            )
           - incident_platform_alert_delivery.context_count | int == 1
           - incident_platform_alert_delivery.context_evidence_count | int >= 14
           - incident_platform_alert_delivery.context_metric_evidence_count | int == 4
@@ -736,7 +835,7 @@
 - name: Require all migrations and durable observation Evidence
   ansible.builtin.assert:
     that:
-      - incident_platform_postgresql_journal_result.migration_count | int == 5
+      - incident_platform_postgresql_journal_result.migration_count | int == 6
       - incident_platform_postgresql_journal_result.cycle_count | int >= 1
       - incident_platform_postgresql_journal_result.evidence_count | int >= 10
       - incident_platform_postgresql_journal_result.latest_status == 'APPLIED'
@@ -755,6 +854,8 @@
       alertmanager_delivery:
         incident_count: "{{ incident_platform_alert_delivery.incident_count }}"
         analyzing_count: "{{ incident_platform_alert_delivery.analyzing_count }}"
+        reported_count: "{{ incident_platform_alert_delivery.reported_count }}"
+        failed_count: "{{ incident_platform_alert_delivery.failed_count }}"
         created_audit_count: >-
           {{ incident_platform_alert_delivery.created_audit_count }}
         evidence_count: "{{ incident_platform_alert_delivery.evidence_count }}"
@@ -768,6 +869,10 @@
           {{ incident_platform_alert_delivery.work_succeeded_count }}
         localization_work_succeeded_count: >-
           {{ incident_platform_alert_delivery.localization_work_succeeded_count }}
+        analysis_work_ready_count: >-
+          {{ incident_platform_alert_delivery.analysis_work_ready_count }}
+        analysis_work_succeeded_count: >-
+          {{ incident_platform_alert_delivery.analysis_work_succeeded_count }}
         context_count: "{{ incident_platform_alert_delivery.context_count }}"
         context_evidence_count: >-
           {{ incident_platform_alert_delivery.context_evidence_count }}

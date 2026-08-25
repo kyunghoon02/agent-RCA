@@ -30,6 +30,7 @@ from .contracts import validate_contract
 from .evidence import parse_time
 from .errors import InvalidTransition
 from .incident_work import (
+    IncidentAnalysisWorkClaim,
     IncidentWorkClaim,
     WORK_OUTCOMES,
     validate_claim_request,
@@ -1455,6 +1456,325 @@ class PostgreSQLIncidentLocalizationWorkRepository:
         )
         if cursor.fetchone() is None:
             raise InvalidTransition("Incident localization work claim is stale")
+
+
+class PostgreSQLIncidentAnalysisWorkRepository:
+    """Fenced PostgreSQL lease queue for bounded Agent RCA workers."""
+
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self._connection_factory = connection_factory
+
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        validate_claim_request(worker_id, now, lease_duration, max_attempts)
+        claim_token = f"claim-{uuid.uuid4().hex}"
+        lease_expires_at = now + lease_duration
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT work.incident_id, work.context_id, work.state,
+                           work.attempt_count, incident.document
+                    FROM incident_analysis_work_items AS work
+                    JOIN incidents AS incident
+                      ON incident.incident_id = work.incident_id
+                    WHERE work.available_at <= %s
+                      AND incident.status = 'ANALYZING'
+                      AND (
+                        work.state = 'READY'
+                        OR (work.state = 'RUNNING'
+                            AND work.lease_expires_at <= %s
+                            AND work.attempt_count < %s)
+                      )
+                    ORDER BY work.available_at, work.incident_id
+                    FOR UPDATE OF work, incident SKIP LOCKED
+                    LIMIT 1
+                    """,
+                    (now, now, max_attempts),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                incident_id, context_id, work_state, attempt_count, document = row
+                incident = _decode_document(document)
+                next_attempt = int(attempt_count) + 1
+                cursor.execute(
+                    """
+                    UPDATE incident_analysis_work_items
+                    SET state = 'RUNNING', claim_token = %s, worker_id = %s,
+                        lease_expires_at = %s, attempt_count = %s,
+                        claimed_at = %s, completed_at = NULL,
+                        last_error_code = NULL
+                    WHERE incident_id = %s
+                    """,
+                    (
+                        claim_token,
+                        worker_id,
+                        lease_expires_at,
+                        next_attempt,
+                        now,
+                        incident_id,
+                    ),
+                )
+                PostgreSQLIncidentRepository._append_audit_event(
+                    cursor,
+                    incident_id,
+                    (
+                        "INCIDENT_ANALYSIS_WORK_CLAIMED"
+                        if work_state == "READY"
+                        else "INCIDENT_ANALYSIS_WORK_RECLAIMED"
+                    ),
+                    now,
+                    {
+                        "attempt": next_attempt,
+                        "worker_id": worker_id,
+                        "context_id": context_id,
+                    },
+                )
+                return IncidentAnalysisWorkClaim(
+                    incident_id=incident_id,
+                    context_id=context_id,
+                    claim_token=claim_token,
+                    worker_id=worker_id,
+                    lease_expires_at=lease_expires_at,
+                    attempt_count=next_attempt,
+                    incident=incident,
+                )
+
+    def renew(
+        self,
+        claim: IncidentAnalysisWorkClaim,
+        *,
+        now: datetime,
+        lease_duration: timedelta,
+    ) -> IncidentAnalysisWorkClaim:
+        validate_claim_request(claim.worker_id, now, lease_duration, 1)
+        lease_expires_at = now + lease_duration
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE incident_analysis_work_items
+                    SET lease_expires_at = %s
+                    WHERE incident_id = %s AND context_id = %s
+                      AND state = 'RUNNING'
+                      AND claim_token = %s AND worker_id = %s
+                    RETURNING attempt_count
+                    """,
+                    (
+                        lease_expires_at,
+                        claim.incident_id,
+                        claim.context_id,
+                        claim.claim_token,
+                        claim.worker_id,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise InvalidTransition("Incident analysis work claim is stale")
+                incident = PostgreSQLIncidentRepository._locked_incident(
+                    cursor, claim.incident_id
+                )
+                return IncidentAnalysisWorkClaim(
+                    incident_id=claim.incident_id,
+                    context_id=claim.context_id,
+                    claim_token=claim.claim_token,
+                    worker_id=claim.worker_id,
+                    lease_expires_at=lease_expires_at,
+                    attempt_count=int(row[0]),
+                    incident=incident,
+                )
+
+    def complete(
+        self,
+        claim: IncidentAnalysisWorkClaim,
+        *,
+        now: datetime,
+        outcome: str,
+    ) -> None:
+        if now.tzinfo is None or outcome != "SUCCEEDED":
+            raise ValueError("analysis completion metadata is invalid")
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._lock_current_claim(cursor, claim)
+                incident = PostgreSQLIncidentRepository._locked_incident(
+                    cursor, claim.incident_id
+                )
+                if incident["status"] != "REPORTED":
+                    raise InvalidTransition(
+                        "analysis work can complete only after Agent reporting"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE incident_analysis_work_items
+                    SET state = 'SUCCEEDED', lease_expires_at = NULL,
+                        completed_at = %s, last_error_code = NULL
+                    WHERE incident_id = %s
+                    """,
+                    (now, claim.incident_id),
+                )
+                PostgreSQLIncidentRepository._append_audit_event(
+                    cursor,
+                    claim.incident_id,
+                    "INCIDENT_ANALYSIS_WORK_COMPLETED",
+                    now,
+                    {
+                        "attempt": claim.attempt_count,
+                        "outcome": outcome,
+                        "context_id": claim.context_id,
+                    },
+                )
+
+    def fail(
+        self,
+        claim: IncidentAnalysisWorkClaim,
+        *,
+        now: datetime,
+        error_code: str,
+    ) -> None:
+        if now.tzinfo is None or not error_code.strip():
+            raise ValueError("failure metadata is invalid")
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._lock_current_claim(cursor, claim)
+                incident = PostgreSQLIncidentRepository._locked_incident(
+                    cursor, claim.incident_id
+                )
+                if incident["status"] == "ANALYZING":
+                    self._transition_to_failed(cursor, incident, now)
+                elif incident["status"] != "FAILED":
+                    raise InvalidTransition(
+                        "work failure requires an ANALYZING Incident"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE incident_analysis_work_items
+                    SET state = 'FAILED', lease_expires_at = NULL,
+                        completed_at = %s, last_error_code = %s
+                    WHERE incident_id = %s
+                    """,
+                    (now, error_code, claim.incident_id),
+                )
+                PostgreSQLIncidentRepository._append_audit_event(
+                    cursor,
+                    claim.incident_id,
+                    "INCIDENT_ANALYSIS_WORK_FAILED",
+                    now,
+                    {
+                        "attempt": claim.attempt_count,
+                        "error_code": error_code,
+                        "context_id": claim.context_id,
+                    },
+                )
+
+    def reap_exhausted(self, *, now: datetime, max_attempts: int) -> int:
+        if now.tzinfo is None or not 1 <= max_attempts <= 10:
+            raise ValueError("reaper metadata is invalid")
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT work.incident_id, work.attempt_count, incident.document
+                    FROM incident_analysis_work_items AS work
+                    JOIN incidents AS incident
+                      ON incident.incident_id = work.incident_id
+                    WHERE work.state = 'RUNNING'
+                      AND work.lease_expires_at <= %s
+                      AND (
+                        incident.status IN ('REPORTED', 'PARTIAL', 'FAILED')
+                        OR (incident.status = 'ANALYZING'
+                            AND work.attempt_count >= %s)
+                      )
+                    ORDER BY work.lease_expires_at, work.incident_id
+                    FOR UPDATE OF work, incident SKIP LOCKED
+                    LIMIT 50
+                    """,
+                    (now, max_attempts),
+                )
+                rows = cursor.fetchall()
+                for incident_id, attempt_count, document in rows:
+                    incident = _decode_document(document)
+                    if incident["status"] in {"REPORTED", "PARTIAL"}:
+                        work_state = "SUCCEEDED"
+                        error_code = None
+                        outcome = "RECOVERED_SUCCEEDED"
+                    elif incident["status"] == "FAILED":
+                        work_state = "FAILED"
+                        error_code = "INCIDENT_ALREADY_FAILED"
+                        outcome = "RECOVERED_FAILED"
+                    else:
+                        self._transition_to_failed(cursor, incident, now)
+                        work_state = "FAILED"
+                        error_code = "LEASE_ATTEMPTS_EXHAUSTED"
+                        outcome = "LEASE_ATTEMPTS_EXHAUSTED"
+                    cursor.execute(
+                        """
+                        UPDATE incident_analysis_work_items
+                        SET state = %s, lease_expires_at = NULL,
+                            completed_at = %s, last_error_code = %s
+                        WHERE incident_id = %s
+                        """,
+                        (work_state, now, error_code, incident_id),
+                    )
+                    PostgreSQLIncidentRepository._append_audit_event(
+                        cursor,
+                        incident_id,
+                        "INCIDENT_ANALYSIS_WORK_REAPED",
+                        now,
+                        {"attempt": int(attempt_count), "outcome": outcome},
+                    )
+                return len(rows)
+
+    @staticmethod
+    def _transition_to_failed(
+        cursor: Any,
+        incident: Mapping[str, Any],
+        now: datetime,
+    ) -> Dict[str, Any]:
+        if incident["status"] != "ANALYZING":
+            raise InvalidTransition(
+                "exhausted analysis work requires an ANALYZING Incident"
+            )
+        updated = copy.deepcopy(dict(incident))
+        updated["status"] = "FAILED"
+        updated["updated_at"] = _format_time(now)
+        validate_contract("incident.schema.json", updated)
+        PostgreSQLIncidentRepository._update_incident(cursor, updated)
+        PostgreSQLIncidentRepository._append_audit_event(
+            cursor,
+            updated["incident_id"],
+            "STATUS_TRANSITIONED",
+            now,
+            {"from": "ANALYZING", "to": "FAILED"},
+        )
+        return updated
+
+    @staticmethod
+    def _lock_current_claim(
+        cursor: Any, claim: IncidentAnalysisWorkClaim
+    ) -> None:
+        cursor.execute(
+            """
+            SELECT 1 FROM incident_analysis_work_items
+            WHERE incident_id = %s AND context_id = %s AND state = 'RUNNING'
+              AND claim_token = %s AND worker_id = %s
+            FOR UPDATE
+            """,
+            (
+                claim.incident_id,
+                claim.context_id,
+                claim.claim_token,
+                claim.worker_id,
+            ),
+        )
+        if cursor.fetchone() is None:
+            raise InvalidTransition("Incident analysis work claim is stale")
 
 
 class PostgreSQLStateGraphObservationRepository:

@@ -986,6 +986,18 @@ def validate_incident_platform_manifest() -> None:
             "localization_max_entities": 40,
             "localization_max_depth": 4,
         },
+        "agent_worker": {
+            "enabled": False,
+            "model": "gpt-5.6-luna",
+            "poll_interval_seconds": 2,
+            "lease_seconds": 180,
+            "max_attempts": 3,
+            "max_turns": 6,
+            "max_llm_calls": 6,
+            "max_tool_calls": 12,
+            "max_output_tokens": 2000,
+            "max_wall_time_ms": 60000,
+        },
     }
     if versions.get("incident_platform") != expected_runtime:
         raise ValidationFailure(
@@ -1085,6 +1097,7 @@ def validate_incident_platform_manifest() -> None:
         "stategraph-reconciler",
         "incident-webhook",
         "incident-worker",
+        "incident-agent-worker",
     }:
         raise ValidationFailure("PostgreSQL client allowlist drifted")
 
@@ -1239,6 +1252,85 @@ def validate_incident_platform_manifest() -> None:
     )
     if worker_network_policy.get("spec", {}).get("ingress") != []:
         raise ValidationFailure("Incident worker must deny all ingress")
+
+    agent_worker_documents = load_yaml_documents(directory / "agent-worker.yaml")
+    if any(
+        document.get("kind") in {"Service", "Secret"}
+        for document in agent_worker_documents
+    ):
+        raise ValidationFailure("Agent worker must not expose a Service or Secret")
+    agent_service_account = next(
+        document
+        for document in agent_worker_documents
+        if document.get("kind") == "ServiceAccount"
+    )
+    if agent_service_account.get("automountServiceAccountToken") is not False:
+        raise ValidationFailure("Agent worker ServiceAccount token must stay disabled")
+    agent_deployment = next(
+        document
+        for document in agent_worker_documents
+        if document.get("kind") == "Deployment"
+    )
+    agent_pod_spec = agent_deployment["spec"]["template"]["spec"]
+    agent_container = agent_pod_spec["containers"][0]
+    agent_env = {item["name"]: item for item in agent_container.get("env", [])}
+    if (
+        agent_deployment["spec"].get("replicas") != 1
+        or agent_pod_spec.get("serviceAccountName") != "incident-agent-worker"
+        or agent_pod_spec.get("automountServiceAccountToken") is not False
+        or agent_container.get("image")
+        != "agent-rca-runtime@sha256:" + "0" * 64
+        or agent_container.get("args") != ["/app/tools/run_agent_worker.py"]
+        or agent_container.get("resources", {}).get("requests")
+        != {"cpu": "100m", "memory": "256Mi"}
+        or not agent_container.get("securityContext", {}).get(
+            "readOnlyRootFilesystem"
+        )
+    ):
+        raise ValidationFailure("Agent worker runtime boundary drifted")
+    if (
+        agent_env.get("AGENT_WORKER_LEASE_SECONDS", {}).get("value") != "180"
+        or agent_env.get("AGENT_WORKER_MAX_ATTEMPTS", {}).get("value") != "3"
+        or agent_env.get("AGENT_RCA_MODEL", {}).get("value") != "gpt-5.6-luna"
+        or agent_env.get("AGENT_RCA_MAX_TOOL_CALLS", {}).get("value") != "12"
+        or agent_env.get("AGENT_RCA_MAX_WALL_TIME_MS", {}).get("value")
+        != "60000"
+        or agent_env.get("OPENAI_API_KEY", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "incident-agent-auth", "key": "api-key"}
+        or agent_env.get("POSTGRES_PASSWORD", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "postgresql-auth", "key": "password"}
+    ):
+        raise ValidationFailure("Agent worker budget or Secret boundary drifted")
+    agent_network_policy = next(
+        document
+        for document in agent_worker_documents
+        if document.get("kind") == "NetworkPolicy"
+    )
+    agent_policy_spec = agent_network_policy.get("spec", {})
+    if (
+        agent_policy_spec.get("ingress") != []
+        or set(agent_policy_spec.get("policyTypes", [])) != {"Ingress", "Egress"}
+        or len(agent_policy_spec.get("egress", [])) != 3
+    ):
+        raise ValidationFailure("Agent worker network boundary drifted")
+    https_ip_block = agent_policy_spec["egress"][2]["to"][0]["ipBlock"]
+    if (
+        https_ip_block.get("cidr") != "0.0.0.0/0"
+        or set(https_ip_block.get("except", []))
+        != {
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+        }
+        or agent_policy_spec["egress"][2].get("ports")
+        != [{"protocol": "TCP", "port": 443}]
+    ):
+        raise ValidationFailure("Agent worker external HTTPS boundary drifted")
 
     alertmanager_config = load_yaml_documents(
         directory / "alertmanager-routing.yaml"

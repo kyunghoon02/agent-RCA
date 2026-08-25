@@ -126,6 +126,81 @@
   changed_when: true
   when: incident_platform_webhook_secret_status.rc != 0
 
+- name: Read a controller OpenAI API key from the process environment
+  ansible.builtin.set_fact:
+    incident_platform_openai_api_key_from_environment: >-
+      {{ lookup('ansible.builtin.env', 'OPENAI_API_KEY') | trim }}
+  no_log: true
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Check the ignored project env file on the controller
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../../.env"
+  delegate_to: localhost
+  become: false
+  register: incident_platform_local_env_file
+  no_log: true
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Use the controller environment OpenAI API key
+  ansible.builtin.set_fact:
+    incident_platform_openai_api_key: >-
+      {{ incident_platform_openai_api_key_from_environment }}
+  when:
+    - incident_platform_agent_runtime_enabled | bool
+    - incident_platform_openai_api_key_from_environment | length > 0
+  no_log: true
+
+- name: Read the OpenAI API key from the ignored project env file
+  ansible.builtin.set_fact:
+    incident_platform_openai_api_key: >-
+      {{ lookup(
+        'ansible.builtin.ini',
+        'OPENAI_API_KEY',
+        type='properties',
+        file=playbook_dir + '/../../../.env',
+        default=''
+      ) | trim }}
+  when:
+    - incident_platform_agent_runtime_enabled | bool
+    - incident_platform_openai_api_key_from_environment | length == 0
+    - incident_platform_local_env_file.stat.exists
+  no_log: true
+
+- name: Require an OpenAI API key for the Agent worker
+  ansible.builtin.assert:
+    that:
+      - incident_platform_openai_api_key is defined
+      - incident_platform_openai_api_key | length > 0
+    fail_msg: >-
+      OPENAI_API_KEY must exist in the controller environment or ignored project .env.
+  no_log: true
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Reconcile the Agent worker OpenAI authentication Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ incident_platform_agent_secret }}
+        namespace: {{ incident_platform_namespace }}
+      type: Opaque
+      stringData:
+        api-key: {{ incident_platform_openai_api_key | to_json }}
+  register: incident_platform_agent_secret_apply
+  changed_when: >-
+    ' created' in incident_platform_agent_secret_apply.stdout
+    or ' configured' in incident_platform_agent_secret_apply.stdout
+  no_log: true
+  when: incident_platform_agent_runtime_enabled | bool
+
 - name: Read the Incident webhook authentication Secret
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf
@@ -252,6 +327,9 @@
           kind: Kustomization
           resources:
             - ../incident-platform
+          {% if incident_platform_agent_runtime_enabled | bool %}
+            - ../incident-platform/agent-worker.yaml
+          {% endif %}
           images:
             - name: agent-rca-runtime
               newName: {{ execution_target.location }}-docker.pkg.dev/{{ incident_platform_gcp_project.content }}/{{ incident_platform.artifact_repository_id }}/agent-rca-runtime

@@ -38,6 +38,9 @@ INCIDENT_WORK_MIGRATION = ROOT / "db" / "migrations" / "004_incident_work_items.
 LOCALIZATION_WORK_MIGRATION = (
     ROOT / "db" / "migrations" / "005_incident_localization_work_items.sql"
 )
+ANALYSIS_WORK_MIGRATION = (
+    ROOT / "db" / "migrations" / "006_incident_analysis_work_items.sql"
+)
 
 
 def contract_incident() -> dict:
@@ -148,6 +151,19 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertIn("claim_token TEXT", sql)
         self.assertIn("lease_expires_at TIMESTAMPTZ", sql)
 
+    def test_analysis_work_is_context_pinned_and_enqueued_from_both_orders(self) -> None:
+        sql = ANALYSIS_WORK_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE incident_analysis_work_items", sql)
+        self.assertIn("stage = 'ANALYSIS'", sql)
+        self.assertIn(
+            "context_id TEXT NOT NULL REFERENCES context_packages", sql
+        )
+        self.assertIn("CREATE TRIGGER incidents_enqueue_analysis_work", sql)
+        self.assertIn("CREATE TRIGGER contexts_enqueue_analysis_work", sql)
+        self.assertIn("NEW.status = 'ANALYZING'", sql)
+        self.assertIn("claim_token TEXT", sql)
+        self.assertIn("lease_expires_at TIMESTAMPTZ", sql)
+
     def test_viewer_list_query_keeps_search_text_in_sql_parameters(self) -> None:
         class RecordingCursor:
             def __init__(self) -> None:
@@ -243,6 +259,7 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
             "003_stategraph_observations.sql",
             "004_incident_work_items.sql",
             "005_incident_localization_work_items.sql",
+            "006_incident_analysis_work_items.sql",
         ]:
             raise AssertionError(f"unexpected applied migrations: {applied}")
         if apply_migrations(cls.connection_factory) != []:

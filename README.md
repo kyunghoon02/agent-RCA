@@ -56,8 +56,8 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   profile Evidence를 수집한다. 이어서 KRCA feature를 logical Service의 `CALLS` 관계로
   projection하고, Top-N 또는 안전한 source fallback으로 Neo4j bounded StateGraph 탐색을
   실행해 Frozen Context를 저장하고 `ANALYZING`까지 전이하는 경로를 확인했다.
-- **RCA core:** Incident/Evidence contract, bounded collector, localization, read-only Agent
-  tool과 Evidence Gate는 fixture와 contract test로 검증했다.
+- **RCA core:** Incident/Evidence contract, bounded collector, localization, Context-pinned
+  analysis claim, read-only Agent tool과 Evidence Gate는 fixture와 contract test로 검증했다.
 - **아직 증명하지 않은 범위:** `ANALYZING` 이후 Agent Report까지의 cluster runtime,
   controlled fault에 대한 RCA 정확도, 성공한 external LLM live run과 자동 복구는 아직
   검증하지 않았다.
@@ -241,13 +241,13 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
-| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING` live 연결. 이후 Agent Report runtime은 미연결 |
+| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING` live 연결. Context-pinned analysis work와 Agent Worker는 구현됐지만 credit gate로 배포 비활성화 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Incident worker가 Service-scoped Kubernetes Service/Event, 고정 allowlist Prometheus query 4개와 선택된 KRCA profile 전용 `prometheus-api` collector를 병렬 실행. 모든 summary는 trusted `cluster_id`와 함께 정규화된다. Loki, Hubble과 다른 Kubernetes kind의 Incident collector는 아직 미연결 |
-| PostgreSQL repository | Incident artifact, fenced collection/localization work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC 배포, migration 5개 적용. collection work는 Incident insert, localization work는 `LOCALIZING` 전이와 같은 transaction에서 enqueue되며 claim/reclaim/complete audit을 live 검증 |
+| PostgreSQL repository | Incident artifact, fenced collection/localization/analysis work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC 배포, migration 5개가 현재 적용됨. migration 6은 `ANALYZING`과 Frozen Context 생성 순서 모두에서 exact `context_id`를 고정하는 analysis work를 추가하지만 아직 cluster 미적용 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile, Evidence-to-Top-N과 profile completeness/fallback 구현 | browse/cart/checkout 3개 profile의 23개 edge가 active-traffic smoke에서 모두 `HAS_DATA`. Incident worker는 alert의 allowlisted `krca_profile`만 수집하며, 최근 traffic이 없던 제어 경보에서는 9개 edge를 `INSUFFICIENT_DATA`로 명시하고 source fallback을 선택해 근거 없는 Top-N 생성을 차단 |
 | Entity resolver와 Temporal StateGraph | Kubernetes/Prometheus/KRCA Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation 및 `APPLIED` journal을 검증. 제어 Incident는 9개 KRCA `CALLS` Evidence를 포함한 총 14개 Evidence, StateGraph path 40개를 Frozen Context에 저장하고 `ANALYZING` 도달 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
-| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit와 Report 저장 구현 | fixture contract 통과, live API는 계정 credit 부족으로 429; 성공 runtime 미검증 |
+| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. Agent Deployment manifest는 준비됐지만 기본 Kustomize에서 제외됨. 2026-08-25 live API 재확인도 `credit_balance_exhausted` 429로 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail과 timeline contract 구현 | HTTP API/UI와 production query plan 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회를 검증; destroy와 fault runtime 미검증 |
@@ -287,6 +287,8 @@ controlled alert or opt-in PrometheusRule with rca_enabled=true
 → 현재 Incident의 14개 Evidence를 Frozen Context에 고정하고 ANALYZING 전이
 → 현재 Incident에 저장된 evidence_id만 남긴 Frozen Context 저장
 → ANALYZING 전이 + localization work SUCCEEDED
+→ migration 6 적용 시 exact context_id가 고정된 READY analysis work 생성
+→ [credit gate로 현재 비활성] 별도 Agent Worker claim → Evidence Gate → Report → REPORTED
 ```
 
 webhook은 `observability` namespace에서만 접근 가능한 NetworkPolicy와 namespace-local
@@ -311,8 +313,9 @@ resolve한 Context 1개에는 현재 Incident의 Kubernetes Evidence 1개와 Pro
 실제
 `OnlineBoutiqueFrontendHighFailureRate` rule도 Prometheus에 healthy 상태로 로드하지만,
 controlled fault로 이 rule을 firing시킨 정확도 실험은 아직 수행하지 않았다. 또한 현재
-worker는 `online-boutique`의 Service-scoped Incident만 처리하며 `ANALYZING` 이후 Agent RCA
-runtime은 아직 연결하지 않았다.
+worker는 `online-boutique`의 Service-scoped Incident만 처리한다. `ANALYZING` 이후에는
+Context-pinned analysis queue와 별도 Agent Worker 코드/manifest가 준비됐지만 OpenAI API
+credit smoke가 실패해 기본 배포에서는 의도적으로 비활성화했다.
 
 ## Core Localization Design
 
@@ -513,7 +516,8 @@ disk 삭제나 손상에 대비한 backup/restore와 HA는 아직 구현하지 �
 
 `make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
 fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
-`credit_balance_exhausted` 429를 반환해 live 성공은 증명하지 못했다. 키 값과 model
+`credit_balance_exhausted` 429를 반환했고 2026-08-25 재확인도 동일해 live 성공은
+증명하지 못했다. 키 값과 model
 input은 출력하지 않으며, 사용 가능한 API credit가 준비되면 같은 명령으로 재검증한다.
 
 `make smoke-live-krca`는 기본적으로 로컬 `127.0.0.1:19090`의 loopback-only Prometheus

@@ -182,6 +182,9 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: incident-worker
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: incident-agent-worker
       ports:
         - protocol: TCP
           port: 5432
