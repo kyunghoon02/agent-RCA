@@ -59,7 +59,11 @@ series reference다.
 
 현재 `PrometheusMetricProvider`는 allowlisted PromQL template, namespace/resource
 selector, time window, sample/response byte limit을 강제하고 resource별 summary를
-반환한다. 실제 Prometheus endpoint와 배포 query spec은 아직 연결하지 않았다.
+반환한다. Incident worker는 in-cluster Prometheus endpoint에 request rate, failure rate,
+p95 latency와 baseline p95 latency query 4개를 연결한다. trusted runtime `cluster_id`를
+Evidence subject에 추가한 뒤 `PrometheusMetricEvidenceProjector`가 allowlisted scalar
+summary만 logical Service의 time-bounded Event로 변환한다. raw sample과 query text는 Graph
+attribute가 되지 않으며 metric Event는 `recent_change_evidence_ids`에서 제외한다.
 
 ### PrometheusAPIFeatureProvider
 
@@ -83,9 +87,9 @@ time window, edge/query/sample limit을 강제한다. 호출 전에 예상 query
 
 `APIEdgeEvidenceProjector`는 `HAS_DATA`인 contract-valid Evidence만
 `APIEdgeSignal`로 바꾼다. 필수 series 누락, sample truncation과 정렬 표본 부족은
-`INSUFFICIENT_DATA` Evidence로 남고 KRCA signal이 되지 않는다. 현재 구현은 fixture
-Prometheus client와 allowlisted dependency 기준이며 실제 Online Boutique metric명,
-operation label과 live dependency source는 아직 검증하지 않았다.
+`INSUFFICIENT_DATA` Evidence로 남고 KRCA signal이 되지 않는다. Online Boutique의
+allowlisted 23개 edge는 별도 live smoke에서 검증했지만 이 feature Provider는 아직
+Alertmanager Incident worker의 collection/localization 경로에는 연결하지 않았다.
 
 ### LogsProvider
 

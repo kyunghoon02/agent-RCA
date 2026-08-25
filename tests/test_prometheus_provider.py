@@ -72,6 +72,19 @@ class PrometheusMetricProviderTests(unittest.TestCase):
         self.assertEqual(draft.facts["sample_count"], 2)
         self.assertEqual(draft.facts["peak_ratio"], 0.97)
 
+    def test_runtime_cluster_identity_is_copied_from_trusted_configuration(self) -> None:
+        provider = PrometheusMetricProvider(
+            StaticPrometheusClient(PrometheusRangeResult(series=tuple())),
+            [memory_query()],
+            cluster_id="agent-rca-dev",
+        )
+
+        draft = provider.collect(
+            contract_request(INCIDENT_ID, "checkoutservice")
+        ).items[0]
+
+        self.assertEqual(draft.subject["cluster_id"], "agent-rca-dev")
+
     def test_no_series_is_explicit_no_data_evidence(self) -> None:
         provider = PrometheusMetricProvider(
             StaticPrometheusClient(PrometheusRangeResult(series=tuple())),

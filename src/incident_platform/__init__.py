@@ -137,7 +137,7 @@ from .krca import (
     KRCADrilldownScorer,
     KRCAScoredEdge,
 )
-from .projectors import KubernetesEvidenceProjector
+from .projectors import KubernetesEvidenceProjector, PrometheusMetricEvidenceProjector
 from .viewer import IncidentViewerQueryService, ViewerQueryPolicy, ViewerRepository
 from .vector_knowledge import (
     KnowledgeVectorPolicy,
@@ -246,6 +246,7 @@ __all__ = [
     "OpenAIAgentsSDKRunner",
     "OpenAIEmbeddingProvider",
     "PrometheusHTTPAPI",
+    "PrometheusMetricEvidenceProjector",
     "PrometheusAPIFeatureProvider",
     "PrometheusAPIFeatureQuerySpec",
     "PrometheusMetricProvider",

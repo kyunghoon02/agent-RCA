@@ -1280,6 +1280,8 @@ class InMemoryStateGraphRepository:
         for event in self._events.values():
             if event["entity_id"] not in entity_ids:
                 continue
+            if event["event_type"] == "PROMETHEUS_METRIC_SUMMARY":
+                continue
             changed_at = _parse_time(event["first_seen_at"], "Event.first_seen_at")
             if start <= changed_at <= end:
                 evidence.update(event["evidence_ids"])

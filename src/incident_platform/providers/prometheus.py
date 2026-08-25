@@ -187,14 +187,19 @@ class PrometheusMetricProvider:
         self,
         client: PrometheusRangeClient,
         query_specs: Sequence[PrometheusQuerySpec],
+        *,
+        cluster_id: Optional[str] = None,
     ) -> None:
         if not query_specs:
             raise ValueError("at least one PrometheusQuerySpec is required")
         query_ids = [spec.query_id for spec in query_specs]
         if len(query_ids) != len(set(query_ids)):
             raise ValueError("Prometheus query_id values must be unique")
+        if cluster_id is not None and not cluster_id.strip():
+            raise ValueError("Prometheus cluster_id must not be empty")
         self._client = client
         self._query_specs = tuple(query_specs)
+        self._cluster_id = cluster_id
 
     def collect(self, request: CollectionRequest) -> ProviderBatch:
         deadline = time.monotonic() + request.timeout_seconds
@@ -220,7 +225,11 @@ class PrometheusMetricProvider:
                     f"{len(result.warnings)} warning(s)"
                 )
             spec_drafts, truncated = self._summarize(
-                spec, result.series, expression, request
+                spec,
+                result.series,
+                expression,
+                request,
+                cluster_id=self._cluster_id,
             )
             drafts.extend(spec_drafts)
             if truncated:
@@ -246,6 +255,8 @@ class PrometheusMetricProvider:
         series: Sequence[Mapping[str, Any]],
         expression: str,
         request: CollectionRequest,
+        *,
+        cluster_id: Optional[str],
     ) -> Tuple[Tuple[EvidenceDraft, ...], bool]:
         grouped: Dict[str, Dict[str, Any]] = {
             name: {"samples": [], "uids": set()}
@@ -314,6 +325,8 @@ class PrometheusMetricProvider:
                 "uid": next(iter(uids)) if len(uids) == 1 else None,
                 "exists": True,
             }
+            if cluster_id is not None:
+                subject["cluster_id"] = cluster_id
             if samples:
                 values = [sample[1] for sample in samples]
                 facts: Dict[str, Any] = {

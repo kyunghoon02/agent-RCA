@@ -1239,6 +1239,7 @@ class Neo4jStateGraphRepository:
                 MATCH (entity:StateGraphEntity {entity_id: $entity_id})
                 CREATE (event:StateGraphEvent {
                   event_id: $event_id,
+                  event_type: $event_type,
                   document_json: $document_json,
                   evidence_ids: $evidence_ids,
                   first_seen_at: $first_seen_at,
@@ -1248,6 +1249,7 @@ class Neo4jStateGraphRepository:
                 """,
                 entity_id=candidate["entity_id"],
                 event_id=candidate["event_id"],
+                event_type=candidate["event_type"],
                 document_json=_json(candidate),
                 evidence_ids=candidate["evidence_ids"],
                 first_seen_at=first,
@@ -1276,11 +1278,13 @@ class Neo4jStateGraphRepository:
             """
             MATCH (event:StateGraphEvent {event_id: $event_id})
             SET event.document_json = $document_json,
+                event.event_type = $event_type,
                 event.evidence_ids = $evidence_ids,
                 event.first_seen_at = $first_seen_at,
                 event.last_seen_at = $last_seen_at
             """,
             event_id=updated["event_id"],
+            event_type=updated["event_type"],
             document_json=_json(updated),
             evidence_ids=updated["evidence_ids"],
             first_seen_at=_parse_time(updated["first_seen_at"], "Event.first_seen_at"),
@@ -1496,7 +1500,9 @@ class Neo4jStateGraphRepository:
                        recent_snapshot_evidence,
                        collect(event.evidence_ids) AS event_evidence,
                        collect(CASE
-                         WHEN event.first_seen_at >= $window_start
+                         WHEN coalesce(event.event_type, '') <>
+                              'PROMETHEUS_METRIC_SUMMARY'
+                          AND event.first_seen_at >= $window_start
                           AND event.first_seen_at <= $window_end
                          THEN event.evidence_ids ELSE []
                        END) AS recent_event_evidence

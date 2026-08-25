@@ -35,7 +35,10 @@ from incident_platform.postgresql import (
     PostgreSQLIncidentWorkRepository,
     apply_migrations,
 )
-from incident_platform.projectors.kubernetes import KubernetesEvidenceProjector
+from incident_platform.projectors import (
+    KubernetesEvidenceProjector,
+    PrometheusMetricEvidenceProjector,
+)
 from incident_platform.providers.http import BoundedJSONTransport
 from incident_platform.providers.kubernetes import (
     KubernetesHTTPAPI,
@@ -259,6 +262,7 @@ def build_collection_service(
     prometheus_provider = PrometheusMetricProvider(
         PrometheusHTTPAPI(config.prometheus_base_url),
         _prometheus_query_specs(),
+        cluster_id=config.cluster_id,
     )
     return IncidentCollectionService(
         incident_repository,
@@ -530,7 +534,10 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
         IncidentLocalizationService(
             incident_repository,
             graph_repository,
-            (KubernetesEvidenceProjector(),),
+            (
+                KubernetesEvidenceProjector(),
+                PrometheusMetricEvidenceProjector(),
+            ),
         ),
     )
     return IncidentWorker(

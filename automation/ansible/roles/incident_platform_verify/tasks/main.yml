@@ -355,6 +355,33 @@
                     = '{{ incident_platform_alert_verification_id }}'
                 )
               ),
+              'context_metric_evidence_count', (
+                SELECT count(*)
+                FROM context_packages context
+                JOIN evidence_items evidence
+                  ON evidence.incident_id = context.incident_id
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'prometheus'
+                  AND context.document->'evidence_ids' ? evidence.evidence_id
+              ),
+              'context_recent_metric_evidence_count', (
+                SELECT count(*)
+                FROM context_packages context
+                JOIN evidence_items evidence
+                  ON evidence.incident_id = context.incident_id
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'prometheus'
+                  AND context.document->'recent_change_evidence_ids'
+                    ? evidence.evidence_id
+              ),
               'context_path_count', (
                 SELECT COALESCE(sum(jsonb_array_length(context.document->'state_paths')), 0)
                 FROM context_packages context
@@ -377,6 +404,8 @@
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).localization_work_succeeded_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int == 5)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_metric_evidence_count | int == 4)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).evidence_count | int >= 5)
       retries: 60
       delay: 2
@@ -400,7 +429,9 @@
           - incident_platform_alert_delivery.work_succeeded_count | int == 1
           - incident_platform_alert_delivery.localization_work_succeeded_count | int == 1
           - incident_platform_alert_delivery.context_count | int == 1
-          - incident_platform_alert_delivery.context_evidence_count | int >= 1
+          - incident_platform_alert_delivery.context_evidence_count | int == 5
+          - incident_platform_alert_delivery.context_metric_evidence_count | int == 4
+          - incident_platform_alert_delivery.context_recent_metric_evidence_count | int == 0
           - incident_platform_alert_delivery.context_path_count | int >= 1
           - incident_platform_alert_delivery.collector_count | int == 2
         fail_msg: Alertmanager delivery, Evidence collection, or StateGraph localization was incomplete.
@@ -633,6 +664,10 @@
         context_count: "{{ incident_platform_alert_delivery.context_count }}"
         context_evidence_count: >-
           {{ incident_platform_alert_delivery.context_evidence_count }}
+        context_metric_evidence_count: >-
+          {{ incident_platform_alert_delivery.context_metric_evidence_count }}
+        context_recent_metric_evidence_count: >-
+          {{ incident_platform_alert_delivery.context_recent_metric_evidence_count }}
         context_path_count: >-
           {{ incident_platform_alert_delivery.context_path_count }}
         collector_count: "{{ incident_platform_alert_delivery.collector_count }}"
