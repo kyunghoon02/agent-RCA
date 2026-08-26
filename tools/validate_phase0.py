@@ -964,9 +964,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-7943a3c7b6e0",
+            "image_tag": "runtime-c6bdb6f1631b",
             "image_digest": (
-                "sha256:35d3c5e3559a62de7bd202082e2e0e50fc47140e4c79fab44f8c84b28fb514b1"
+                "sha256:e526c699c28afaaa85b59de234f4f8593bdf3a75295e27e1546409d3967912cc"
             ),
         },
         "webhook": {
@@ -1010,6 +1010,7 @@ def validate_incident_platform_manifest() -> None:
         "postgresql.yaml",
         "incident-webhook.yaml",
         "incident-worker.yaml",
+        "incident-viewer.yaml",
         "alertmanager-routing.yaml",
         "stategraph-reconciler.yaml",
     ]:
@@ -1098,6 +1099,7 @@ def validate_incident_platform_manifest() -> None:
         "incident-webhook",
         "incident-worker",
         "incident-agent-worker",
+        "incident-viewer",
     }:
         raise ValidationFailure("PostgreSQL client allowlist drifted")
 
@@ -1252,6 +1254,83 @@ def validate_incident_platform_manifest() -> None:
     )
     if worker_network_policy.get("spec", {}).get("ingress") != []:
         raise ValidationFailure("Incident worker must deny all ingress")
+
+    viewer_documents = load_yaml_documents(directory / "incident-viewer.yaml")
+    if any(document.get("kind") == "Secret" for document in viewer_documents):
+        raise ValidationFailure("Incident Viewer credentials must not be committed")
+    viewer_service_account = next(
+        document
+        for document in viewer_documents
+        if document.get("kind") == "ServiceAccount"
+    )
+    if viewer_service_account.get("automountServiceAccountToken") is not False:
+        raise ValidationFailure("Incident Viewer ServiceAccount token must stay disabled")
+    viewer_service = next(
+        document for document in viewer_documents if document.get("kind") == "Service"
+    )
+    if (
+        viewer_service.get("spec", {}).get("type") != "ClusterIP"
+        or viewer_service.get("spec", {}).get("ports")
+        != [{"name": "http", "port": 8080, "targetPort": "http"}]
+    ):
+        raise ValidationFailure("Incident Viewer must expose only internal port 8080")
+    viewer_deployment = next(
+        document
+        for document in viewer_documents
+        if document.get("kind") == "Deployment"
+    )
+    viewer_pod_spec = viewer_deployment["spec"]["template"]["spec"]
+    viewer_container = viewer_pod_spec["containers"][0]
+    viewer_env = {item["name"]: item for item in viewer_container.get("env", [])}
+    if (
+        viewer_deployment["spec"].get("replicas") != 1
+        or viewer_pod_spec.get("serviceAccountName") != "incident-viewer"
+        or viewer_pod_spec.get("automountServiceAccountToken") is not False
+        or viewer_container.get("image")
+        != "agent-rca-runtime@sha256:" + "0" * 64
+        or viewer_container.get("command") != ["gunicorn"]
+        or "tools.run_incident_viewer:application"
+        not in viewer_container.get("args", [])
+        or viewer_container.get("resources", {}).get("requests")
+        != {"cpu": "25m", "memory": "128Mi"}
+        or not viewer_container.get("securityContext", {}).get(
+            "readOnlyRootFilesystem"
+        )
+    ):
+        raise ValidationFailure("Incident Viewer runtime boundary drifted")
+    if (
+        viewer_env.get("VIEWER_BEARER_TOKEN", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "incident-viewer-auth", "key": "api-token"}
+        or viewer_env.get("POSTGRES_USERNAME", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "incident-viewer-auth", "key": "postgres-username"}
+        or viewer_env.get("POSTGRES_PASSWORD", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "incident-viewer-auth", "key": "postgres-password"}
+        or viewer_env.get("VIEWER_MAX_RESPONSE_BYTES", {}).get("value")
+        != "8388608"
+    ):
+        raise ValidationFailure("Incident Viewer Secret or response bound drifted")
+    viewer_network_policy = next(
+        document
+        for document in viewer_documents
+        if document.get("kind") == "NetworkPolicy"
+    )
+    viewer_policy_spec = viewer_network_policy.get("spec", {})
+    if (
+        set(viewer_policy_spec.get("policyTypes", [])) != {"Ingress", "Egress"}
+        or len(viewer_policy_spec.get("ingress", [])) != 1
+        or len(viewer_policy_spec.get("egress", [])) != 2
+        or viewer_policy_spec["ingress"][0].get("ports")
+        != [{"protocol": "TCP", "port": 8080}]
+        or viewer_policy_spec["egress"][1].get("ports")
+        != [{"protocol": "TCP", "port": 5432}]
+    ):
+        raise ValidationFailure("Incident Viewer network boundary drifted")
 
     agent_worker_documents = load_yaml_documents(directory / "agent-worker.yaml")
     if any(

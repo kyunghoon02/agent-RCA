@@ -4,5 +4,6 @@ resources:
   - postgresql.yaml
   - incident-webhook.yaml
   - incident-worker.yaml
+  - incident-viewer.yaml
   - alertmanager-routing.yaml
   - stategraph-reconciler.yaml

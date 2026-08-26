@@ -249,7 +249,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | Entity resolver와 Temporal StateGraph | Kubernetes/Prometheus/KRCA Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation 및 `APPLIED` journal을 검증. 제어 Incident는 9개 KRCA `CALLS` Evidence를 포함한 총 14개 Evidence, StateGraph path 40개를 Frozen Context에 저장하고 `ANALYZING` 도달 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. Agent Deployment manifest는 준비됐지만 기본 Kustomize에서 제외됨. 2026-08-25 live API 재확인도 `credit_balance_exhausted` 429로 성공 runtime 미검증 |
-| Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract와 인증된 read-only GET transport 구현 | API Deployment/UI·BFF, DB-enforced read-only role과 production query plan 미구현 |
+| Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract, 인증된 GET transport, Next.js UI와 same-origin server-side BFF, private API Deployment 및 전용 read-only DB role 구현 | cluster-local API Ready, DB role의 SELECT 허용·mutation 거부와 local BFF를 통한 live list/detail/work/Evidence 조회 검증. public ingress/domain, 사용자 session/role 인증, observability deep link runtime 설정과 production query plan은 미구현 |
 | Change × Workload evaluation | preregistration과 matrix 정의 | harness, Change Provider와 runtime dataset 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회를 검증; destroy와 fault runtime 미검증 |
 | Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. KRCA recording rule 4개, frontend failure-rate opt-in alert rule과 인증된 Alertmanager webhook live 적용 |
@@ -544,6 +544,41 @@ live PostgreSQL contract test를 건너뛴다. 승인된
 backend runtime evidence를 검사한다. Online Boutique remote base render에는 GitHub
 접근이 필요하다.
 
+### Read-only Viewer UI
+
+`frontend/viewer`는 저장된 Incident, Evidence, Frozen Context, work 상태와 RCA Report를
+조회하는 read-only 운영 화면이다. mutation 요청을 보내지 않으며 LLM prompt, reasoning
+trace, Secret과 원본 ConfigMap 값을 렌더링하지 않는다.
+
+```bash
+npm --prefix frontend/viewer install
+npm --prefix frontend/viewer run dev
+```
+
+`http://localhost:3100/incidents`에서 확인한다. `NEXT_PUBLIC_VIEWER_API_BASE_URL`이
+없으면 deterministic fixture adapter로 동작하고 모든 화면 상단에 `Demo Data`를 표시한다.
+live Viewer API를 읽으려면 같은 origin의 proxy route를 가리키게 하고 bearer token은
+browser 환경변수가 아니라 server-side `VIEWER_API_TOKEN`으로 둔다.
+
+```bash
+NEXT_PUBLIC_VIEWER_API_BASE_URL=/api/viewer
+VIEWER_API_ORIGIN=http://<viewer-api-host>:<port>
+VIEWER_API_TOKEN=<bearer token, 16자 이상>
+```
+
+`npm --prefix frontend/viewer run typecheck`와 `npm --prefix frontend/viewer test`가
+adapter 계약, Incident 목록 filter, lifecycle stepper, Evidence insufficient-data 표시,
+Agent 비활성 empty state, API 실패 시 이전 데이터 유지와 polling 중복 방지를 확인한다.
+Grafana/Loki/Tempo deep link는 `NEXT_PUBLIC_GRAFANA_URL` 등이 설정되고 http/https
+allowlist를 통과할 때만 렌더링한다.
+
+Viewer API는 `incident-platform` namespace의 private ClusterIP로 배포하며 전용 PostgreSQL
+role은 table `SELECT`만 허용하고 mutation을 거부한다. authenticated list/detail/work
+request와 local same-origin BFF를 통한 실제 Incident/Evidence 조회까지 검증했다. UI 자체의
+cluster Deployment, public ingress/domain과 사용자 session 인증은 아직 없으므로 외부에서
+직접 접근할 수 없다. Agent runtime도 기본 비활성 상태라 analysis work가 `READY`인 Incident는
+Report 0건으로 표시되는 것이 현재의 정상 동작이다.
+
 ## Repository Structure
 
 ```text
@@ -553,6 +588,7 @@ db/migrations/       core PostgreSQL schema migration
 db/vector_migrations/ opt-in pgvector Knowledge schema
 assets/              README 공개 이미지
 evaluation/          평가 사전등록과 Ground Truth 격리 정책
+frontend/viewer/     read-only Incident/RCA Viewer UI (Next.js)
 infra/terraform/     GCP VPC, IAM과 Compute Engine provisioning 경계
 knowledge/           versioned operational reference와 retrieval index
 platform/            cloud-neutral Kubernetes manifest와 Kustomize base

@@ -1,6 +1,6 @@
 # Read-only RCA Viewer Query Contract
 
-> 상태: bounded repository query port, list/detail/work-state service와 인증된 GET transport 구현
+> 상태: bounded query service, private API Deployment, same-origin BFF/UI와 DB-enforced read-only role 구현 및 live 검증
 
 ## 책임
 
@@ -13,7 +13,8 @@ IncidentRepository/PostgreSQL
 → IncidentViewerQueryService
 → schema-valid list 또는 detail document
 → authenticated read-only HTTP API
-→ future same-origin BFF/UI
+→ same-origin server-side BFF
+→ read-only operator UI
 ```
 
 ## Incident 목록
@@ -71,6 +72,11 @@ same-origin backend가 보관하는 것을 전제로 한다.
 ## 구현 경계
 
 현재 구현은 Python service/repository contract, PostgreSQL adapter, 인증된 bounded WSGI
-transport와 fixture test 범위다. 아직 이 API를 cluster에 배포하거나 runtime 검증하지
-않았으며 사용자 session/role 기반 인증, UI/BFF, DB-enforced read-only role,
-Grafana/Loki/Hubble deep link allowlist와 production PostgreSQL query plan도 미구현이다.
+transport, Next.js UI와 server-side BFF를 포함한다. API는 private ClusterIP로 배포하고
+별도 PostgreSQL role에 table `SELECT`만 부여하며 mutation 권한과 실제 mutation query를
+모두 거부하는지 검증한다. authenticated list/detail/work request와 local BFF를 통한 live
+Incident/Evidence 조회도 확인했다.
+
+아직 UI의 cluster Deployment, public ingress/domain과 사용자 session/role 기반 인증은
+없다. Grafana/Loki/Hubble deep link의 runtime allowlist와 production PostgreSQL query plan,
+외부 노출을 전제로 한 rate limit도 미구현이다.

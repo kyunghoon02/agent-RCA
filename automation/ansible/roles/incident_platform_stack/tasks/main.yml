@@ -89,6 +89,53 @@
   changed_when: true
   when: incident_platform_postgresql_secret_status.rc != 0
 
+- name: Check whether the Incident Viewer authentication Secret exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ incident_platform_viewer_secret }}
+    --namespace {{ incident_platform_namespace }}
+  register: incident_platform_viewer_secret_status
+  changed_when: false
+  failed_when: false
+
+- name: Generate the initial Incident Viewer PostgreSQL password
+  ansible.builtin.command: openssl rand -hex 32
+  register: incident_platform_viewer_postgresql_password
+  changed_when: false
+  no_log: true
+  when: incident_platform_viewer_secret_status.rc != 0
+
+- name: Generate the initial Incident Viewer API token
+  ansible.builtin.command: openssl rand -hex 32
+  register: incident_platform_viewer_api_token
+  changed_when: false
+  no_log: true
+  when: incident_platform_viewer_secret_status.rc != 0
+
+- name: Create the Incident Viewer authentication Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ incident_platform_viewer_secret }}
+        namespace: {{ incident_platform_namespace }}
+      type: Opaque
+      stringData:
+        api-token: {{ incident_platform_viewer_api_token.stdout | trim }}
+        database: agent_rca
+        postgres-username: {{ incident_platform_viewer_database_role }}
+        postgres-password: {{ incident_platform_viewer_postgresql_password.stdout | trim }}
+  no_log: true
+  changed_when: true
+  when: incident_platform_viewer_secret_status.rc != 0
+
 - name: Check whether the Incident webhook authentication Secret exists
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf
@@ -378,6 +425,76 @@
   changed_when: >-
     ' created' in incident_platform_apply.stdout
     or ' configured' in incident_platform_apply.stdout
+
+- name: Wait for PostgreSQL before reconciling the Viewer database role
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status statefulset/{{ incident_platform_postgresql_statefulset }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+
+- name: Read the Incident Viewer authentication Secret
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ incident_platform_viewer_secret }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_viewer_secret_result
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the PostgreSQL SELECT-only Incident Viewer role
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - statefulset/{{ incident_platform_postgresql_statefulset }}
+      - --
+      - env
+      - >-
+        VIEWER_PASSWORD={{
+          (incident_platform_viewer_secret_result.stdout | from_json).data['postgres-password']
+          | b64decode
+        }}
+      - /bin/sh
+      - -ec
+      - |
+        PGPASSWORD="$POSTGRES_PASSWORD" psql \
+          --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
+          --set=ON_ERROR_STOP=1 --set=viewer_password="$VIEWER_PASSWORD" <<'SQL'
+        SELECT format(
+          'CREATE ROLE {{ incident_platform_viewer_database_role }} LOGIN PASSWORD %L',
+          :'viewer_password'
+        )
+        WHERE NOT EXISTS (
+          SELECT 1 FROM pg_roles
+          WHERE rolname = '{{ incident_platform_viewer_database_role }}'
+        )
+        \gexec
+        ALTER ROLE {{ incident_platform_viewer_database_role }}
+          LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+          PASSWORD :'viewer_password';
+        ALTER ROLE {{ incident_platform_viewer_database_role }}
+          SET default_transaction_read_only TO on;
+        GRANT CONNECT ON DATABASE agent_rca TO {{ incident_platform_viewer_database_role }};
+        REVOKE CREATE ON SCHEMA public FROM {{ incident_platform_viewer_database_role }};
+        GRANT USAGE ON SCHEMA public TO {{ incident_platform_viewer_database_role }};
+        REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public
+          FROM {{ incident_platform_viewer_database_role }};
+        GRANT SELECT ON ALL TABLES IN SCHEMA public
+          TO {{ incident_platform_viewer_database_role }};
+        REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public
+          FROM {{ incident_platform_viewer_database_role }};
+        ALTER DEFAULT PRIVILEGES FOR ROLE agent_rca IN SCHEMA public
+          GRANT SELECT ON TABLES TO {{ incident_platform_viewer_database_role }};
+        SQL
+  register: incident_platform_viewer_role_reconcile
+  changed_when: false
+  no_log: true
 
 - name: Wait for the PostgreSQL StatefulSet
   ansible.builtin.command: >-

@@ -77,6 +77,95 @@
         | default('') != 'OOMKilled'
     fail_msg: The PostgreSQL container is not Ready or was OOM-killed.
 
+- name: Read the Incident Viewer authentication Secret
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ incident_platform_viewer_secret }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_viewer_secret_result
+  changed_when: false
+  no_log: true
+
+- name: Verify the Incident Viewer PostgreSQL role privileges
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - statefulset/{{ incident_platform_postgresql_statefulset }}
+      - --
+      - env
+      - >-
+        PGPASSWORD={{
+          (incident_platform_viewer_secret_result.stdout | from_json).data['postgres-password']
+          | b64decode
+        }}
+      - psql
+      - --username={{ incident_platform_viewer_database_role }}
+      - --dbname=agent_rca
+      - --tuples-only
+      - --no-align
+      - --command=SELECT json_build_object(
+          'current_user', current_user,
+          'transaction_read_only', current_setting('transaction_read_only'),
+          'incident_select', has_table_privilege(current_user, 'incidents', 'SELECT'),
+          'incident_insert', has_table_privilege(current_user, 'incidents', 'INSERT'),
+          'incident_update', has_table_privilege(current_user, 'incidents', 'UPDATE'),
+          'incident_delete', has_table_privilege(current_user, 'incidents', 'DELETE')
+        )
+  register: incident_platform_viewer_database_privileges_result
+  changed_when: false
+  no_log: true
+
+- name: Decode the Incident Viewer PostgreSQL role privileges
+  ansible.builtin.set_fact:
+    incident_platform_viewer_database_privileges: >-
+      {{ incident_platform_viewer_database_privileges_result.stdout | trim | from_json }}
+  no_log: true
+
+- name: Require a database-enforced SELECT-only Viewer role
+  ansible.builtin.assert:
+    that:
+      - >-
+        incident_platform_viewer_database_privileges.current_user
+        == incident_platform_viewer_database_role
+      - incident_platform_viewer_database_privileges.transaction_read_only == 'on'
+      - incident_platform_viewer_database_privileges.incident_select | bool
+      - not (incident_platform_viewer_database_privileges.incident_insert | bool)
+      - not (incident_platform_viewer_database_privileges.incident_update | bool)
+      - not (incident_platform_viewer_database_privileges.incident_delete | bool)
+    fail_msg: The Incident Viewer database role is not SELECT-only.
+
+- name: Verify an Incident mutation is denied to the Viewer database role
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - statefulset/{{ incident_platform_postgresql_statefulset }}
+      - --
+      - env
+      - >-
+        PGPASSWORD={{
+          (incident_platform_viewer_secret_result.stdout | from_json).data['postgres-password']
+          | b64decode
+        }}
+      - psql
+      - --username={{ incident_platform_viewer_database_role }}
+      - --dbname=agent_rca
+      - --set=ON_ERROR_STOP=1
+      - --command=UPDATE incidents SET updated_at = updated_at WHERE false
+  register: incident_platform_viewer_mutation_attempt
+  changed_when: false
+  failed_when: incident_platform_viewer_mutation_attempt.rc == 0
+  no_log: true
+
 - name: Wait for the Incident webhook Deployment
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf
@@ -136,6 +225,117 @@
     that:
       - (incident_platform_webhook_health.stdout | from_json).status == 'ok'
     fail_msg: The Incident webhook health endpoint is unavailable.
+
+- name: Wait for the read-only Incident Viewer Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/{{ incident_platform_viewer_deployment }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+
+- name: Read the Incident Viewer Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment {{ incident_platform_viewer_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_viewer_deployment_result
+  changed_when: false
+
+- name: Require a private digest-pinned Incident Viewer runtime
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_viewer_deployment_result.stdout | from_json).status.readyReplicas == 1
+      - >-
+        incident_platform.reconciler.image_digest in
+        (incident_platform_viewer_deployment_result.stdout | from_json).spec.template.spec.containers[0].image
+      - >-
+        (incident_platform_viewer_deployment_result.stdout | from_json).spec.template.spec.serviceAccountName
+        == 'incident-viewer'
+      - >-
+        not ((incident_platform_viewer_deployment_result.stdout | from_json).spec.template.spec.automountServiceAccountToken)
+      - >-
+        ((incident_platform_viewer_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'POSTGRES_PASSWORD')
+        | map(attribute='valueFrom.secretKeyRef.name') | first)
+        == incident_platform_viewer_secret
+    fail_msg: The Incident Viewer runtime image, identity, or credential boundary drifted.
+
+- name: Read the private Incident Viewer Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ incident_platform_viewer_service }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_viewer_service_result
+  changed_when: false
+
+- name: Require an internal-only Incident Viewer Service
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_viewer_service_result.stdout | from_json).spec.type == 'ClusterIP'
+      - (incident_platform_viewer_service_result.stdout | from_json).spec.ports | length == 1
+      - (incident_platform_viewer_service_result.stdout | from_json).spec.ports[0].port == 8080
+    fail_msg: The Incident Viewer must remain an internal ClusterIP Service.
+
+- name: Verify the Incident Viewer health endpoint through its Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ incident_platform_namespace
+    }}/services/http:{{ incident_platform_viewer_service }}:8080/proxy/healthz
+  register: incident_platform_viewer_health
+  changed_when: false
+
+- name: Require a healthy Incident Viewer transport
+  ansible.builtin.assert:
+    that:
+      - (incident_platform_viewer_health.stdout | from_json).status == 'ok'
+    fail_msg: The Incident Viewer health endpoint is unavailable.
+
+- name: Verify an authenticated Incident list through the Viewer API
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - deployment/{{ incident_platform_viewer_deployment }}
+      - --
+      - python
+      - -c
+      - |
+        import json
+        import os
+        import urllib.request
+
+        request = urllib.request.Request(
+            "http://127.0.0.1:8080/api/v1/incidents?limit=1",
+            headers={"Authorization": "Bearer " + os.environ["VIEWER_BEARER_TOKEN"]},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            document = json.load(response)
+        print(json.dumps({
+            "schema_version": document.get("schema_version"),
+            "item_count": len(document.get("items", [])),
+            "has_next_cursor": document.get("next_cursor") is not None,
+        }))
+  register: incident_platform_viewer_query_result
+  changed_when: false
+  no_log: true
+
+- name: Decode the authenticated Incident Viewer result
+  ansible.builtin.set_fact:
+    incident_platform_viewer_query: >-
+      {{ incident_platform_viewer_query_result.stdout | trim | from_json }}
+  no_log: true
+
+- name: Require a schema-versioned live Viewer response
+  ansible.builtin.assert:
+    that:
+      - incident_platform_viewer_query.schema_version == '1.0.0'
+      - incident_platform_viewer_query.item_count | int >= 0
+    fail_msg: The Incident Viewer could not read a live Incident from PostgreSQL.
 
 - name: Wait for the Incident worker Deployment
   ansible.builtin.command: >-

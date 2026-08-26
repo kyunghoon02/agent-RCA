@@ -112,3 +112,12 @@ kubeconfig*
 evaluation/ground-truth/private/*.json
 evaluation/ground-truth/private/*.yaml
 !evaluation/ground-truth/private/README.md
+
+# Viewer frontend
+frontend/viewer/node_modules/
+frontend/viewer/.next/
+frontend/viewer/next-env.d.ts
+frontend/viewer/*.tsbuildinfo
+
+# Local AI assistant workspace settings
+/.claude/
