@@ -7,3 +7,15 @@ Fault injection 시각, 실제 root cause label과 평가용 정답은 이 디�
 - 평가기는 RCA 실행이 종료된 뒤에만 이 데이터를 읽는다.
 - 실제 label 파일은 기본적으로 Git에 commit하지 않는다.
 - 공개 가능한 synthetic label은 redaction 후 별도 evaluation artifact로 내보낸다.
+
+각 label은 `rca-evaluation-ground-truth.schema.json` 계약을 따르고, 같은 실행에서
+만든 `rca-evaluation-prediction.schema.json` artifact와 case/scenario/Incident ID가 모두
+일치해야 한다. label의 relevant Evidence ID가 prediction의 completed snapshot 밖이면
+평가기는 label drift로 거부한다. 결과에는 정답 root-cause label이나 Evidence ID를
+복사하지 않고 aggregate count와 metric만 남긴다.
+
+```bash
+make evaluate-rca \
+  RCA_GROUND_TRUTH=evaluation/ground-truth/private/<case>.json \
+  RCA_PREDICTION=/path/to/completed-prediction.json
+```

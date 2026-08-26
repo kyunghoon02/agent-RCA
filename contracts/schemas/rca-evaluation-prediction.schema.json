@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:rca-evaluation-prediction",
+  "title": "RCA Evaluation Prediction",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluation_case_id",
+    "scenario_id",
+    "incident_id",
+    "variant_id",
+    "path",
+    "outcome",
+    "predicted_root_cause_ids",
+    "cited_evidence_ids",
+    "available_evidence_ids",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "evaluation_case_id": {
+      "type": "string",
+      "pattern": "^eval-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "variant_id": {
+      "enum": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    "path": {
+      "enum": [
+        "fast",
+        "normal",
+        "deep"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "ROOT_CAUSE",
+        "ABSTAIN",
+        "AMBIGUOUS"
+      ]
+    },
+    "predicted_root_cause_ids": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/rootCauseId"
+      }
+    },
+    "cited_evidence_ids": {
+      "$ref": "#/$defs/evidenceIds"
+    },
+    "available_evidence_ids": {
+      "$ref": "#/$defs/evidenceIds"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "rootCauseId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)+$"
+    },
+    "evidenceIds": {
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^ev-[a-z0-9][a-z0-9-]{7,63}$"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "ROOT_CAUSE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "predicted_root_cause_ids": {
+            "minItems": 1
+          },
+          "cited_evidence_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "ABSTAIN"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "predicted_root_cause_ids": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "AMBIGUOUS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "predicted_root_cause_ids": {
+            "minItems": 2
+          },
+          "cited_evidence_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "variant_id": {
+            "const": "A"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "path": {
+            "const": "fast"
+          }
+        }
+      }
+    }
+  ]
+}

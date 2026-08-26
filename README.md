@@ -221,6 +221,13 @@ Evidence는 A/B/C/D variant에 재사용하며 root-cause accuracy, Evidence pre
 `ABSTAIN` correctness, latency, tool/LLM cost와 반복 재현성을 비교한다. Fault manifest와
 Ground Truth는 Agent runtime에서 계속 격리한다.
 
+현재 post-run scorer는 private Ground Truth의 expected root cause와 relevant Evidence ID를
+완료된 Prediction snapshot에만 결합한다. case/scenario/Incident가 다르거나 label이
+snapshot 밖 Evidence를 가리키면 평가를 거부하며, 공개 가능한 Result에는 정답 label과
+Evidence ID 대신 count와 metric만 기록한다. Variant A Fast Path는
+`DeterministicDecision`에서 Prediction을 직접 생성할 수 있다. 이 scorer 구현은 평가
+방법을 고정한 것이며 아직 15-scenario × 5회 accuracy 결과를 의미하지 않는다.
+
 ### Knowledge Retrieval Ablation
 
 Operational Knowledge 검색은 기존 `entity-key+lexical`을 baseline으로 유지하고 동일한
@@ -253,7 +260,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. Agent Deployment manifest는 준비됐지만 기본 Kustomize에서 제외됨. 2026-08-25 live API 재확인도 `credit_balance_exhausted` 429로 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract, 인증된 GET transport, Next.js UI와 same-origin server-side BFF, private API Deployment 및 전용 read-only DB role 구현 | cluster-local API Ready, DB role의 SELECT 허용·mutation 거부와 local BFF를 통한 live list/detail/work/Evidence 조회 검증. public ingress/domain, 사용자 session/role 인증, observability deep link runtime 설정과 production query plan은 미구현 |
-| Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider와 change Projector 구현 | retained ReplicaSet revision을 비교하고 live 제어 Incident에서 `NO_CHANGES` Evidence를 검증. controlled change/fault harness, Git/ArgoCD change source와 accuracy dataset은 미구현 |
+| Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider/change Projector, Ground Truth/Prediction/Result 계약과 post-run scorer 구현 | retained ReplicaSet revision을 비교하고 live 제어 Incident에서 `NO_CHANGES` Evidence를 검증. scorer는 root-cause Top-1/Top-3, multi-factor match, Evidence precision/recall, unsupported citation과 abstention correctness를 계산하되 private label을 결과에 복사하지 않는다. 반복 가능한 controlled fault harness, Git/ArgoCD change source와 15-scenario accuracy dataset은 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회 및 controlled application OOM/복구를 검증; destroy와 VM failure runtime은 미검증 |
 | Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. Alloy DaemonSet이 host journal을 read-only로 읽어 kernel memcg OOM의 Pod UID를 Loki label로 정규화한다. KRCA API recording rule 4개와 UID-backed Pod memory ratio/restart delta rule 2개, frontend failure-rate opt-in alert rule 및 인증된 Alertmanager webhook live 적용 |
 | Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정하고, 3개 source patch와 Cloud Build/Artifact Registry digest pin을 추가한 Kustomize overlay 및 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 10개 application service 모두 server span, Collector target `up=1`, RED/service graph metric, Tempo trace와 23-edge KRCA live smoke 및 checkout OOM fault/복구 검증 완료. 지속 외부 load와 나머지 fault matrix는 미연결 |

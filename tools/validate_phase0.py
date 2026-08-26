@@ -1668,6 +1668,19 @@ def validate_policy_configs() -> None:
     if any(value <= 0 for value in budget.values()):
         raise ValidationFailure("Every Deep Path budget must be positive")
 
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    ignored_private_labels = {
+        "evaluation/ground-truth/private/*.json",
+        "evaluation/ground-truth/private/*.yaml",
+    }
+    if not ignored_private_labels <= set(gitignore):
+        raise ValidationFailure("private Ground Truth labels are not ignored by Git")
+    runtime_dockerfile = (
+        ROOT / "platform" / "incident-platform" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    if "COPY evaluation" in runtime_dockerfile or "ground-truth" in runtime_dockerfile:
+        raise ValidationFailure("Incident runtime image includes evaluation Ground Truth")
+
     preregistration = load_yaml_documents(
         ROOT / "evaluation" / "preregistration.yaml"
     )[0]

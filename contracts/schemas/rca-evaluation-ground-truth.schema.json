@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:rca-evaluation-ground-truth",
+  "title": "RCA Evaluation Ground Truth",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluation_case_id",
+    "scenario_id",
+    "incident_id",
+    "expected_outcome",
+    "expected_root_cause_ids",
+    "relevant_evidence_ids",
+    "labeled_at",
+    "labeler",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "evaluation_case_id": {
+      "type": "string",
+      "pattern": "^eval-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "expected_outcome": {
+      "enum": [
+        "ROOT_CAUSE",
+        "ABSTAIN"
+      ]
+    },
+    "expected_root_cause_ids": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/rootCauseId"
+      }
+    },
+    "relevant_evidence_ids": {
+      "$ref": "#/$defs/evidenceIds"
+    },
+    "labeled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "labeler": {
+      "enum": [
+        "controlled-fault-manifest",
+        "human-review"
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controlled_fault",
+        "fault_manifest_sha256",
+        "workload_profile",
+        "workload_seed",
+        "change_applied"
+      ],
+      "properties": {
+        "controlled_fault": {
+          "type": "boolean"
+        },
+        "fault_manifest_sha256": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "workload_profile": {
+          "enum": [
+            "normal",
+            "spike",
+            "soak",
+            "path-weighted"
+          ]
+        },
+        "workload_seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "change_applied": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "controlled_fault": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "fault_manifest_sha256": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "fault_manifest_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "rootCauseId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)+$"
+    },
+    "evidenceIds": {
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^ev-[a-z0-9][a-z0-9-]{7,63}$"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "expected_outcome": {
+            "const": "ROOT_CAUSE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "expected_root_cause_ids": {
+            "minItems": 1
+          },
+          "relevant_evidence_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expected_outcome": {
+            "const": "ABSTAIN"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "expected_root_cause_ids": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

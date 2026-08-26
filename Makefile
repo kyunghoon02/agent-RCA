@@ -3,10 +3,12 @@ GCLOUD_BIN ?= gcloud
 ANSIBLE_CONFIG_PATH ?= automation/ansible/ansible.cfg
 ANSIBLE_INVENTORY ?= automation/ansible/inventories/dev.yml
 ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
+RCA_GROUND_TRUTH ?=
+RCA_PREDICTION ?=
 
 .PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \
-	sync-knowledge-vectors evaluate-knowledge-retrieval gcp-readiness \
+	sync-knowledge-vectors evaluate-knowledge-retrieval evaluate-rca gcp-readiness \
 	render-online-boutique build-online-boutique-otel-images terraform-fmt terraform-validate \
 	render-incident-platform build-incident-platform-image \
 	bootstrap-ansible ansible-syntax ansible-ping bootstrap-kubernetes \
@@ -43,6 +45,11 @@ sync-knowledge-vectors:
 
 evaluate-knowledge-retrieval:
 	PYTHONPATH=src .venv/bin/python tools/evaluate_knowledge_retrieval.py
+
+evaluate-rca:
+	PYTHONPATH=src .venv/bin/python tools/evaluate_rca.py \
+		--ground-truth "$(RCA_GROUND_TRUTH)" \
+		--prediction "$(RCA_PREDICTION)"
 
 gcp-readiness:
 	.venv/bin/python tools/check_gcp_readiness.py

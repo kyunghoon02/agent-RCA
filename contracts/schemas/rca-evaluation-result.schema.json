@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:rca-evaluation-result",
+  "title": "RCA Evaluation Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluation_case_id",
+    "scenario_id",
+    "incident_id",
+    "variant_id",
+    "evaluated_at",
+    "counts",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "evaluation_case_id": {
+      "type": "string",
+      "pattern": "^eval-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "variant_id": {
+      "enum": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    "evaluated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_root_causes",
+        "predicted_root_causes",
+        "relevant_evidence",
+        "cited_evidence",
+        "available_evidence",
+        "matched_evidence",
+        "unsupported_citations"
+      ],
+      "properties": {
+        "expected_root_causes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "predicted_root_causes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "relevant_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cited_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "available_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched_evidence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsupported_citations": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_cause_top1_accuracy",
+        "root_cause_top3_recall",
+        "multi_factor_exact_match",
+        "multi_factor_partial_match",
+        "evidence_precision",
+        "evidence_recall",
+        "unsupported_evidence_citation_rate",
+        "abstention_correctness"
+      ],
+      "properties": {
+        "root_cause_top1_accuracy": {
+          "$ref": "#/$defs/nullableScore"
+        },
+        "root_cause_top3_recall": {
+          "$ref": "#/$defs/nullableScore"
+        },
+        "multi_factor_exact_match": {
+          "$ref": "#/$defs/nullableScore"
+        },
+        "multi_factor_partial_match": {
+          "$ref": "#/$defs/nullableScore"
+        },
+        "evidence_precision": {
+          "$ref": "#/$defs/nullableScore"
+        },
+        "evidence_recall": {
+          "$ref": "#/$defs/nullableScore"
+        },
+        "unsupported_evidence_citation_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "abstention_correctness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nullableScore": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      ]
+    }
+  }
+}
