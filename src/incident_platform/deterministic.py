@@ -42,15 +42,23 @@ def _facts(item: Mapping[str, Any]) -> Mapping[str, Any]:
 def _same_subject(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
     first_subject = first.get("subject", {})
     second_subject = second.get("subject", {})
-    return (
+    if (
         first_subject.get("namespace"),
         first_subject.get("kind"),
         first_subject.get("name"),
-    ) == (
+    ) != (
         second_subject.get("namespace"),
         second_subject.get("kind"),
         second_subject.get("name"),
-    )
+    ):
+        return False
+    for identity_key in ("cluster_id", "uid"):
+        first_value = first_subject.get(identity_key)
+        second_value = second_subject.get(identity_key)
+        if first_value is not None or second_value is not None:
+            if not first_value or first_value != second_value:
+                return False
+    return True
 
 
 class OOMKilledRule:

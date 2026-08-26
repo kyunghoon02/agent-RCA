@@ -68,6 +68,7 @@ from .providers import (
     PrometheusAPIFeatureQuerySpec,
     PrometheusMetricProvider,
     PrometheusQuerySpec,
+    PrometheusWorkloadMetricProvider,
 )
 from .krca_pipeline import (
     APIEdgeEvidenceProjector,
@@ -150,6 +151,7 @@ from .projectors import (
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     PrometheusMetricEvidenceProjector,
+    PrometheusWorkloadMetricEvidenceProjector,
 )
 from .viewer import IncidentViewerQueryService, ViewerQueryPolicy, ViewerRepository
 from .viewer_http import (
@@ -277,10 +279,12 @@ __all__ = [
     "OpenAIEmbeddingProvider",
     "PrometheusHTTPAPI",
     "PrometheusMetricEvidenceProjector",
+    "PrometheusWorkloadMetricEvidenceProjector",
     "PrometheusAPIFeatureProvider",
     "PrometheusAPIFeatureQuerySpec",
     "PrometheusMetricProvider",
     "PrometheusQuerySpec",
+    "PrometheusWorkloadMetricProvider",
     "ResourceScope",
     "ResolvedIncidentLocalizationRun",
     "ResolvedIncidentLocalizationService",

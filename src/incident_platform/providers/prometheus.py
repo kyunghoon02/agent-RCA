@@ -379,3 +379,217 @@ class PrometheusMetricProvider:
                 )
             )
         return tuple(drafts), truncated
+
+
+class PrometheusWorkloadMetricProvider:
+    """Collect Pod-scoped metric summaries under bounded workload prefixes.
+
+    Service metric queries have a fixed one-to-one subject set. Workload metrics do
+    not: a Deployment rollout changes Pod names over time. This adapter therefore
+    accepts only explicitly rooted resource-name prefixes and requires Prometheus to
+    return the Kubernetes Pod UID used by the StateGraph and deterministic rules.
+    """
+
+    def __init__(
+        self,
+        client: PrometheusRangeClient,
+        query_specs: Sequence[PrometheusQuerySpec],
+        *,
+        cluster_id: str,
+    ) -> None:
+        if not query_specs:
+            raise ValueError("at least one PrometheusQuerySpec is required")
+        query_ids = [spec.query_id for spec in query_specs]
+        if len(query_ids) != len(set(query_ids)):
+            raise ValueError("Prometheus query_id values must be unique")
+        if not cluster_id.strip():
+            raise ValueError("Prometheus cluster_id must not be empty")
+        for spec in query_specs:
+            if spec.subject_kind != "Pod" or not spec.uid_label:
+                raise ValueError(
+                    "workload metric queries require Pod subjects and a UID label"
+                )
+        self._client = client
+        self._query_specs = tuple(query_specs)
+        self._cluster_id = cluster_id
+
+    def collect(self, request: CollectionRequest) -> ProviderBatch:
+        if not request.scope.resource_name_prefixes:
+            raise PermanentProviderError(
+                "workload metric collection requires rooted resource prefixes"
+            )
+        deadline = time.monotonic() + request.timeout_seconds
+        drafts = []
+        partial_reasons = []
+        for spec in self._query_specs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RetryableProviderError("Prometheus collection deadline exhausted")
+            expression = self._scoped_expression(spec, request)
+            result = self._client.query_range(
+                expression,
+                start=request.window.start,
+                end=request.window.end,
+                step_seconds=spec.step_seconds,
+                timeout_seconds=remaining,
+            )
+            if result.warnings:
+                partial_reasons.append(
+                    f"{spec.query_id}: Prometheus returned "
+                    f"{len(result.warnings)} warning(s)"
+                )
+            spec_drafts, truncated = self._summarize(
+                spec,
+                result.series,
+                expression,
+                request,
+                cluster_id=self._cluster_id,
+            )
+            drafts.extend(spec_drafts)
+            if truncated:
+                partial_reasons.append(
+                    f"{spec.query_id}: samples exceeded {spec.max_samples} limit"
+                )
+
+        if len(drafts) > request.scope.max_items:
+            raise PermanentProviderError(
+                "Prometheus workload query set exceeds the Evidence item budget"
+            )
+        if partial_reasons:
+            return ProviderBatch(
+                items=tuple(drafts),
+                status="PARTIAL",
+                error="; ".join(partial_reasons),
+            )
+        return ProviderBatch(items=tuple(drafts))
+
+    @staticmethod
+    def _scoped_expression(
+        spec: PrometheusQuerySpec,
+        request: CollectionRequest,
+    ) -> str:
+        alternatives = [re.escape(name) for name in request.scope.resource_names]
+        alternatives.extend(
+            f"{re.escape(prefix)}.*"
+            for prefix in request.scope.resource_name_prefixes
+        )
+        resource_pattern = "^(?:" + "|".join(alternatives) + ")$"
+        scope = ",".join(
+            (
+                f"{spec.namespace_label}={json.dumps(request.scope.namespace)}",
+                f"{spec.resource_label}=~{json.dumps(resource_pattern)}",
+            )
+        )
+        return spec.expression_template.replace("{scope}", scope)
+
+    @staticmethod
+    def _summarize(
+        spec: PrometheusQuerySpec,
+        series: Sequence[Mapping[str, Any]],
+        expression: str,
+        request: CollectionRequest,
+        *,
+        cluster_id: str,
+    ) -> Tuple[Tuple[EvidenceDraft, ...], bool]:
+        grouped: Dict[Tuple[str, str], list[Tuple[float, float]]] = {}
+        sample_count = 0
+        truncated = False
+        window_start = _parse_timestamp(request.window.start)
+        window_end = _parse_timestamp(request.window.end)
+        assert spec.uid_label is not None
+
+        for item in series:
+            labels = item.get("metric")
+            values = item.get("values")
+            if not isinstance(labels, Mapping) or not isinstance(values, list):
+                raise PermanentProviderError("Prometheus series is malformed")
+            resource_name = labels.get(spec.resource_label)
+            if not isinstance(resource_name, str) or not resource_name:
+                raise PermanentProviderError(
+                    "Prometheus series has no string workload label"
+                )
+            if not request.scope.contains_resource_name(resource_name):
+                raise PermanentProviderError(
+                    "Prometheus returned a workload outside resource scope"
+                )
+            if labels.get(spec.namespace_label) != request.scope.namespace:
+                raise PermanentProviderError(
+                    "Prometheus returned a series outside namespace scope"
+                )
+            uid = labels.get(spec.uid_label)
+            if not isinstance(uid, str) or not uid:
+                raise PermanentProviderError(
+                    "Prometheus workload series has no Kubernetes Pod UID"
+                )
+            samples = grouped.setdefault((resource_name, uid), [])
+            for sample in values:
+                if sample_count >= spec.max_samples:
+                    truncated = True
+                    break
+                if not isinstance(sample, list) or len(sample) != 2:
+                    raise PermanentProviderError("Prometheus sample is malformed")
+                try:
+                    timestamp = float(sample[0])
+                    value = float(sample[1])
+                except (TypeError, ValueError) as error:
+                    raise PermanentProviderError(
+                        "Prometheus float sample is malformed"
+                    ) from error
+                if not math.isfinite(timestamp) or not math.isfinite(value):
+                    raise PermanentProviderError(
+                        "Prometheus sample contains a non-finite value"
+                    )
+                if timestamp < window_start or timestamp > window_end:
+                    raise PermanentProviderError(
+                        "Prometheus returned a sample outside the requested time window"
+                    )
+                samples.append((timestamp, value))
+                sample_count += 1
+
+        drafts = []
+        for (resource_name, uid), samples in sorted(grouped.items()):
+            ordered_samples = sorted(samples)
+            if not ordered_samples:
+                continue
+            values = [sample[1] for sample in ordered_samples]
+            facts: Dict[str, Any] = {
+                "metric": spec.query_id,
+                "result_status": "HAS_DATA",
+                "sample_count": len(values),
+                "minimum": min(values),
+                "maximum": max(values),
+                "average": sum(values) / len(values),
+                "latest": values[-1],
+            }
+            if spec.peak_fact is not None:
+                facts[spec.peak_fact] = max(values)
+            drafts.append(
+                EvidenceDraft(
+                    source="prometheus",
+                    kind="metric-summary",
+                    observed_at=_format_timestamp(ordered_samples[-1][0]),
+                    subject={
+                        "api_version": spec.subject_api_version,
+                        "kind": spec.subject_kind,
+                        "namespace": request.scope.namespace,
+                        "name": resource_name,
+                        "uid": uid,
+                        "cluster_id": cluster_id,
+                        "exists": True,
+                    },
+                    summary=(
+                        f"Prometheus {spec.query_id} returned {len(values)} "
+                        f"scoped samples for Pod {resource_name}."
+                    ),
+                    facts=facts,
+                    provider="prometheus-http-api",
+                    query=expression,
+                    locator=(
+                        f"prometheus://query/{spec.query_id}/"
+                        f"{request.scope.namespace}/Pod/{resource_name}/{uid}"
+                    ),
+                    completeness=0.5 if truncated else 1.0,
+                    confidence=1.0,
+                )
+            )
+        return tuple(drafts), truncated

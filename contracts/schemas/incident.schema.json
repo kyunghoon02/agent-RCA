@@ -147,6 +147,7 @@
             "enum": [
               "prometheus",
               "prometheus-api",
+              "prometheus-workload",
               "logs",
               "kubernetes",
               "deployment",

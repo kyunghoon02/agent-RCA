@@ -14,6 +14,7 @@ from incident_platform.localization import IncidentLocalizationService
 from incident_platform.projectors import (
     KubernetesEvidenceProjector,
     PrometheusMetricEvidenceProjector,
+    PrometheusWorkloadMetricEvidenceProjector,
 )
 from incident_platform.repository import InMemoryIncidentRepository
 from incident_platform.resolution import (
@@ -35,6 +36,8 @@ METRICS = (
     "api.latency-p95-milliseconds",
     "api.latency-baseline-p95-milliseconds",
 )
+POD_NAME = "checkoutservice-7d9f8-q1w2e"
+POD_UID = "7df6d266-40df-4fd6-942d-7ebc864c4061"
 
 
 def metric_evidence(metric: str, *, cluster_id: str | None = CLUSTER_ID) -> dict:
@@ -79,6 +82,53 @@ def metric_evidence(metric: str, *, cluster_id: str | None = CLUSTER_ID) -> dict
             provider="prometheus-http-api",
             query=f"{metric} scoped-query",
             locator=f"prometheus://query/{metric}",
+        ),
+        request,
+        collected_at=datetime(2026, 8, 12, 1, 6, tzinfo=UTC),
+    )
+
+
+def workload_metric_evidence(*, uid: str | None = POD_UID) -> dict:
+    request = CollectionRequest(
+        request_id="req-prometheus-workload-projector",
+        incident_id="inc-stategraph-fixture-0001",
+        window=WINDOW,
+        scope=ResourceScope(
+            namespace="online-boutique",
+            resource_names=("checkoutservice",),
+            resource_name_prefixes=("checkoutservice-",),
+            max_items=10,
+        ),
+        timeout_seconds=5,
+    )
+    return EvidenceBuilder().build(
+        EvidenceDraft(
+            source="prometheus",
+            kind="metric-summary",
+            observed_at=WINDOW.end,
+            subject={
+                "api_version": "v1",
+                "kind": "Pod",
+                "namespace": "online-boutique",
+                "name": POD_NAME,
+                "uid": uid,
+                "cluster_id": CLUSTER_ID,
+                "exists": True,
+            },
+            summary="Pod memory working-set ratio reached 99 percent.",
+            facts={
+                "metric": "memory_working_set_ratio",
+                "result_status": "HAS_DATA",
+                "sample_count": 2,
+                "minimum": 0.42,
+                "maximum": 0.99,
+                "average": 0.705,
+                "latest": 0.99,
+                "peak_ratio": 0.99,
+            },
+            provider="prometheus-http-api",
+            query="agent_rca_pod_memory_working_set_ratio scoped-query",
+            locator=f"prometheus://query/memory/Pod/{POD_NAME}",
         ),
         request,
         collected_at=datetime(2026, 8, 12, 1, 6, tzinfo=UTC),
@@ -161,6 +211,40 @@ class PrometheusMetricEvidenceProjectorTests(unittest.TestCase):
             )
         )
         self.assertEqual(run.localization.incident["status"], "ANALYZING")
+
+
+class PrometheusWorkloadMetricEvidenceProjectorTests(unittest.TestCase):
+    def test_projects_metric_to_uid_backed_kubernetes_pod(self) -> None:
+        evidence = workload_metric_evidence()
+
+        projection = PrometheusWorkloadMetricEvidenceProjector().project(evidence)
+
+        self.assertEqual(len(projection.records), 2)
+        entity, event = projection.records
+        self.assertEqual(entity["domain"], "kubernetes")
+        self.assertEqual(entity["entity_type"], "Pod")
+        self.assertEqual(
+            entity["identity"]["identity_type"], "kubernetes-resource"
+        )
+        self.assertEqual(entity["identity"]["keys"]["uid"], POD_UID)
+        self.assertEqual(event["entity_id"], entity["entity_id"])
+        self.assertEqual(event["attributes"]["peak_ratio"], 0.99)
+
+    def test_service_and_workload_projectors_have_disjoint_ownership(self) -> None:
+        evidence = workload_metric_evidence()
+
+        self.assertFalse(PrometheusMetricEvidenceProjector().supports(evidence))
+        self.assertTrue(
+            PrometheusWorkloadMetricEvidenceProjector().supports(evidence)
+        )
+
+    def test_pod_metric_without_uid_is_not_projectable(self) -> None:
+        evidence = workload_metric_evidence(uid=None)
+        projector = PrometheusWorkloadMetricEvidenceProjector()
+
+        self.assertFalse(projector.supports(evidence))
+        with self.assertRaisesRegex(ContractViolation, "UID-backed Pod"):
+            projector.project(evidence)
 
 
 if __name__ == "__main__":

@@ -142,3 +142,101 @@ class PrometheusMetricEvidenceProjector:
                 )
             attributes[name] = value
         return attributes
+
+
+class PrometheusWorkloadMetricEvidenceProjector(PrometheusMetricEvidenceProjector):
+    """Attach a Pod metric summary to the UID-backed Kubernetes Entity."""
+
+    projector_name = "prometheus-workload-metric-evidence-projector"
+
+    def supports(self, evidence: Mapping[str, Any]) -> bool:
+        subject = evidence.get("subject")
+        facts = evidence.get("facts")
+        provenance = evidence.get("provenance")
+        return (
+            evidence.get("source") == "prometheus"
+            and evidence.get("kind") == "metric-summary"
+            and isinstance(provenance, Mapping)
+            and provenance.get("provider") == "prometheus-http-api"
+            and isinstance(subject, Mapping)
+            and isinstance(subject.get("cluster_id"), str)
+            and bool(subject.get("cluster_id"))
+            and subject.get("kind") == "Pod"
+            and isinstance(subject.get("uid"), str)
+            and bool(subject.get("uid"))
+            and isinstance(facts, Mapping)
+            and isinstance(facts.get("metric"), str)
+            and bool(facts.get("metric"))
+            and "feature_set" not in facts
+        )
+
+    def project(self, evidence: Mapping[str, Any]) -> GraphProjection:
+        validate_contract("evidence-item.schema.json", evidence)
+        if not self.supports(evidence):
+            raise ContractViolation(
+                "PrometheusWorkloadMetricEvidenceProjector requires a trusted "
+                "UID-backed Pod metric summary"
+            )
+        subject = evidence["subject"]
+        facts = evidence["facts"]
+        result_status = facts.get("result_status")
+        if result_status not in self.result_statuses:
+            raise ContractViolation(
+                "Prometheus workload metric summary result_status is unsupported"
+            )
+        sample_count = facts.get("sample_count")
+        if (
+            isinstance(sample_count, bool)
+            or not isinstance(sample_count, int)
+            or sample_count <= 0
+        ):
+            raise ContractViolation(
+                "Prometheus workload metric summary requires scoped samples"
+            )
+        if result_status != "HAS_DATA":
+            raise ContractViolation(
+                "Prometheus workload metric summary contradicts sample_count"
+            )
+
+        identity = EntityIdentity.kubernetes_resource(
+            cluster_id=subject["cluster_id"],
+            uid=subject["uid"],
+        )
+        entity = {
+            "record_type": "entity",
+            "entity_id": identity.entity_id,
+            "identity": identity.to_contract(),
+            "entity_type": "Pod",
+            "domain": "kubernetes",
+            "name": subject["name"],
+            "scope": {
+                "cluster_id": subject["cluster_id"],
+                "namespace": subject["namespace"],
+                "api_version": subject["api_version"],
+            },
+            "external_ref": subject["uid"],
+            "exists": bool(subject["exists"]),
+            "first_seen_at": evidence["window"]["start"],
+            "last_seen_at": evidence["window"]["end"],
+            "evidence_ids": [evidence["evidence_id"]],
+        }
+        event = {
+            "record_type": "event_aggregate",
+            "event_id": stable_graph_id(
+                "evt",
+                {
+                    "projector": self.projector_name,
+                    "evidence_id": evidence["evidence_id"],
+                },
+            ),
+            "entity_id": identity.entity_id,
+            "event_type": self.event_type,
+            "first_seen_at": evidence["window"]["start"],
+            "last_seen_at": evidence["window"]["end"],
+            "count": sample_count,
+            "attributes": self._attributes(facts),
+            "evidence_ids": [evidence["evidence_id"]],
+        }
+        validate_graph_record(entity)
+        validate_graph_record(event)
+        return GraphProjection((entity, event))

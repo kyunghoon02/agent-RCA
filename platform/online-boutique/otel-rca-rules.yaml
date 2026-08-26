@@ -84,6 +84,32 @@ spec:
                 ) > 0
               )
             )
+        - record: agent_rca_pod_memory_working_set_ratio
+          expr: |
+            max by (namespace, pod) (
+              max by (namespace, pod, container) (
+                container_memory_working_set_bytes{
+                  namespace="online-boutique",
+                  container!="",
+                  container!="POD",
+                  image!=""
+                }
+              )
+              /
+              (
+                max by (namespace, pod, container) (
+                  kube_pod_container_resource_limits{
+                    namespace="online-boutique",
+                    resource="memory",
+                    unit="byte"
+                  }
+                ) > 0
+              )
+            )
+            * on (namespace, pod) group_left(uid)
+            max by (namespace, pod, uid) (
+              kube_pod_info{namespace="online-boutique"}
+            )
         - alert: OnlineBoutiqueFrontendHighFailureRate
           expr: |
             (

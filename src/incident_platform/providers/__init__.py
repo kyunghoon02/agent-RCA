@@ -13,6 +13,7 @@ from .prometheus import (
     PrometheusHTTPAPI,
     PrometheusMetricProvider,
     PrometheusQuerySpec,
+    PrometheusWorkloadMetricProvider,
 )
 from .krca_metrics import (
     APIDependencySpec,
@@ -34,4 +35,5 @@ __all__ = [
     "PrometheusHTTPAPI",
     "PrometheusMetricProvider",
     "PrometheusQuerySpec",
+    "PrometheusWorkloadMetricProvider",
 ]

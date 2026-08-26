@@ -43,6 +43,7 @@ from tools.run_incident_worker import (
     IncidentWorkerRuntimeConfig,
     ProfileAwareIncidentCollectionService,
     _prometheus_query_specs,
+    _prometheus_workload_query_specs,
 )
 
 
@@ -270,6 +271,16 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual({spec.resource_label for spec in specs}, {"service_name"})
         self.assertTrue(all(spec.expression_template.count("{scope}") == 1 for spec in specs))
 
+    def test_workload_query_is_fixed_uid_backed_and_pod_scoped(self) -> None:
+        specs = _prometheus_workload_query_specs()
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].query_id, "memory_working_set_ratio")
+        self.assertEqual(specs[0].resource_label, "pod")
+        self.assertEqual(specs[0].uid_label, "uid")
+        self.assertEqual(specs[0].subject_kind, "Pod")
+        self.assertEqual(specs[0].peak_fact, "peak_ratio")
+
     def test_kubernetes_incident_scope_adds_only_root_derived_prefixes(self) -> None:
         service = ProfileAwareIncidentCollectionService(
             IncidentLookupOnlyRepository(),
@@ -291,6 +302,37 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
 
             service.collect_claimed_incident(
                 "inc-worker-rooted-scope-0001",
+                scope=scope,
+                observed_at=NOW,
+            )
+
+        orchestrator = service_factory.call_args.args[1]
+        rooted_scope = orchestrator._specs[0].request_scope
+        self.assertEqual(rooted_scope.resource_names, ("frontend",))
+        self.assertEqual(rooted_scope.resource_name_prefixes, ("frontend-",))
+        self.assertEqual(rooted_scope.max_items, 32)
+
+    def test_workload_metric_scope_adds_only_root_derived_prefixes(self) -> None:
+        service = ProfileAwareIncidentCollectionService(
+            IncidentLookupOnlyRepository(),
+            (CollectorSpec("prometheus-workload", StaticProvider()),),
+            object(),
+            krca_config(),
+        )
+        scope = ResourceScope(
+            namespace="online-boutique",
+            resource_names=("frontend",),
+            max_items=32,
+        )
+        with patch(
+            "tools.run_incident_worker.IncidentCollectionService"
+        ) as service_factory:
+            service_factory.return_value.collect_claimed_incident.return_value = (
+                CollectionRun(status="SUCCEEDED", executions=tuple())
+            )
+
+            service.collect_claimed_incident(
+                "inc-worker-workload-scope-0001",
                 scope=scope,
                 observed_at=NOW,
             )

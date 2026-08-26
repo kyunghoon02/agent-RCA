@@ -48,6 +48,7 @@ from incident_platform.projectors import (
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     PrometheusMetricEvidenceProjector,
+    PrometheusWorkloadMetricEvidenceProjector,
 )
 from incident_platform.providers.change import DeploymentHistoryProvider
 from incident_platform.providers.http import BoundedJSONTransport
@@ -62,6 +63,7 @@ from incident_platform.providers.prometheus import (
     PrometheusHTTPAPI,
     PrometheusMetricProvider,
     PrometheusQuerySpec,
+    PrometheusWorkloadMetricProvider,
 )
 from incident_platform.repository import IncidentRepository
 from incident_platform.resolution import (
@@ -253,6 +255,22 @@ def _prometheus_query_specs() -> tuple[PrometheusQuerySpec, ...]:
     )
 
 
+def _prometheus_workload_query_specs() -> tuple[PrometheusQuerySpec, ...]:
+    return (
+        PrometheusQuerySpec(
+            query_id="memory_working_set_ratio",
+            expression_template="agent_rca_pod_memory_working_set_ratio{{scope}}",
+            namespace_label="namespace",
+            resource_label="pod",
+            subject_kind="Pod",
+            uid_label="uid",
+            step_seconds=15,
+            max_samples=4000,
+            peak_fact="peak_ratio",
+        ),
+    )
+
+
 class ClaimedIncidentCollectionService(Protocol):
     def collect_claimed_incident(
         self,
@@ -306,7 +324,7 @@ class ProfileAwareIncidentCollectionService:
         profile = _selected_krca_profile(incident, self._krca_config)
         specs = []
         for spec in self._base_specs:
-            if spec.name != "kubernetes":
+            if spec.name not in {"kubernetes", "prometheus-workload"}:
                 specs.append(spec)
                 continue
             rooted_scope = ResourceScope(
@@ -399,6 +417,11 @@ def build_collection_service(
         _prometheus_query_specs(),
         cluster_id=config.cluster_id,
     )
+    prometheus_workload_provider = PrometheusWorkloadMetricProvider(
+        prometheus_client,
+        _prometheus_workload_query_specs(),
+        cluster_id=config.cluster_id,
+    )
     return ProfileAwareIncidentCollectionService(
         incident_repository,
         (
@@ -411,6 +434,12 @@ def build_collection_service(
             CollectorSpec(
                 "prometheus",
                 prometheus_provider,
+                timeout_seconds=config.provider_timeout_seconds,
+                max_attempts=2,
+            ),
+            CollectorSpec(
+                "prometheus-workload",
+                prometheus_workload_provider,
                 timeout_seconds=config.provider_timeout_seconds,
                 max_attempts=2,
             ),
@@ -746,6 +775,7 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
             DeploymentChangeEvidenceProjector(),
             KubernetesEvidenceProjector(),
             PrometheusMetricEvidenceProjector(),
+            PrometheusWorkloadMetricEvidenceProjector(),
             KRCAPIEdgeEvidenceProjector(),
         ),
     )

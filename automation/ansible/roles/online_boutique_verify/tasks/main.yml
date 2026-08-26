@@ -239,6 +239,14 @@
     and 'agent_rca_api_failure_rate' in online_boutique_rca_rules.stdout
     and 'agent_rca_api_latency_p95_milliseconds' in online_boutique_rca_rules.stdout
     and 'agent_rca_api_latency_baseline_p95_milliseconds' in online_boutique_rca_rules.stdout
+    and 'agent_rca_pod_memory_working_set_ratio' in online_boutique_rca_rules.stdout
+    and (
+      (online_boutique_rca_rules.stdout | from_json)['data']['groups']
+      | map(attribute='rules') | flatten
+      | selectattr('name', 'equalto', 'agent_rca_pod_memory_working_set_ratio')
+      | selectattr('health', 'equalto', 'ok')
+      | list | length == 1
+    )
   changed_when: false
 
 - name: Require healthy live KRCA recording rules
@@ -256,6 +264,27 @@
     - agent_rca_api_failure_rate
     - agent_rca_api_latency_p95_milliseconds
     - agent_rca_api_latency_baseline_p95_milliseconds
+    - agent_rca_pod_memory_working_set_ratio
+
+- name: Wait for UID-backed Pod memory ratio metrics in Prometheus
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ observability_namespace
+        }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=count%28agent_rca_pod_memory_working_set_ratio%7Bnamespace%3D%22online-boutique%22%7D%29
+  register: online_boutique_pod_memory_metrics
+  retries: 18
+  delay: 10
+  until: >-
+    (online_boutique_pod_memory_metrics.stdout | from_json)['data']['result'] | length > 0
+    and ((online_boutique_pod_memory_metrics.stdout | from_json)['data']['result'][0]
+    ['value'][1] | float) > 0
+  changed_when: false
 
 - name: Read the opt-in Agent RCA alerting rule
   ansible.builtin.command:

@@ -65,6 +65,15 @@ Evidence subject에 추가한 뒤 `PrometheusMetricEvidenceProjector`가 allowli
 summary만 logical Service의 time-bounded Event로 변환한다. raw sample과 query text는 Graph
 attribute가 되지 않으며 metric Event는 `recent_change_evidence_ids`에서 제외한다.
 
+Pod 이름이 rollout마다 달라지는 workload metric은 별도
+`PrometheusWorkloadMetricProvider`가 처리한다. Incident의 exact Service root에서 만든
+prefix만 PromQL selector에 허용하며, 반환된 각 series가 그 prefix 범위에 속하는지 다시
+검사한다. `agent_rca_pod_memory_working_set_ratio` recording rule은 cAdvisor working set과
+kube-state-metrics memory limit을 container별로 비교하고 `kube_pod_info`의 Pod UID를
+결합한다. Provider는 UID가 없는 series나 범위 밖 Pod를 거부하고, series가 없으면 가상의
+Pod Evidence를 만들지 않는다. `PrometheusWorkloadMetricEvidenceProjector`는 정규화된
+summary를 동일 UID의 Kubernetes Pod Entity에만 투영한다.
+
 ### PrometheusAPIFeatureProvider
 
 ```text

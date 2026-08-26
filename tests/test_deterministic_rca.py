@@ -19,9 +19,11 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "deterministic"
 COLLECTED_AT = datetime(2026, 8, 12, 5, 0, tzinfo=timezone.utc)
 
 
-def load_fixture(path: Path):
+def load_fixture(path: Path, mutate_drafts=None):
     with path.open(encoding="utf-8") as handle:
         fixture = json.load(handle)
+    if mutate_drafts is not None:
+        mutate_drafts(fixture["evidence_drafts"])
     names = tuple(
         dict.fromkeys(draft["subject"]["name"] for draft in fixture["evidence_drafts"])
     )
@@ -72,6 +74,19 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
 
         self.assertEqual(decision.status, fixture["expected_status"])
         self.assertTrue(decision.missing_requirements)
+        self.assertIn("Prometheus", decision.missing_requirements[0])
+
+    def test_oom_metric_from_a_different_pod_uid_cannot_prove_the_cause(self) -> None:
+        _, evidence = load_fixture(
+            FIXTURE_DIR / "oomkilled.json",
+            lambda drafts: drafts[1]["subject"].update(
+                {"uid": "03a09977-3d7c-4df3-b89c-c760ef8509f0"}
+            ),
+        )
+
+        decision = DeterministicRCAEngine().evaluate(evidence)
+
+        self.assertEqual(decision.status, "ABSTAIN")
         self.assertIn("Prometheus", decision.missing_requirements[0])
 
 

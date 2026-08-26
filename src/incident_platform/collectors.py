@@ -26,6 +26,7 @@ COLLECTOR_NAMES = frozenset(
     {
         "prometheus",
         "prometheus-api",
+        "prometheus-workload",
         "logs",
         "kubernetes",
         "deployment",
