@@ -47,6 +47,7 @@ from incident_platform.projectors import (
     DeploymentChangeEvidenceProjector,
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
+    LokiKernelOOMEvidenceProjector,
     PrometheusMetricEvidenceProjector,
     PrometheusWorkloadMetricEvidenceProjector,
 )
@@ -59,6 +60,7 @@ from incident_platform.providers.kubernetes import (
     KubernetesResourceSpec,
     KubernetesStateProvider,
 )
+from incident_platform.providers.loki import LokiHTTPAPI, LokiKernelOOMProvider
 from incident_platform.providers.prometheus import (
     PrometheusHTTPAPI,
     PrometheusMetricProvider,
@@ -104,6 +106,7 @@ class IncidentWorkerRuntimeConfig:
     kubernetes_token_file: str
     kubernetes_ca_file: str
     prometheus_base_url: str
+    loki_base_url: str
     krca_config_path: str
     neo4j_uri: str
     neo4j_username: str
@@ -175,6 +178,7 @@ class IncidentWorkerRuntimeConfig:
                 "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
             ),
             prometheus_base_url=_required_environment("PROMETHEUS_BASE_URL"),
+            loki_base_url=_required_environment("LOKI_BASE_URL"),
             krca_config_path=_required_environment("INCIDENT_WORKER_KRCA_CONFIG"),
             neo4j_uri=_required_environment("NEO4J_URI"),
             neo4j_username=_required_environment("NEO4J_USERNAME"),
@@ -335,7 +339,11 @@ class ProfileAwareIncidentCollectionService:
         profile = _selected_krca_profile(incident, self._krca_config)
         specs = []
         for spec in self._base_specs:
-            if spec.name not in {"kubernetes", "prometheus-workload"}:
+            if spec.name not in {
+                "kubernetes",
+                "prometheus-workload",
+                "loki-kernel-oom",
+            }:
                 specs.append(spec)
                 continue
             rooted_scope = ResourceScope(
@@ -433,6 +441,14 @@ def build_collection_service(
         _prometheus_workload_query_specs(),
         cluster_id=config.cluster_id,
     )
+    loki_kernel_oom_provider = LokiKernelOOMProvider(
+        LokiHTTPAPI(config.loki_base_url),
+        kubernetes_client,
+        cluster_id=config.cluster_id,
+        pod_page_size=100,
+        max_raw_pods=500,
+        max_matches=50,
+    )
     return ProfileAwareIncidentCollectionService(
         incident_repository,
         (
@@ -451,6 +467,12 @@ def build_collection_service(
             CollectorSpec(
                 "prometheus-workload",
                 prometheus_workload_provider,
+                timeout_seconds=config.provider_timeout_seconds,
+                max_attempts=2,
+            ),
+            CollectorSpec(
+                "loki-kernel-oom",
+                loki_kernel_oom_provider,
                 timeout_seconds=config.provider_timeout_seconds,
                 max_attempts=2,
             ),
@@ -785,6 +807,7 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
         (
             DeploymentChangeEvidenceProjector(),
             KubernetesEvidenceProjector(),
+            LokiKernelOOMEvidenceProjector(),
             PrometheusMetricEvidenceProjector(),
             PrometheusWorkloadMetricEvidenceProjector(),
             KRCAPIEdgeEvidenceProjector(),

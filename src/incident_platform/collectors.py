@@ -27,6 +27,7 @@ COLLECTOR_NAMES = frozenset(
         "prometheus",
         "prometheus-api",
         "prometheus-workload",
+        "loki-kernel-oom",
         "logs",
         "kubernetes",
         "deployment",

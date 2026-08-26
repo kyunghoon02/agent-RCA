@@ -102,6 +102,109 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
         self.assertEqual(decision.status, "ABSTAIN")
         self.assertIn("restart_count_delta", decision.missing_requirements[0])
 
+    def test_kernel_memcg_signal_recovers_oom_when_kubernetes_reason_is_error(self) -> None:
+        def use_kernel_signal(drafts):
+            for draft in drafts:
+                draft["subject"]["cluster_id"] = "agent-rca-dev"
+            drafts[0]["facts"] = {
+                "last_termination_reason": "Error",
+                "last_termination_exit_code": 137,
+            }
+            drafts.append(
+                {
+                    "source": "loki",
+                    "kind": "log-pattern",
+                    "observed_at": "2026-08-12T01:04:58Z",
+                    "subject": dict(drafts[0]["subject"]),
+                    "summary": "Kernel cgroup OOM signal matched the Pod once.",
+                    "facts": {
+                        "pattern_id": "kernel-cgroup-oom",
+                        "kernel_constraint": "CONSTRAINT_MEMCG",
+                        "match_count": 1,
+                        "pod_uid": drafts[0]["subject"]["uid"],
+                        "first_match_at": "2026-08-12T01:04:58Z",
+                        "last_match_at": "2026-08-12T01:04:58Z",
+                    },
+                    "provider": "loki-kernel-oom-provider",
+                    "query": "scoped kernel OOM fixture query",
+                    "locator": "loki://kernel-journal/checkoutservice-abc",
+                }
+            )
+
+        _, evidence = load_fixture(
+            FIXTURE_DIR / "oomkilled.json",
+            use_kernel_signal,
+        )
+
+        decision = DeterministicRCAEngine().evaluate(evidence)
+
+        self.assertEqual(decision.status, "PROVEN")
+        self.assertEqual(
+            decision.root_cause_id, "kubernetes.container-oomkilled"
+        )
+        self.assertIn("kernel recorded", decision.statement)
+        self.assertEqual(len(decision.supporting_evidence_ids), 3)
+
+    def test_exit_137_without_independent_oom_signal_does_not_apply(self) -> None:
+        def use_ambiguous_sigkill(drafts):
+            drafts[0]["facts"] = {
+                "last_termination_reason": "Error",
+                "last_termination_exit_code": 137,
+            }
+
+        _, evidence = load_fixture(
+            FIXTURE_DIR / "oomkilled.json",
+            use_ambiguous_sigkill,
+        )
+
+        decision = DeterministicRCAEngine().evaluate(evidence)
+        oom_evaluation = next(
+            item
+            for item in decision.evaluations
+            if item.rule_id == "kubernetes.container-oomkilled"
+        )
+
+        self.assertEqual(decision.status, "ABSTAIN")
+        self.assertEqual(oom_evaluation.status, "NOT_APPLICABLE")
+
+    def test_kernel_signal_from_an_untrusted_provider_does_not_apply(self) -> None:
+        def use_untrusted_kernel_signal(drafts):
+            for draft in drafts:
+                draft["subject"]["cluster_id"] = "agent-rca-dev"
+            drafts[0]["facts"] = {
+                "last_termination_reason": "Error",
+                "last_termination_exit_code": 137,
+            }
+            drafts.append(
+                {
+                    "source": "loki",
+                    "kind": "log-pattern",
+                    "observed_at": "2026-08-12T01:04:58Z",
+                    "subject": dict(drafts[0]["subject"]),
+                    "summary": "Untrusted OOM-like signal.",
+                    "facts": {
+                        "pattern_id": "kernel-cgroup-oom",
+                        "kernel_constraint": "CONSTRAINT_MEMCG",
+                        "match_count": 1,
+                        "pod_uid": drafts[0]["subject"]["uid"],
+                        "first_match_at": "2026-08-12T01:04:58Z",
+                        "last_match_at": "2026-08-12T01:04:58Z",
+                    },
+                    "provider": "generic-log-provider",
+                    "query": "fixture query",
+                    "locator": "loki://fixture",
+                }
+            )
+
+        _, evidence = load_fixture(
+            FIXTURE_DIR / "oomkilled.json",
+            use_untrusted_kernel_signal,
+        )
+
+        decision = DeterministicRCAEngine().evaluate(evidence)
+
+        self.assertEqual(decision.status, "ABSTAIN")
+
 
 if __name__ == "__main__":
     unittest.main()

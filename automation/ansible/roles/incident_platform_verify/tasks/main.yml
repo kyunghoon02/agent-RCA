@@ -1015,7 +1015,7 @@
             incident_platform_alert_delivery.context_seed_source
             in ['krca-top-services', 'source-entity-krca-fallback']
           - incident_platform_alert_delivery.context_path_count | int >= 1
-          - incident_platform_alert_delivery.collector_count | int == 5
+          - incident_platform_alert_delivery.collector_count | int == 6
         fail_msg: Alertmanager delivery, Evidence collection, or StateGraph localization was incomplete.
   always:
     - name: Resolve the controlled Alertmanager verification alert

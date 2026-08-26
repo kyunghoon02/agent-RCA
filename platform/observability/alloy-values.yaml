@@ -1,3 +1,8 @@
+global:
+  podSecurityContext:
+    supplementalGroups:
+      - 999
+
 alloy:
   configMap:
     create: true
@@ -40,6 +45,31 @@ alloy:
         forward_to = [loki.write.local.receiver]
       }
 
+      loki.source.journal "kernel" {
+        path       = "/var/log/journal"
+        max_age    = "2h"
+        matches    = "_TRANSPORT=kernel"
+        labels     = {
+          cluster_id = "agent-rca-dev",
+          job        = "kernel-journal",
+        }
+        forward_to = [loki.process.kernel_oom.receiver]
+      }
+
+      loki.process "kernel_oom" {
+        stage.regex {
+          expression = "oom-kill:constraint=CONSTRAINT_MEMCG.*oom_memcg=/[^, ]*-pod(?P<pod_uid>[0-9a-f_]{36})\\.slice"
+        }
+
+        stage.labels {
+          values = {
+            pod_uid = "",
+          }
+        }
+
+        forward_to = [loki.write.local.receiver]
+      }
+
       loki.write "local" {
         endpoint {
           url = "http://loki-gateway.observability.svc.cluster.local/loki/api/v1/push"
@@ -52,10 +82,20 @@ alloy:
     limits:
       cpu: 500m
       memory: 512Mi
+  mounts:
+    extra:
+      - name: host-journal
+        mountPath: /var/log/journal
+        readOnly: true
 
 controller:
-  type: deployment
-  replicas: 1
+  type: daemonset
+  volumes:
+    extra:
+      - name: host-journal
+        hostPath:
+          path: /var/log/journal
+          type: Directory
 
 rbac:
   create: true

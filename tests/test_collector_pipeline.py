@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 import time
 import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 from incident_platform.collectors import (
+    COLLECTOR_NAMES,
     CollectorOrchestrator,
     CollectorSpec,
     IncidentCollectionService,
@@ -137,6 +140,22 @@ def collection_scope() -> ResourceScope:
 
 
 class CollectorOrchestratorTests(unittest.TestCase):
+    def test_runtime_collector_allowlist_matches_incident_contract(self) -> None:
+        schema_path = (
+            Path(__file__).parents[1]
+            / "contracts"
+            / "schemas"
+            / "incident.schema.json"
+        )
+        with schema_path.open(encoding="utf-8") as handle:
+            schema = json.load(handle)
+        contract_names = set(
+            schema["properties"]["collector_statuses"]["items"]["properties"]
+            ["collector"]["enum"]
+        )
+
+        self.assertEqual(contract_names, set(COLLECTOR_NAMES))
+
     def test_collector_can_use_a_narrower_window_and_trusted_profile_scope(self) -> None:
         provider = RequestRecordingProvider()
         profile_scope = ResourceScope(

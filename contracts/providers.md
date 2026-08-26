@@ -74,8 +74,9 @@ kube-state-metrics memory limit을 container별로 비교한다.
 bounded increase로 변환한다. 두 rule 모두 `kube_pod_info`의 Pod UID를 결합한다. Provider는
 UID가 없는 series나 범위 밖 Pod를 거부하고, series가 없으면 가상의 Pod Evidence를 만들지
 않는다. Kubernetes API의 현재 `restartCount`를 시간 delta로 오인하지 않으며,
-`OOMKilledRule`은 동일 UID의 Kubernetes termination, Prometheus restart delta와 memory
-limit 근접 Evidence가 모두 있을 때만 원인을 `PROVEN`으로 판정한다.
+`OOMKilledRule`은 동일 UID의 Kubernetes `OOMKilled` 또는 검증된 kernel memcg OOM
+Evidence 중 하나와 Prometheus restart delta, memory limit 근접 Evidence가 모두 있을
+때만 원인을 `PROVEN`으로 판정한다. `Error`와 exit code 137만으로는 OOM을 판정하지 않는다.
 `PrometheusWorkloadMetricEvidenceProjector`는 정규화된 summary를 동일 UID의 Kubernetes
 Pod Entity에만 투영한다.
 
@@ -132,7 +133,21 @@ credential과 개인정보를 redaction한 `log-pattern` EvidenceItem을 반환�
 - 원본 log는 Loki retention에 남기고 Graph에는 저장하지 않는다.
 - 로그가 없다는 사실과 LogsProvider 실패를 구분한다.
 
-목표 runtime adapter는 Loki query API를 사용한다.
+현재 특수 목적 `LokiKernelOOMProvider`는 Alloy가 read-only host journal에서 수집한
+`CONSTRAINT_MEMCG` kernel OOM만 Loki query API로 읽는다. 일반 application log pattern
+adapter는 후속 범위다.
+
+- 먼저 Kubernetes API에서 exact Service root로 파생된 Pod name/UID를 bounded list하고,
+  그 UID regex를 Loki stream selector에 넣는다.
+- Alloy가 추출한 `pod_uid` label과 원본 kernel `oom_memcg` cgroup path에서 Provider가
+  다시 파싱한 UID가 일치해야만 `log-pattern` Evidence를 만든다.
+- PID, container ID와 원본 kernel line은 Evidence/Graph에 복사하지 않고 match count,
+  constraint, first/last match 시각만 정규화한다.
+- 이미 삭제·교체되어 현재 Kubernetes UID mapping이 없는 과거 Pod는 추측으로
+  reconciliation하지 않는다. 이 경우 수집은 fail-closed하며 장기 historical UID
+  inventory는 후속 coverage 과제다.
+- `LokiKernelOOMEvidenceProjector`는 검증된 aggregate만 동일 UID Pod의
+  `KERNEL_CGROUP_OOM` Event로 변환한다.
 
 ### KubernetesStateProvider
 

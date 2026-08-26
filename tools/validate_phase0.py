@@ -398,7 +398,7 @@ def validate_versions_and_manifests() -> None:
             "chart_ref": "grafana/alloy",
             "chart_repository": "https://grafana.github.io/helm-charts",
             "chart_version": "1.11.1",
-            "controller_type": "deployment",
+            "controller_type": "daemonset",
         },
     }
     if versions.get("observability") != expected_observability:
@@ -966,9 +966,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-8772e2bfacc0",
+            "image_tag": "runtime-52a3f7be7492",
             "image_digest": (
-                "sha256:650865467445122e3cfac67520f4a3957a40c999a80c32ca3d259808cc4ba6c6"
+                "sha256:271d3e5f052bcf5593f9597623cbe0ad496c6c2490d2336a5c0463b10947c7a9"
             ),
         },
         "webhook": {
@@ -1225,6 +1225,8 @@ def validate_incident_platform_manifest() -> None:
         != {"name": "postgresql-auth", "key": "password"}
         or worker_env.get("PROMETHEUS_BASE_URL", {}).get("value")
         != "http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090"
+        or worker_env.get("LOKI_BASE_URL", {}).get("value")
+        != "http://loki-gateway.observability.svc.cluster.local"
         or worker_env.get("INCIDENT_WORKER_KRCA_CONFIG", {}).get("value")
         != "/app/config/online-boutique-krca.yaml"
         or worker_env.get("NEO4J_URI", {}).get("value")
@@ -1579,17 +1581,40 @@ def validate_observability_values() -> None:
         raise ValidationFailure("Tempo monolithic/private retention boundary drifted")
 
     if (
-        alloy.get("controller", {}).get("type") != "deployment"
-        or alloy.get("controller", {}).get("replicas") != 1
+        alloy.get("controller", {}).get("type") != "daemonset"
         or alloy.get("service", {}).get("type") != "ClusterIP"
     ):
-        raise ValidationFailure("Alloy deployment/private service boundary drifted")
+        raise ValidationFailure("Alloy DaemonSet/private service boundary drifted")
     alloy_config = alloy.get("alloy", {}).get("configMap", {}).get("content", "")
     if (
         'loki.source.kubernetes "pods"' not in alloy_config
         or 'replacement  = "agent-rca-dev"' not in alloy_config
+        or 'loki.source.journal "kernel"' not in alloy_config
+        or 'matches    = "_TRANSPORT=kernel"' not in alloy_config
+        or 'loki.process "kernel_oom"' not in alloy_config
+        or "CONSTRAINT_MEMCG" not in alloy_config
+        or "pod_uid" not in alloy_config
     ):
-        raise ValidationFailure("Alloy Kubernetes log normalization drifted")
+        raise ValidationFailure("Alloy log normalization drifted")
+    pod_security = alloy.get("global", {}).get("podSecurityContext", {})
+    mounts = alloy.get("alloy", {}).get("mounts", {}).get("extra", [])
+    volumes = alloy.get("controller", {}).get("volumes", {}).get("extra", [])
+    if (
+        pod_security.get("supplementalGroups") != [999]
+        or not any(
+            mount.get("name") == "host-journal"
+            and mount.get("mountPath") == "/var/log/journal"
+            and mount.get("readOnly") is True
+            for mount in mounts
+        )
+        or not any(
+            volume.get("name") == "host-journal"
+            and volume.get("hostPath")
+            == {"path": "/var/log/journal", "type": "Directory"}
+            for volume in volumes
+        )
+    ):
+        raise ValidationFailure("Alloy host journal read boundary drifted")
     for rule in alloy.get("rbac", {}).get("rules", []):
         resources = set(rule.get("resources", []))
         verbs = set(rule.get("verbs", []))

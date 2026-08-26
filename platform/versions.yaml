@@ -75,7 +75,7 @@ observability:
     chart_ref: grafana/alloy
     chart_repository: https://grafana.github.io/helm-charts
     chart_version: "1.11.1"
-    controller_type: deployment
+    controller_type: daemonset
 
 stategraph:
   namespace: graph-rca
@@ -97,8 +97,8 @@ incident_platform:
   reconciler:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
-    image_tag: runtime-8772e2bfacc0
-    image_digest: sha256:650865467445122e3cfac67520f4a3957a40c999a80c32ca3d259808cc4ba6c6
+    image_tag: runtime-52a3f7be7492
+    image_digest: sha256:271d3e5f052bcf5593f9597623cbe0ad496c6c2490d2336a5c0463b10947c7a9
   webhook:
     server: gunicorn
     server_version: 26.0.0

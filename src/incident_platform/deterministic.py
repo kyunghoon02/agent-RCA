@@ -61,29 +61,54 @@ def _same_subject(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
     return True
 
 
+def _at_least(value: object, threshold: float) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and value >= threshold
+    )
+
+
 class OOMKilledRule:
     rule_id = "kubernetes.container-oomkilled"
 
     def evaluate(self, evidence: Sequence[Mapping[str, Any]]) -> RuleEvaluation:
-        terminations = [
+        kubernetes_terminations = [
             item
             for item in evidence
             if item.get("source") == "kubernetes"
             and item.get("kind") == "resource-state"
             and _facts(item).get("last_termination_reason") == "OOMKilled"
         ]
-        if not terminations:
+        kernel_oom_signals = [
+            item
+            for item in evidence
+            if item.get("source") == "loki"
+            and item.get("kind") == "log-pattern"
+            and isinstance(item.get("provenance"), Mapping)
+            and item["provenance"].get("provider")
+            == "loki-kernel-oom-provider"
+            and _facts(item).get("pattern_id") == "kernel-cgroup-oom"
+            and _facts(item).get("kernel_constraint") == "CONSTRAINT_MEMCG"
+            and _at_least(_facts(item).get("match_count"), 1)
+            and isinstance(item.get("subject"), Mapping)
+            and item["subject"].get("kind") == "Pod"
+            and bool(item["subject"].get("uid"))
+            and _facts(item).get("pod_uid") == item["subject"].get("uid")
+        ]
+        signatures = [*kubernetes_terminations, *kernel_oom_signals]
+        if not signatures:
             return RuleEvaluation(self.rule_id, "NOT_APPLICABLE", "")
 
-        for termination in terminations:
+        for signature in signatures:
             restarts = [
                 item
                 for item in evidence
                 if item.get("source") == "prometheus"
                 and item.get("kind") == "metric-summary"
                 and _facts(item).get("metric") == "restart_count_delta"
-                and _facts(item).get("peak_delta", 0) >= 1
-                and _same_subject(termination, item)
+                and _at_least(_facts(item).get("peak_delta"), 1)
+                and _same_subject(signature, item)
             ]
             metrics = [
                 item
@@ -91,42 +116,49 @@ class OOMKilledRule:
                 if item.get("source") == "prometheus"
                 and item.get("kind") == "metric-summary"
                 and _facts(item).get("metric") == "memory_working_set_ratio"
-                and _facts(item).get("peak_ratio", 0) >= 0.95
-                and _same_subject(termination, item)
+                and _at_least(_facts(item).get("peak_ratio"), 0.95)
+                and _same_subject(signature, item)
             ]
             if restarts and metrics:
+                if signature.get("source") == "kubernetes":
+                    statement = (
+                        "Container memory usage reached its limit and the container "
+                        "was terminated with OOMKilled."
+                    )
+                else:
+                    statement = (
+                        "The kernel recorded a Pod cgroup OOM while memory usage "
+                        "reached its limit and the Pod restart count increased."
+                    )
                 return RuleEvaluation(
                     rule_id=self.rule_id,
                     status="PROVEN",
-                    statement=(
-                        "Container memory usage reached its limit and the container "
-                        "was terminated with OOMKilled."
-                    ),
+                    statement=statement,
                     supporting_evidence_ids=(
-                        termination["evidence_id"],
+                        signature["evidence_id"],
                         restarts[0]["evidence_id"],
                         metrics[0]["evidence_id"],
                     ),
                 )
         matching_restarts = [
             item
-            for termination in terminations
+            for signature in signatures
             for item in evidence
             if item.get("source") == "prometheus"
             and item.get("kind") == "metric-summary"
             and _facts(item).get("metric") == "restart_count_delta"
-            and _facts(item).get("peak_delta", 0) >= 1
-            and _same_subject(termination, item)
+            and _at_least(_facts(item).get("peak_delta"), 1)
+            and _same_subject(signature, item)
         ]
         matching_memory = [
             item
-            for termination in terminations
+            for signature in signatures
             for item in evidence
             if item.get("source") == "prometheus"
             and item.get("kind") == "metric-summary"
             and _facts(item).get("metric") == "memory_working_set_ratio"
-            and _facts(item).get("peak_ratio", 0) >= 0.95
-            and _same_subject(termination, item)
+            and _at_least(_facts(item).get("peak_ratio"), 0.95)
+            and _same_subject(signature, item)
         ]
         missing = []
         if not matching_restarts:
@@ -141,13 +173,13 @@ class OOMKilledRule:
             rule_id=self.rule_id,
             status="INSUFFICIENT",
             statement=(
-                "OOMKilled was observed but restart and memory-limit corroboration "
-                "is incomplete."
+                "An exact Pod OOM signal was observed but restart and memory-limit "
+                "corroboration is incomplete."
             ),
             supporting_evidence_ids=tuple(
                 dict.fromkeys(
                     item["evidence_id"]
-                    for item in (*terminations, *matching_restarts, *matching_memory)
+                    for item in (*signatures, *matching_restarts, *matching_memory)
                 )
             ),
             missing_requirements=tuple(missing),
