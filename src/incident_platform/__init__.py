@@ -56,7 +56,9 @@ from .postgresql import (
 )
 from .providers import (
     APIDependencySpec,
+    DeploymentHistoryProvider,
     KubernetesHTTPAPI,
+    KubernetesIncidentProvider,
     KubernetesInventoryProvider,
     KubernetesResourcePage,
     KubernetesResourceSpec,
@@ -144,6 +146,7 @@ from .krca import (
     KRCAScoredEdge,
 )
 from .projectors import (
+    DeploymentChangeEvidenceProjector,
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     PrometheusMetricEvidenceProjector,
@@ -189,6 +192,8 @@ __all__ = [
     "ContractViolation",
     "DeterministicDecision",
     "DeterministicRCAEngine",
+    "DeploymentChangeEvidenceProjector",
+    "DeploymentHistoryProvider",
     "EvidenceBuilder",
     "EvidenceGate",
     "EvidenceBackedKRCADrilldownService",
@@ -230,6 +235,7 @@ __all__ = [
     "InvestigationScope",
     "InvestigationScopeFactory",
     "KubernetesHTTPAPI",
+    "KubernetesIncidentProvider",
     "KubernetesInventoryProvider",
     "KubernetesResourcePage",
     "KubernetesEvidenceProjector",

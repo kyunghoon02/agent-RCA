@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from incident_platform.collectors import (
+    CollectionRun,
     CollectorOrchestrator,
     CollectorSpec,
     IncidentCollectionService,
@@ -40,6 +41,7 @@ from incident_platform.stategraph import InMemoryStateGraphRepository
 from tools.run_incident_worker import (
     IncidentWorker,
     IncidentWorkerRuntimeConfig,
+    ProfileAwareIncidentCollectionService,
     _prometheus_query_specs,
 )
 
@@ -154,6 +156,18 @@ class KubernetesStaticProvider:
         )
 
 
+class IncidentLookupOnlyRepository:
+    def get(self, incident_id):
+        return {
+            "alert": {"labels": {}},
+            "source_entity": {
+                "kind": "Service",
+                "namespace": "online-boutique",
+                "name": "frontend",
+            },
+        }
+
+
 class KRCAInsufficientStaticProvider:
     def collect(self, request):
         return ProviderBatch(
@@ -255,6 +269,37 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(len(specs), 4)
         self.assertEqual({spec.resource_label for spec in specs}, {"service_name"})
         self.assertTrue(all(spec.expression_template.count("{scope}") == 1 for spec in specs))
+
+    def test_kubernetes_incident_scope_adds_only_root_derived_prefixes(self) -> None:
+        service = ProfileAwareIncidentCollectionService(
+            IncidentLookupOnlyRepository(),
+            (CollectorSpec("kubernetes", KubernetesStaticProvider()),),
+            object(),
+            krca_config(),
+        )
+        scope = ResourceScope(
+            namespace="online-boutique",
+            resource_names=("frontend",),
+            max_items=32,
+        )
+        with patch(
+            "tools.run_incident_worker.IncidentCollectionService"
+        ) as service_factory:
+            service_factory.return_value.collect_claimed_incident.return_value = (
+                CollectionRun(status="SUCCEEDED", executions=tuple())
+            )
+
+            service.collect_claimed_incident(
+                "inc-worker-rooted-scope-0001",
+                scope=scope,
+                observed_at=NOW,
+            )
+
+        orchestrator = service_factory.call_args.args[1]
+        rooted_scope = orchestrator._specs[0].request_scope
+        self.assertEqual(rooted_scope.resource_names, ("frontend",))
+        self.assertEqual(rooted_scope.resource_name_prefixes, ("frontend-",))
+        self.assertEqual(rooted_scope.max_items, 32)
 
     def test_worker_claims_collects_and_completes_one_service_incident(self) -> None:
         incidents = InMemoryIncidentRepository()

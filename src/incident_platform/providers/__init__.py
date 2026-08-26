@@ -1,7 +1,9 @@
 """Read-only telemetry provider adapters."""
 
+from .change import DeploymentHistoryProvider
 from .kubernetes import (
     KubernetesHTTPAPI,
+    KubernetesIncidentProvider,
     KubernetesInventoryProvider,
     KubernetesResourceSpec,
     KubernetesResourcePage,
@@ -19,7 +21,9 @@ from .krca_metrics import (
 )
 
 __all__ = [
+    "DeploymentHistoryProvider",
     "KubernetesHTTPAPI",
+    "KubernetesIncidentProvider",
     "KubernetesInventoryProvider",
     "KubernetesResourcePage",
     "KubernetesResourceSpec",

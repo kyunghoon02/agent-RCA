@@ -1508,8 +1508,9 @@ class Neo4jStateGraphRepository:
                        recent_snapshot_evidence,
                        collect(event.evidence_ids) AS event_evidence,
                        collect(CASE
-                         WHEN coalesce(event.event_type, '') <>
-                              'PROMETHEUS_METRIC_SUMMARY'
+                         WHEN NOT coalesce(event.event_type, '') IN
+                              ['PROMETHEUS_METRIC_SUMMARY',
+                               'DEPLOYMENT_CHANGE_ABSENCE']
                           AND event.first_seen_at >= $window_start
                           AND event.first_seen_at <= $window_end
                          THEN event.evidence_ids ELSE []

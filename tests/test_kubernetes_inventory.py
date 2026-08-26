@@ -107,7 +107,14 @@ def inventory_resources() -> dict[str, tuple[dict, ...]]:
         status={
             "phase": "Running",
             "containerStatuses": [
-                {"name": "server", "ready": True, "restartCount": 0}
+                {
+                    "name": "server",
+                    "ready": True,
+                    "restartCount": 1,
+                    "lastState": {
+                        "terminated": {"reason": "OOMKilled", "exitCode": 137}
+                    },
+                }
             ],
         },
     )
@@ -213,6 +220,9 @@ class KubernetesInventoryProviderTests(unittest.TestCase):
         endpoint = next(item for item in batch.items if item.subject["kind"] == "EndpointSlice")
         self.assertEqual(endpoint.facts["endpoint_count"], 1)
         self.assertNotIn("10.244.0.20", str(endpoint.facts))
+        pod = next(item for item in batch.items if item.subject["kind"] == "Pod")
+        self.assertEqual(pod.facts["last_termination_reason"], "OOMKilled")
+        self.assertEqual(pod.facts["last_exit_code"], 137)
 
     def test_inventory_projects_idempotently_and_resolves_logical_service(self) -> None:
         provider = KubernetesInventoryProvider(

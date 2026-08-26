@@ -166,7 +166,12 @@ diff_revisions(deployment, namespace, from_revision, to_revision)
 ```
 
 MVP에서는 Kubernetes Deployment/ReplicaSet 상태만 사용한다. GitHub와 Argo CD
-이력은 2차 provider다.
+이력은 2차 provider다. 현재 adapter는 exact Deployment GET과 namespace-bounded
+ReplicaSet pagination만 수행하고 Deployment UID가 정확히 일치하는 owner revision만
+retained history로 인정한다. Incident window 안 revision은 이전 retained pod template과
+비교하며 image 원문은 basename과 fingerprint로, resource 설정은 CPU·memory·ephemeral
+storage requests/limits로 제한한다. 변경이 없으면 `NO_CHANGES`, retention/truncation 때문에
+판단이 불완전하면 `HISTORY_INCOMPLETE` Evidence를 반환한다.
 
 ### StateGraphRepository
 

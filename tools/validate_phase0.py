@@ -964,9 +964,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-c6bdb6f1631b",
+            "image_tag": "runtime-5edc928f92fb",
             "image_digest": (
-                "sha256:e526c699c28afaaa85b59de234f4f8593bdf3a75295e27e1546409d3967912cc"
+                "sha256:eb098b5cc4e5fb60dd635b9a5ae01e6d97b61ba87472c33be7b9e39e53a6a8da"
             ),
         },
         "webhook": {

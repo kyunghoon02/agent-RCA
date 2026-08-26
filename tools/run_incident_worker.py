@@ -8,7 +8,7 @@ import os
 import signal
 import ssl
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol
@@ -44,13 +44,17 @@ from incident_platform.postgresql import (
     apply_migrations,
 )
 from incident_platform.projectors import (
+    DeploymentChangeEvidenceProjector,
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     PrometheusMetricEvidenceProjector,
 )
+from incident_platform.providers.change import DeploymentHistoryProvider
 from incident_platform.providers.http import BoundedJSONTransport
 from incident_platform.providers.kubernetes import (
     KubernetesHTTPAPI,
+    KubernetesIncidentProvider,
+    KubernetesInventoryProvider,
     KubernetesResourceSpec,
     KubernetesStateProvider,
 )
@@ -300,7 +304,20 @@ class ProfileAwareIncidentCollectionService:
     ) -> CollectionRun:
         incident = self._repository.get(incident_id)
         profile = _selected_krca_profile(incident, self._krca_config)
-        specs = list(self._base_specs)
+        specs = []
+        for spec in self._base_specs:
+            if spec.name != "kubernetes":
+                specs.append(spec)
+                continue
+            rooted_scope = ResourceScope(
+                namespace=scope.namespace,
+                resource_names=scope.resource_names,
+                resource_name_prefixes=tuple(
+                    f"{name}-" for name in scope.resource_names
+                ),
+                max_items=scope.max_items,
+            )
+            specs.append(replace(spec, request_scope=rooted_scope))
         if profile is not None:
             specs.append(
                 CollectorSpec(
@@ -343,13 +360,38 @@ def build_collection_service(
             ssl_context=ssl_context,
         ),
     )
-    kubernetes_provider = KubernetesStateProvider(
+    kubernetes_inventory = KubernetesInventoryProvider(
+        kubernetes_client,
+        cluster_id=config.cluster_id,
+        page_size=100,
+        max_raw_resources=500,
+    )
+    service_events = KubernetesStateProvider(
         kubernetes_client,
         KubernetesResourceSpec("v1", "Service", required=True),
         cluster_id=config.cluster_id,
         include_events=True,
         event_page_size=20,
-        max_events=20,
+        max_events=4,
+    )
+    pod_events = KubernetesStateProvider(
+        kubernetes_client,
+        KubernetesResourceSpec("v1", "Pod", required=True),
+        cluster_id=config.cluster_id,
+        include_events=True,
+        event_page_size=20,
+        max_events=8,
+    )
+    kubernetes_provider = KubernetesIncidentProvider(
+        kubernetes_inventory,
+        service_events,
+        pod_events,
+    )
+    deployment_provider = DeploymentHistoryProvider(
+        kubernetes_client,
+        cluster_id=config.cluster_id,
+        page_size=100,
+        max_replica_sets=500,
     )
     prometheus_client = PrometheusHTTPAPI(config.prometheus_base_url)
     prometheus_provider = PrometheusMetricProvider(
@@ -369,6 +411,12 @@ def build_collection_service(
             CollectorSpec(
                 "prometheus",
                 prometheus_provider,
+                timeout_seconds=config.provider_timeout_seconds,
+                max_attempts=2,
+            ),
+            CollectorSpec(
+                "deployment",
+                deployment_provider,
                 timeout_seconds=config.provider_timeout_seconds,
                 max_attempts=2,
             ),
@@ -695,6 +743,7 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
         incident_repository,
         graph_repository,
         (
+            DeploymentChangeEvidenceProjector(),
             KubernetesEvidenceProjector(),
             PrometheusMetricEvidenceProjector(),
             KRCAPIEdgeEvidenceProjector(),

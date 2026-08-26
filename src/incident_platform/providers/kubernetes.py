@@ -10,7 +10,7 @@ from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from ..errors import PermanentProviderError, ProviderError, RetryableProviderError
-from ..evidence import CollectionRequest, EvidenceDraft, ProviderBatch
+from ..evidence import CollectionRequest, EvidenceDraft, ProviderBatch, ResourceScope
 from .http import BoundedJSONTransport, ProviderNotFound, ProviderPageExpired
 
 
@@ -791,8 +791,26 @@ class KubernetesInventoryProvider:
                             "last_termination_reason": terminated.get("reason")
                             if isinstance(terminated, Mapping)
                             else None,
+                            "last_exit_code": terminated.get("exitCode")
+                            if isinstance(terminated, Mapping)
+                            else None,
                         }
                     )
+            waiting_reasons = {
+                item["waiting_reason"]
+                for item in safe_statuses
+                if item["waiting_reason"]
+            }
+            termination_reasons = {
+                item["last_termination_reason"]
+                for item in safe_statuses
+                if item["last_termination_reason"]
+            }
+            exit_codes = {
+                item["last_exit_code"]
+                for item in safe_statuses
+                if item["last_exit_code"] is not None
+            }
             facts.update(
                 {
                     "phase": status.get("phase"),
@@ -803,6 +821,12 @@ class KubernetesInventoryProvider:
                     "container_statuses": safe_statuses,
                 }
             )
+            if len(waiting_reasons) == 1:
+                facts["waiting_reason"] = next(iter(waiting_reasons))
+            if len(termination_reasons) == 1:
+                facts["last_termination_reason"] = next(iter(termination_reasons))
+            if len(exit_codes) == 1:
+                facts["last_exit_code"] = next(iter(exit_codes))
         elif kind == "EndpointSlice":
             endpoints = resource.get("endpoints", [])
             ready = 0
@@ -1263,3 +1287,143 @@ class KubernetesStateProvider:
         if match:
             facts["missing_kind"] = match.group(1).title().replace("map", "Map")
             facts["missing_name"] = match.group(2)
+
+
+class KubernetesIncidentProvider:
+    """Combine rooted workload inventory with bounded Service and Pod Events.
+
+    Inventory establishes which dynamic Pod names belong to the exact logical
+    service roots. Event collection is then restricted to those admitted names,
+    so a caller cannot broaden an Incident by supplying an arbitrary prefix.
+    """
+
+    def __init__(
+        self,
+        inventory: KubernetesInventoryProvider,
+        service_events: KubernetesStateProvider,
+        pod_events: KubernetesStateProvider,
+    ) -> None:
+        self._inventory = inventory
+        self._service_events = service_events
+        self._pod_events = pod_events
+
+    def collect(self, request: CollectionRequest) -> ProviderBatch:
+        deadline = time.monotonic() + request.timeout_seconds
+        inventory_batch = self._inventory.collect(request)
+        items = list(inventory_batch.items)
+        partial_reasons = []
+        if inventory_batch.status == "PARTIAL" and inventory_batch.error:
+            partial_reasons.append(inventory_batch.error)
+
+        service_scope = ResourceScope(
+            namespace=request.scope.namespace,
+            resource_names=request.scope.resource_names,
+            max_items=request.scope.max_items,
+        )
+        self._collect_events(
+            items,
+            partial_reasons,
+            self._service_events,
+            request,
+            service_scope,
+            deadline,
+            label="service events",
+        )
+
+        pod_names = tuple(
+            sorted(
+                {
+                    str(item.subject.get("name"))
+                    for item in inventory_batch.items
+                    if item.kind == "resource-state"
+                    and item.subject.get("kind") == "Pod"
+                    and item.subject.get("name")
+                }
+            )
+        )
+        if pod_names:
+            pod_scope = ResourceScope(
+                namespace=request.scope.namespace,
+                resource_names=pod_names,
+                max_items=request.scope.max_items,
+            )
+            self._collect_events(
+                items,
+                partial_reasons,
+                self._pod_events,
+                request,
+                pod_scope,
+                deadline,
+                label="pod events",
+            )
+
+        if len(items) > request.scope.max_items:
+            items = items[: request.scope.max_items]
+            partial_reasons.append(
+                "Kubernetes Incident Evidence exceeded the item budget and was truncated"
+            )
+        if partial_reasons:
+            return ProviderBatch(
+                items=tuple(items),
+                status="PARTIAL",
+                error="; ".join(partial_reasons),
+            )
+        return ProviderBatch(items=tuple(items))
+
+    @staticmethod
+    def _derived_request(
+        request: CollectionRequest,
+        scope: ResourceScope,
+        deadline: float,
+    ) -> CollectionRequest:
+        return CollectionRequest(
+            request_id=request.request_id,
+            incident_id=request.incident_id,
+            window=request.window,
+            scope=scope,
+            timeout_seconds=KubernetesStateProvider._remaining(deadline),
+            attempt=request.attempt,
+        )
+
+    @staticmethod
+    def _append_events(
+        items: list[EvidenceDraft],
+        partial_reasons: list[str],
+        provider: KubernetesStateProvider,
+        request: CollectionRequest,
+        *,
+        label: str,
+    ) -> None:
+        try:
+            batch = provider.collect(request)
+        except ProviderError as error:
+            partial_reasons.append(f"{label}: {error}")
+            return
+        items.extend(item for item in batch.items if item.kind == "kubernetes-event")
+        if batch.status == "PARTIAL" and batch.error:
+            partial_reasons.append(f"{label}: {batch.error}")
+
+    @classmethod
+    def _collect_events(
+        cls,
+        items: list[EvidenceDraft],
+        partial_reasons: list[str],
+        provider: KubernetesStateProvider,
+        request: CollectionRequest,
+        scope: ResourceScope,
+        deadline: float,
+        *,
+        label: str,
+    ) -> None:
+        try:
+            derived_request = cls._derived_request(request, scope, deadline)
+        except ProviderError as error:
+            partial_reasons.append(f"{label}: {error}")
+            return
+        cls._append_events(
+            items,
+            partial_reasons,
+            provider,
+            derived_request,
+            label=label,
+        )

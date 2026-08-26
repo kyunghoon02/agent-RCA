@@ -579,6 +579,37 @@
                     = '{{ incident_platform_alert_verification_id }}'
                 )
               ),
+              'kubernetes_pod_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'kubernetes'
+                  AND evidence.document->'subject'->>'kind' = 'Pod'
+                  AND evidence.document->>'kind' = 'resource-state'
+              ),
+              'deployment_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'deployment'
+                  AND evidence.document->>'kind' = 'deployment-change'
+              ),
+              'deployment_no_change_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'deployment'
+                  AND evidence.document->'facts'->>'result_status' = 'NO_CHANGES'
+              ),
               'krca_feature_evidence_count', (
                 SELECT count(*) FROM evidence_items evidence
                 WHERE evidence.incident_id IN (
@@ -674,6 +705,33 @@
                   AND evidence.document->>'source' = 'prometheus'
                   AND evidence.document->'facts'->>'feature_set' IS NULL
                   AND context.document->'evidence_ids' ? evidence.evidence_id
+              ),
+              'context_deployment_evidence_count', (
+                SELECT count(*)
+                FROM context_packages context
+                JOIN evidence_items evidence
+                  ON evidence.incident_id = context.incident_id
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'deployment'
+                  AND context.document->'evidence_ids' ? evidence.evidence_id
+              ),
+              'context_recent_deployment_evidence_count', (
+                SELECT count(*)
+                FROM context_packages context
+                JOIN evidence_items evidence
+                  ON evidence.incident_id = context.incident_id
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'deployment'
+                  AND context.document->'recent_change_evidence_ids'
+                    ? evidence.evidence_id
               ),
               'context_krca_feature_evidence_count', (
                 SELECT count(*)
@@ -771,15 +829,18 @@
           )
         )
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_count | int == 1)
-        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int >= 14)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int >= 19)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_metric_evidence_count | int == 4)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_deployment_evidence_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_krca_feature_evidence_count | int == 9)
         and (
           ((incident_platform_alert_delivery_result.stdout | trim | from_json).krca_feature_has_data_count | int)
           + ((incident_platform_alert_delivery_result.stdout | trim | from_json).krca_feature_insufficient_data_count | int)
           == 9
         )
-        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).evidence_count | int >= 14)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).evidence_count | int >= 19)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).kubernetes_pod_evidence_count | int >= 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).deployment_evidence_count | int == 1)
       retries: 60
       delay: 2
 
@@ -798,7 +859,10 @@
           - incident_platform_alert_delivery.collecting_audit_count | int == 1
           - incident_platform_alert_delivery.localizing_audit_count | int == 1
           - incident_platform_alert_delivery.analyzing_audit_count | int == 1
-          - incident_platform_alert_delivery.evidence_count | int >= 14
+          - incident_platform_alert_delivery.evidence_count | int >= 19
+          - incident_platform_alert_delivery.kubernetes_pod_evidence_count | int >= 1
+          - incident_platform_alert_delivery.deployment_evidence_count | int == 1
+          - incident_platform_alert_delivery.deployment_no_change_count | int == 1
           - incident_platform_alert_delivery.krca_feature_evidence_count | int == 9
           - >-
             (incident_platform_alert_delivery.krca_feature_has_data_count | int)
@@ -823,8 +887,10 @@
               and (incident_platform_alert_delivery.analysis_work_succeeded_count | int == 1)
             )
           - incident_platform_alert_delivery.context_count | int == 1
-          - incident_platform_alert_delivery.context_evidence_count | int >= 14
+          - incident_platform_alert_delivery.context_evidence_count | int >= 19
           - incident_platform_alert_delivery.context_metric_evidence_count | int == 4
+          - incident_platform_alert_delivery.context_deployment_evidence_count | int == 1
+          - incident_platform_alert_delivery.context_recent_deployment_evidence_count | int == 0
           - incident_platform_alert_delivery.context_krca_feature_evidence_count | int == 9
           - incident_platform_alert_delivery.context_recent_krca_feature_evidence_count | int == 0
           - incident_platform_alert_delivery.context_recent_metric_evidence_count | int == 0
@@ -833,7 +899,7 @@
             incident_platform_alert_delivery.context_seed_source
             in ['krca-top-services', 'source-entity-krca-fallback']
           - incident_platform_alert_delivery.context_path_count | int >= 1
-          - incident_platform_alert_delivery.collector_count | int == 3
+          - incident_platform_alert_delivery.collector_count | int == 4
         fail_msg: Alertmanager delivery, Evidence collection, or StateGraph localization was incomplete.
   always:
     - name: Resolve the controlled Alertmanager verification alert
@@ -1059,6 +1125,12 @@
         created_audit_count: >-
           {{ incident_platform_alert_delivery.created_audit_count }}
         evidence_count: "{{ incident_platform_alert_delivery.evidence_count }}"
+        kubernetes_pod_evidence_count: >-
+          {{ incident_platform_alert_delivery.kubernetes_pod_evidence_count }}
+        deployment_evidence_count: >-
+          {{ incident_platform_alert_delivery.deployment_evidence_count }}
+        deployment_no_change_count: >-
+          {{ incident_platform_alert_delivery.deployment_no_change_count }}
         krca_feature_evidence_count: >-
           {{ incident_platform_alert_delivery.krca_feature_evidence_count }}
         krca_feature_has_data_count: >-
@@ -1078,6 +1150,10 @@
           {{ incident_platform_alert_delivery.context_evidence_count }}
         context_metric_evidence_count: >-
           {{ incident_platform_alert_delivery.context_metric_evidence_count }}
+        context_deployment_evidence_count: >-
+          {{ incident_platform_alert_delivery.context_deployment_evidence_count }}
+        context_recent_deployment_evidence_count: >-
+          {{ incident_platform_alert_delivery.context_recent_deployment_evidence_count }}
         context_krca_feature_evidence_count: >-
           {{ incident_platform_alert_delivery.context_krca_feature_evidence_count }}
         context_recent_krca_feature_evidence_count: >-
