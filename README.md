@@ -55,7 +55,8 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   worker가 Kubernetes Service/Event, service metric과 선택된 KRCA API dependency
   profile Evidence를 수집한다. 이어서 KRCA feature를 logical Service의 `CALLS` 관계로
   projection하고, Top-N 또는 안전한 source fallback으로 Neo4j bounded StateGraph 탐색을
-  실행해 Frozen Context를 저장하고 `ANALYZING`까지 전이하는 경로를 확인했다.
+  실행해 Frozen Context를 저장하고 `ANALYZING`까지 전이한 뒤, exact `context_id`가 고정된
+  analysis work를 `READY`로 남기는 경로를 확인했다.
 - **RCA core:** Incident/Evidence contract, bounded collector, localization, Context-pinned
   analysis claim, read-only Agent tool과 Evidence Gate는 fixture와 contract test로 검증했다.
 - **아직 증명하지 않은 범위:** `ANALYZING` 이후 Agent Report까지의 cluster runtime,
@@ -237,13 +238,13 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 ## Implementation Status
 
-> 기준일: 2026-08-25. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
+> 기준일: 2026-08-26. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
-| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING` live 연결. Context-pinned analysis work와 Agent Worker는 구현됐지만 credit gate로 배포 비활성화 |
+| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING`→Context-pinned analysis work `READY`까지 live 연결. Agent Worker만 credit gate로 배포 비활성화 |
 | Bounded HTTP, Prometheus, Kubernetes provider | adapter와 contract test 구현 | Incident worker가 Service-scoped Kubernetes Service/Event, 고정 allowlist Prometheus query 4개와 선택된 KRCA profile 전용 `prometheus-api` collector를 병렬 실행. 모든 summary는 trusted `cluster_id`와 함께 정규화된다. Loki, Hubble과 다른 Kubernetes kind의 Incident collector는 아직 미연결 |
-| PostgreSQL repository | Incident artifact, fenced collection/localization/analysis work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC 배포, migration 5개가 현재 적용됨. migration 6은 `ANALYZING`과 Frozen Context 생성 순서 모두에서 exact `context_id`를 고정하는 analysis work를 추가하지만 아직 cluster 미적용 |
+| PostgreSQL repository | Incident artifact, fenced collection/localization/analysis work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC에 migration 6개 적용. `ANALYZING`과 Frozen Context 생성 순서 모두에서 exact `context_id`를 고정하는 analysis work가 live 제어 Incident에 `READY`로 생성됨 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile, Evidence-to-Top-N과 profile completeness/fallback 구현 | browse/cart/checkout 3개 profile의 23개 edge가 active-traffic smoke에서 모두 `HAS_DATA`. Incident worker는 alert의 allowlisted `krca_profile`만 수집하며, 최근 traffic이 없던 제어 경보에서는 9개 edge를 `INSUFFICIENT_DATA`로 명시하고 source fallback을 선택해 근거 없는 Top-N 생성을 차단 |
 | Entity resolver와 Temporal StateGraph | Kubernetes/Prometheus/KRCA Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 66개 Evidence→304개 record→76개 current Entity/86개 current Relation 및 `APPLIED` journal을 검증. 제어 Incident는 9개 KRCA `CALLS` Evidence를 포함한 총 14개 Evidence, StateGraph path 40개를 Frozen Context에 저장하고 `ANALYZING` 도달 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
@@ -287,7 +288,7 @@ controlled alert or opt-in PrometheusRule with rca_enabled=true
 → 현재 Incident의 14개 Evidence를 Frozen Context에 고정하고 ANALYZING 전이
 → 현재 Incident에 저장된 evidence_id만 남긴 Frozen Context 저장
 → ANALYZING 전이 + localization work SUCCEEDED
-→ migration 6 적용 시 exact context_id가 고정된 READY analysis work 생성
+→ migration 6 trigger가 exact context_id가 고정된 READY analysis work 생성
 → [credit gate로 현재 비활성] 별도 Agent Worker claim → Evidence Gate → Report → REPORTED
 ```
 
@@ -303,13 +304,14 @@ work 완료만 누락된 경우 reaper가 Incident의 downstream 상태를 기�
 stale worker가 다음 단계의 완료를 덮어쓸 수 없다. exact Entity가 없거나 여러 개면 임의로
 선택하지 않고 Incident와 localization work를 `FAILED`로 닫는다.
 
-2026-08-25 live 검증에서는 제어 경보 1건이 정확히 하나의 Incident가 되어
-`RECEIVED → COLLECTING → LOCALIZING → ANALYZING`으로 이동했고, Kubernetes 1개와
-Prometheus 4개로 총 5개의 normalized Evidence, collector status 2개, 성공한 collection과
-localization work row가 각각 1개씩 남았다. Neo4j의 logical `frontend` Service를 exact
-resolve한 Context 1개에는 현재 Incident의 Kubernetes Evidence 1개와 Prometheus Evidence
-4개, StateGraph path 16개가 고정됐다. metric summary는 서비스 상태 Snapshot을 덮어쓰지
-않는 `PROMETHEUS_METRIC_SUMMARY` Event이며 `recent_change_evidence_ids`에는 포함되지 않았다.
+2026-08-26 live 검증에서는 제어 경보 1건이 정확히 하나의 Incident가 되어
+`RECEIVED → COLLECTING → LOCALIZING → ANALYZING`으로 이동했다. Kubernetes 1개,
+Prometheus service metric 4개와 KRCA API dependency feature 9개로 총 14개의 normalized
+Evidence, collector status 3개, 성공한 collection/localization work와 exact Context에 고정된
+`READY` analysis work가 각각 1개씩 남았다. 최근 traffic이 없어 KRCA feature 9개는 모두
+`INSUFFICIENT_DATA`였고, 근거 없는 Top-N 대신 exact source Service fallback을 사용했다.
+Context 1개에는 Evidence 14개와 StateGraph path 40개가 고정됐다. metric summary는 서비스
+상태 Snapshot을 덮어쓰지 않는 Event이며 `recent_change_evidence_ids`에는 포함되지 않았다.
 실제
 `OnlineBoutiqueFrontendHighFailureRate` rule도 Prometheus에 healthy 상태로 로드하지만,
 controlled fault로 이 rule을 firing시킨 정확도 실험은 아직 수행하지 않았다. 또한 현재
@@ -509,8 +511,9 @@ Incident webhook과 worker, 내부 PostgreSQL 17.6, 5Gi PVC와 5분 CronJob을 �
 실제 Alertmanager 제어 경보→fenced collection claim→Kubernetes/Prometheus 기본 Evidence
 5개와 선택된 KRCA profile Evidence 9개→fenced localization claim→KRCA fallback/Neo4j exact
 resolve→총 14개 Evidence를 인용하는 Frozen Context 저장→`ANALYZING`과 두
-단계의 성공 work 저장, 그리고 one-shot Job의 Kubernetes Evidence
-→PostgreSQL `STAGED/APPLIED` journal→Neo4j projection을 함께 확인한다. 두 StatefulSet의
+단계의 성공 work 및 Context-pinned analysis work `READY` 저장, 그리고 one-shot Job의
+Kubernetes Evidence→PostgreSQL `STAGED/APPLIED` journal→Neo4j projection을 함께 확인한다.
+두 StatefulSet의
 `agent-rca-local` PVC는 single-node VM disk에 묶이며 `Retain`은 backup이 아니다. VM
 disk 삭제나 손상에 대비한 backup/restore와 HA는 아직 구현하지 않았다.
 
