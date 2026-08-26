@@ -19,6 +19,7 @@ COPY tools/run_stategraph_reconciler.py /app/tools/run_stategraph_reconciler.py
 COPY tools/run_incident_receiver.py /app/tools/run_incident_receiver.py
 COPY tools/run_incident_worker.py /app/tools/run_incident_worker.py
 COPY tools/run_agent_worker.py /app/tools/run_agent_worker.py
+COPY tools/run_incident_viewer.py /app/tools/run_incident_viewer.py
 
 RUN chown -R 65532:65532 /app
 

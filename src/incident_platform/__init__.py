@@ -149,6 +149,11 @@ from .projectors import (
     PrometheusMetricEvidenceProjector,
 )
 from .viewer import IncidentViewerQueryService, ViewerQueryPolicy, ViewerRepository
+from .viewer_http import (
+    IncidentViewerHTTPAPI,
+    IncidentViewerWSGI,
+    ViewerHTTPConfig,
+)
 from .vector_knowledge import (
     KnowledgeVectorPolicy,
     KnowledgeVectorSyncResult,
@@ -216,6 +221,8 @@ __all__ = [
     "IncidentLocalizationRun",
     "IncidentLocalizationService",
     "IncidentViewerQueryService",
+    "IncidentViewerHTTPAPI",
+    "IncidentViewerWSGI",
     "IngestionResult",
     "HTTPResponse",
     "InvalidAlert",
@@ -292,4 +299,5 @@ __all__ = [
     "verify_evidence_content_hash",
     "ViewerQueryPolicy",
     "ViewerRepository",
+    "ViewerHTTPConfig",
 ]

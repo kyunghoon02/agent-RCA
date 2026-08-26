@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:viewer-incident-work-state",
+  "title": "Read-only Viewer Incident Work State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "incident_id",
+    "collection",
+    "localization",
+    "analysis"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "collection": {
+      "oneOf": [
+        {"$ref": "#/$defs/workState"},
+        {"type": "null"}
+      ]
+    },
+    "localization": {
+      "oneOf": [
+        {"$ref": "#/$defs/workState"},
+        {"type": "null"}
+      ]
+    },
+    "analysis": {
+      "oneOf": [
+        {"$ref": "#/$defs/workState"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "$defs": {
+    "workState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "state",
+        "available_at",
+        "attempt_count",
+        "worker_id",
+        "lease_expires_at",
+        "claimed_at",
+        "completed_at",
+        "last_error_code",
+        "context_id"
+      ],
+      "properties": {
+        "stage": {
+          "enum": ["COLLECTION", "LOCALIZATION", "ANALYSIS"]
+        },
+        "state": {
+          "enum": ["READY", "RUNNING", "SUCCEEDED", "FAILED"]
+        },
+        "available_at": {"type": "string", "format": "date-time"},
+        "attempt_count": {"type": "integer", "minimum": 0, "maximum": 10},
+        "worker_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lease_expires_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "claimed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "completed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "last_error_code": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "context_id": {
+          "type": ["string", "null"],
+          "pattern": "^ctx-[a-z0-9][a-z0-9-]{7,63}$"
+        }
+      }
+    }
+  }
+}

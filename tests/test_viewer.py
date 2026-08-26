@@ -209,6 +209,57 @@ class IncidentViewerQueryServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractViolation, "page size"):
             viewer.list_incidents(list_query(limit=6))
 
+    def test_work_state_is_schema_valid_read_only_and_hides_claim_token(self) -> None:
+        class WorkStateRepository:
+            def get(self, incident_id: str) -> dict:
+                if incident_id != "inc-viewerwork01":
+                    raise KeyError(incident_id)
+                return {"incident_id": incident_id}
+
+            def query_work_state(self, incident_id: str) -> dict:
+                return {
+                    "collection": {
+                        "stage": "COLLECTION",
+                        "state": "SUCCEEDED",
+                        "available_at": "2026-08-26T00:00:00Z",
+                        "attempt_count": 1,
+                        "worker_id": "incident-worker-a",
+                        "lease_expires_at": None,
+                        "claimed_at": "2026-08-26T00:00:01Z",
+                        "completed_at": "2026-08-26T00:00:03Z",
+                        "last_error_code": None,
+                        "context_id": None,
+                    },
+                    "localization": None,
+                    "analysis": {
+                        "stage": "ANALYSIS",
+                        "state": "READY",
+                        "available_at": "2026-08-26T00:00:05Z",
+                        "attempt_count": 0,
+                        "worker_id": None,
+                        "lease_expires_at": None,
+                        "claimed_at": None,
+                        "completed_at": None,
+                        "last_error_code": None,
+                        "context_id": "ctx-viewerwork01",
+                    },
+                }
+
+        viewer = IncidentViewerQueryService(WorkStateRepository())
+
+        state = viewer.get_incident_work_state("inc-viewerwork01")
+
+        self.assertEqual(state["analysis"]["state"], "READY")
+        self.assertEqual(state["analysis"]["context_id"], "ctx-viewerwork01")
+        self.assertNotIn("claim_token", state["collection"])
+        state["analysis"]["state"] = "FAILED"
+        self.assertEqual(
+            viewer.get_incident_work_state("inc-viewerwork01")["analysis"][
+                "state"
+            ],
+            "READY",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

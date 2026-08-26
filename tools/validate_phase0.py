@@ -1395,6 +1395,7 @@ def validate_incident_platform_manifest() -> None:
         "python:3.12.11-slim-bookworm@sha256:" not in dockerfile
         or "run_incident_receiver.py" not in dockerfile
         or "run_incident_worker.py" not in dockerfile
+        or "run_incident_viewer.py" not in dockerfile
         or "config/online-boutique-krca.yaml" not in dockerfile
         or "USER 65532:65532" not in dockerfile
     ):

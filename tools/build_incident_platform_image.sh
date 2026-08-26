@@ -32,6 +32,7 @@ runtime_fingerprint="$({
   shasum -a 256 "$repo_root/tools/run_incident_receiver.py"
   shasum -a 256 "$repo_root/tools/run_incident_worker.py"
   shasum -a 256 "$repo_root/tools/run_agent_worker.py"
+  shasum -a 256 "$repo_root/tools/run_incident_viewer.py"
 } | shasum -a 256 | cut -c1-12)"
 image_tag="${IMAGE_TAG:-runtime-${runtime_fingerprint}}"
 registry_prefix="${region}-docker.pkg.dev/${project_id}/${repository}"
@@ -59,6 +60,8 @@ cp "$repo_root/tools/run_incident_worker.py" \
   "$build_context/tools/run_incident_worker.py"
 cp "$repo_root/tools/run_agent_worker.py" \
   "$build_context/tools/run_agent_worker.py"
+cp "$repo_root/tools/run_incident_viewer.py" \
+  "$build_context/tools/run_incident_viewer.py"
 find "$build_context" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$build_context" -type f -name '*.pyc' -delete
 

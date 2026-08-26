@@ -63,6 +63,11 @@ class ViewerRepository(Protocol):
     ) -> List[AuditEvent]:
         ...
 
+    def query_work_state(
+        self, incident_id: str
+    ) -> Mapping[str, Optional[Mapping[str, Any]]]:
+        ...
+
 
 @dataclass(frozen=True)
 class ViewerQueryPolicy:
@@ -200,6 +205,19 @@ class IncidentViewerQueryService:
             "truncated": truncated,
         }
         validate_contract("viewer-incident-detail.schema.json", response)
+        return response
+
+    def get_incident_work_state(self, incident_id: str) -> Dict[str, Any]:
+        self._repository.get(incident_id)
+        work = self._repository.query_work_state(incident_id)
+        response = {
+            "schema_version": "1.0.0",
+            "incident_id": incident_id,
+            "collection": copy.deepcopy(work.get("collection")),
+            "localization": copy.deepcopy(work.get("localization")),
+            "analysis": copy.deepcopy(work.get("analysis")),
+        }
+        validate_contract("viewer-incident-work-state.schema.json", response)
         return response
 
     @staticmethod

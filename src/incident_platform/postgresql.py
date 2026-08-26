@@ -726,6 +726,63 @@ class PostgreSQLIncidentRepository:
                     for row in cursor.fetchall()
                 ]
 
+    def query_work_state(
+        self, incident_id: str
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._require_incident(cursor, incident_id)
+                cursor.execute(
+                    """
+                    SELECT 'collection', stage, state, available_at,
+                           attempt_count, worker_id, lease_expires_at,
+                           claimed_at, completed_at, last_error_code,
+                           NULL::text AS context_id
+                    FROM incident_work_items
+                    WHERE incident_id = %s
+                    UNION ALL
+                    SELECT 'localization', stage, state, available_at,
+                           attempt_count, worker_id, lease_expires_at,
+                           claimed_at, completed_at, last_error_code,
+                           NULL::text AS context_id
+                    FROM incident_localization_work_items
+                    WHERE incident_id = %s
+                    UNION ALL
+                    SELECT 'analysis', stage, state, available_at,
+                           attempt_count, worker_id, lease_expires_at,
+                           claimed_at, completed_at, last_error_code,
+                           context_id
+                    FROM incident_analysis_work_items
+                    WHERE incident_id = %s
+                    """,
+                    (incident_id, incident_id, incident_id),
+                )
+                result: Dict[str, Optional[Dict[str, Any]]] = {
+                    "collection": None,
+                    "localization": None,
+                    "analysis": None,
+                }
+                for row in cursor.fetchall():
+                    result[row[0]] = {
+                        "stage": row[1],
+                        "state": row[2],
+                        "available_at": _format_time(row[3]),
+                        "attempt_count": int(row[4]),
+                        "worker_id": row[5],
+                        "lease_expires_at": (
+                            _format_time(row[6]) if row[6] is not None else None
+                        ),
+                        "claimed_at": (
+                            _format_time(row[7]) if row[7] is not None else None
+                        ),
+                        "completed_at": (
+                            _format_time(row[8]) if row[8] is not None else None
+                        ),
+                        "last_error_code": row[9],
+                        "context_id": row[10],
+                    }
+                return result
+
     def list_audit_events(self, incident_id: str) -> List[AuditEvent]:
         with _connection(self._connection_factory) as connection:
             with connection.cursor() as cursor:

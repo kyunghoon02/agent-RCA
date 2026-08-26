@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from incident_platform.evidence import (
@@ -222,6 +222,78 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertNotIn(search, statement)
         self.assertIn(search, parameters)
         self.assertIn("LIMIT %s", statement)
+
+    def test_viewer_work_query_returns_safe_stage_state_without_claim_token(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+                self._fetchone_calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, statement, parameters=()):
+                self.calls.append((statement, parameters))
+
+            def fetchone(self):
+                self._fetchone_calls += 1
+                return (1,)
+
+            def fetchall(self):
+                observed = datetime(2026, 8, 26, 1, 0, tzinfo=timezone.utc)
+                return [
+                    (
+                        "analysis",
+                        "ANALYSIS",
+                        "READY",
+                        observed,
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "ctx-postgresqlviewer01",
+                    )
+                ]
+
+        class RecordingConnection:
+            closed = False
+
+            def __init__(self, cursor) -> None:
+                self._cursor = cursor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        cursor = RecordingCursor()
+        repository = PostgreSQLIncidentRepository(
+            lambda: RecordingConnection(cursor)
+        )
+
+        work = repository.query_work_state("inc-postgresqlviewer01")
+
+        self.assertIsNone(work["collection"])
+        self.assertIsNone(work["localization"])
+        self.assertEqual(work["analysis"]["state"], "READY")
+        self.assertEqual(
+            work["analysis"]["available_at"], "2026-08-26T01:00:00Z"
+        )
+        statement, parameters = cursor.calls[1]
+        self.assertNotIn("claim_token", statement)
+        self.assertEqual(parameters, ("inc-postgresqlviewer01",) * 3)
 
 
 @unittest.skipUnless(
