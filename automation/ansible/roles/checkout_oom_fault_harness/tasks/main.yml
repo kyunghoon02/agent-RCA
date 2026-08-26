@@ -1,0 +1,756 @@
+---
+- name: Require explicit controlled-fault authorization
+  ansible.builtin.assert:
+    that:
+      - confirm_controlled_fault | default('') == 'yes'
+      - controlled_fault_environment | default('') == 'development'
+      - checkout_oom_scenario.environment.class == 'development'
+      - checkout_oom_scenario.target.namespace == online_boutique_namespace
+      - checkout_oom_scenario.target.name == 'checkoutservice'
+      - checkout_oom_scenario.target.container == 'server'
+    fail_msg: >-
+      This destructive development-only scenario requires
+      CONFIRM_CONTROLLED_FAULT=yes through the Make target.
+
+- name: Read the reference cluster nodes
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes --output json
+  register: checkout_fault_nodes_result
+  changed_when: false
+
+- name: Require the single-node development reference environment
+  ansible.builtin.assert:
+    that:
+      - (checkout_fault_nodes_result.stdout | from_json)['items'] | length == 1
+    fail_msg: The checkout OOM harness only targets the single-node development lab.
+
+- name: Read the checkoutservice Deployment before fault injection
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment checkoutservice
+    --namespace {{ online_boutique_namespace }} --output json
+  register: checkout_fault_deployment_result
+  changed_when: false
+
+- name: Read the checkoutservice Pod before fault injection
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get pods --namespace {{ online_boutique_namespace }}
+    --selector app=checkoutservice --output json
+  register: checkout_fault_pods_result
+  changed_when: false
+
+- name: Freeze the original checkoutservice identity and resources
+  ansible.builtin.set_fact:
+    checkout_fault_original_deployment: >-
+      {{ checkout_fault_deployment_result.stdout | from_json }}
+    checkout_fault_original_pods: >-
+      {{ (checkout_fault_pods_result.stdout | from_json)['items'] }}
+    checkout_fault_original_container: >-
+      {{ (checkout_fault_deployment_result.stdout | from_json).spec.template.spec.containers
+      | selectattr('name', 'equalto', checkout_oom_scenario.target.container)
+      | first }}
+    checkout_fault_id: >-
+      checkout-oom-{{ ansible_facts.date_time.epoch }}
+    checkout_fault_lock_name: agent-rca-checkout-oom-lock
+    checkout_fault_frontend_port: 18081
+    checkout_fault_alertmanager_port: 19093
+    checkout_fault_repo_root: "{{ playbook_dir }}/../../.."
+    checkout_fault_stop_file: >-
+      /tmp/agent-rca-checkout-oom-{{ ansible_facts.date_time.epoch }}.stop
+    checkout_fault_workload_log: >-
+      /tmp/agent-rca-checkout-oom-{{ ansible_facts.date_time.epoch }}.json
+    checkout_fault_frontend_forward_log: >-
+      /tmp/agent-rca-checkout-oom-frontend-{{ ansible_facts.date_time.epoch }}.log
+    checkout_fault_alertmanager_forward_log: >-
+      /tmp/agent-rca-checkout-oom-alertmanager-{{ ansible_facts.date_time.epoch }}.log
+    checkout_fault_local_watchdog_log: >-
+      /tmp/agent-rca-checkout-oom-local-watchdog-{{ ansible_facts.date_time.epoch }}.log
+    checkout_fault_lock_created: false
+    checkout_fault_watchdog_started: false
+    checkout_fault_frontend_forward_started: false
+    checkout_fault_alertmanager_forward_started: false
+    checkout_fault_tunnel_started: false
+    checkout_fault_workload_started: false
+    checkout_fault_local_watchdog_started: false
+    checkout_fault_alert_submitted: false
+
+- name: Require an exact healthy baseline before fault injection
+  ansible.builtin.assert:
+    that:
+      - checkout_fault_original_deployment.status.readyReplicas | default(0) | int == 1
+      - checkout_fault_original_deployment.status.availableReplicas | default(0) | int == 1
+      - checkout_fault_original_pods | length == 1
+      - checkout_fault_original_pods[0].status.phase == 'Running'
+      - >-
+        checkout_fault_original_pods[0].status.containerStatuses[0].ready | bool
+      - >-
+        checkout_fault_original_pods[0].status.containerStatuses[0].restartCount | int == 0
+      - >-
+        checkout_fault_original_container.resources.requests.cpu
+        == checkout_oom_scenario.baseline.requests.cpu
+      - >-
+        checkout_fault_original_container.resources.requests.memory
+        == checkout_oom_scenario.baseline.requests.memory
+      - >-
+        checkout_fault_original_container.resources.limits.cpu
+        == checkout_oom_scenario.baseline.limits.cpu
+      - >-
+        checkout_fault_original_container.resources.limits.memory
+        == checkout_oom_scenario.baseline.limits.memory
+    fail_msg: >-
+      checkoutservice is not at the preregistered Ready, restart-zero,
+      64Mi-request/128Mi-limit baseline.
+
+- name: Resolve the local SSH identity used by the workload tunnel
+  ansible.builtin.set_fact:
+    checkout_fault_ssh_host: "{{ hostvars[inventory_hostname].ansible_host }}"
+    checkout_fault_ssh_user: "{{ hostvars[inventory_hostname].ansible_user }}"
+    checkout_fault_ssh_key: >-
+      {{ hostvars[inventory_hostname].ansible_ssh_private_key_file
+      | regex_replace('^~', lookup('env', 'HOME')) }}
+
+- name: Execute the bounded controlled OOM experiment
+  block:
+    - name: Check for an existing controlled-fault lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get configmap {{ checkout_fault_lock_name }}
+        --namespace {{ online_boutique_namespace }}
+      register: checkout_fault_existing_lock
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse concurrent or uncleared controlled faults
+      ansible.builtin.assert:
+        that:
+          - checkout_fault_existing_lock.rc != 0
+        fail_msg: >-
+          A controlled-fault lock already exists. Verify workload health and
+          remove the stale lock manually only after confirming recovery.
+
+    - name: Create the controlled-fault lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        create configmap {{ checkout_fault_lock_name }}
+        --namespace {{ online_boutique_namespace }}
+        --from-literal=run_id={{ checkout_fault_id }}
+      changed_when: true
+
+    - name: Mark the controlled-fault lock as owned by this run
+      ansible.builtin.set_fact:
+        checkout_fault_lock_created: true
+
+    - name: Start a loopback-only frontend Service port-forward
+      ansible.builtin.shell: |
+        set -eu
+        nohup kubectl --kubeconfig /etc/kubernetes/admin.conf port-forward \
+          --address=127.0.0.1 \
+          --namespace {{ online_boutique_namespace }} \
+          service/frontend \
+          {{ checkout_fault_frontend_port }}:80 \
+          >{{ checkout_fault_frontend_forward_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: checkout_fault_frontend_forward_process
+      changed_when: true
+
+    - name: Mark the frontend Service port-forward as started
+      ansible.builtin.set_fact:
+        checkout_fault_frontend_forward_started: true
+
+    - name: Start a controller-to-VM loopback SSH tunnel
+      ansible.builtin.shell: |
+        set -eu
+        nohup ssh -N \
+          -o BatchMode=yes \
+          -o ExitOnForwardFailure=yes \
+          -o ServerAliveInterval=15 \
+          -o ServerAliveCountMax=3 \
+          -i {{ checkout_fault_ssh_key | quote }} \
+          -L {{ checkout_fault_frontend_port }}:127.0.0.1:{{ checkout_fault_frontend_port }} \
+          {{ (checkout_fault_ssh_user + '@' + checkout_fault_ssh_host) | quote }} \
+          >{{ (checkout_fault_workload_log + '.ssh') | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: checkout_fault_local_tunnel_process
+      changed_when: true
+
+    - name: Mark the controller SSH tunnel as started
+      ansible.builtin.set_fact:
+        checkout_fault_tunnel_started: true
+
+    - name: Wait for the proxied Online Boutique frontend
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ checkout_fault_frontend_port }}/
+        method: GET
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      register: checkout_fault_frontend_ready
+      changed_when: false
+      until: checkout_fault_frontend_ready.status == 200
+      retries: 20
+      delay: 1
+
+    - name: Start the external-controller path-weighted workload
+      ansible.builtin.shell: |
+        set -eu
+        rm -f {{ checkout_fault_stop_file | quote }}
+        nohup .venv/bin/python tools/run_online_boutique_workload.py \
+          --base-url {{ ('http://127.0.0.1:' ~ checkout_fault_frontend_port ~ '/') | quote }} \
+          --duration-seconds {{ checkout_oom_scenario.workload.maximum_duration_seconds }} \
+          --requests-per-second {{ checkout_oom_scenario.workload.requests_per_second }} \
+          --seed {{ checkout_oom_scenario.workload.seed }} \
+          --marker {{ (checkout_oom_scenario.workload.synthetic_marker ~ '-' ~ checkout_fault_id) | quote }} \
+          --stop-file {{ checkout_fault_stop_file | quote }} \
+          >{{ checkout_fault_workload_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+        chdir: "{{ checkout_fault_repo_root }}"
+      delegate_to: localhost
+      become: false
+      register: checkout_fault_workload_process
+      changed_when: true
+
+    - name: Mark the external workload as started
+      ansible.builtin.set_fact:
+        checkout_fault_workload_started: true
+
+    - name: Start a controller-side fail-safe process cleanup watchdog
+      ansible.builtin.shell: |
+        set -eu
+        nohup /bin/bash -c '
+          sleep {{ checkout_oom_scenario.fault.maximum_active_seconds + 60 }}
+          touch {{ checkout_fault_stop_file | quote }}
+          workload_pid={{ checkout_fault_workload_process.stdout | trim | int }}
+          tunnel_pid={{ checkout_fault_local_tunnel_process.stdout | trim | int }}
+          if ps -p "$workload_pid" -o command= 2>/dev/null | grep -Fq "run_online_boutique_workload.py"; then
+            kill "$workload_pid" 2>/dev/null || true
+          fi
+          if ps -p "$tunnel_pid" -o command= 2>/dev/null | grep -Fq "ssh -N"; then
+            kill "$tunnel_pid" 2>/dev/null || true
+          fi
+        ' >{{ checkout_fault_local_watchdog_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: checkout_fault_local_watchdog_process
+      changed_when: true
+
+    - name: Mark the controller cleanup watchdog as started
+      ansible.builtin.set_fact:
+        checkout_fault_local_watchdog_started: true
+
+    - name: Establish a short normal-traffic baseline
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Start a remote fail-safe resource restoration watchdog
+      ansible.builtin.shell: |
+        set -eu
+        nohup /bin/bash -c '
+          sleep {{ checkout_oom_scenario.fault.maximum_active_seconds }}
+          kubectl --kubeconfig /etc/kubernetes/admin.conf set resources \
+            deployment/checkoutservice \
+            --namespace {{ online_boutique_namespace }} \
+            --containers={{ checkout_oom_scenario.target.container }} \
+            --requests=cpu={{ checkout_oom_scenario.baseline.requests.cpu }},memory={{ checkout_oom_scenario.baseline.requests.memory }} \
+            --limits=cpu={{ checkout_oom_scenario.baseline.limits.cpu }},memory={{ checkout_oom_scenario.baseline.limits.memory }}
+          kubectl --kubeconfig /etc/kubernetes/admin.conf annotate \
+            deployment/checkoutservice \
+            --namespace {{ online_boutique_namespace }} \
+            agent-rca.dev/controlled-fault-id- || true
+          kubectl --kubeconfig /etc/kubernetes/admin.conf delete \
+            configmap {{ checkout_fault_lock_name }} \
+            --namespace {{ online_boutique_namespace }} \
+            --ignore-not-found=true
+          forward_pid={{ checkout_fault_frontend_forward_process.stdout | trim | int }}
+          if ps -p "$forward_pid" -o args= 2>/dev/null | grep -Fq "service/frontend {{ checkout_fault_frontend_port }}:80"; then
+            kill "$forward_pid" 2>/dev/null || true
+          fi
+        ' >/tmp/agent-rca-checkout-oom-watchdog.log 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: checkout_fault_watchdog_process
+      changed_when: true
+
+    - name: Mark the fail-safe watchdog as started
+      ansible.builtin.set_fact:
+        checkout_fault_watchdog_started: true
+
+    - name: Annotate the controlled resource-policy change
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf annotate
+        deployment/checkoutservice
+        --namespace {{ online_boutique_namespace }}
+        agent-rca.dev/controlled-fault-id={{ checkout_fault_id }}
+        --overwrite
+      changed_when: true
+
+    - name: Apply the preregistered checkoutservice OOM resources
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf set resources
+        deployment/checkoutservice
+        --namespace {{ online_boutique_namespace }}
+        --containers={{ checkout_oom_scenario.target.container }}
+        --requests=cpu={{ checkout_oom_scenario.fault.resources.requests.cpu
+        }},memory={{ checkout_oom_scenario.fault.resources.requests.memory }}
+        --limits=cpu={{ checkout_oom_scenario.fault.resources.limits.cpu
+        }},memory={{ checkout_oom_scenario.fault.resources.limits.memory }}
+      changed_when: true
+
+    - name: Wait for a replacement Pod to restart under the OOM policy
+      ansible.builtin.shell: |
+        set -u
+        deadline=$((SECONDS + 120))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          if state="$(
+            kubectl --kubeconfig /etc/kubernetes/admin.conf get pods \
+              --namespace {{ online_boutique_namespace }} \
+              --selector app=checkoutservice --output json |
+            python3 -c '
+        import json
+        import sys
+
+        old_uid = sys.argv[1]
+        pods = json.load(sys.stdin).get("items", [])
+        for pod in pods:
+            if pod.get("metadata", {}).get("uid") == old_uid:
+                continue
+            for status in pod.get("status", {}).get("containerStatuses", []):
+                if status.get("name") == "server" and int(status.get("restartCount", 0)) >= 1:
+                    print(json.dumps({
+                        "pod_name": pod["metadata"]["name"],
+                        "pod_uid": pod["metadata"]["uid"],
+                        "restart_count": status["restartCount"],
+                    }, sort_keys=True))
+                    raise SystemExit(0)
+        raise SystemExit(1)
+        ' {{ checkout_fault_original_pods[0].metadata.uid | quote }}
+          )"; then
+            printf '%s\n' "$state"
+            exit 0
+          fi
+          sleep 2
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      register: checkout_fault_oom_state
+      changed_when: false
+
+    - name: Observe a fixed unbiased telemetry window
+      ansible.builtin.pause:
+        seconds: "{{ checkout_oom_scenario.fault.observation_seconds }}"
+
+    - name: Start a just-in-time loopback Alertmanager Service port-forward
+      ansible.builtin.shell: |
+        set -eu
+        nohup kubectl --kubeconfig /etc/kubernetes/admin.conf port-forward \
+          --address=127.0.0.1 \
+          --namespace {{ observability_namespace }} \
+          service/{{ alertmanager_service_name }} \
+          {{ checkout_fault_alertmanager_port }}:9093 \
+          >{{ checkout_fault_alertmanager_forward_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: checkout_fault_alertmanager_forward_process
+      changed_when: true
+
+    - name: Mark the Alertmanager Service port-forward as started
+      ansible.builtin.set_fact:
+        checkout_fault_alertmanager_forward_started: true
+
+    - name: Wait for the just-in-time Alertmanager endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:{{ checkout_fault_alertmanager_port }}/-/ready
+        method: GET
+        status_code: 200
+      register: checkout_fault_alertmanager_ready
+      changed_when: false
+      until: checkout_fault_alertmanager_ready.status == 200
+      retries: 20
+      delay: 1
+
+    - name: Read bounded Alertmanager timestamps
+      ansible.builtin.shell: |
+        set -eu
+        printf '{"starts_at":"%s","ends_at":"%s"}\n' \
+          "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+          "$(date -u -d '+10 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
+      args:
+        executable: /bin/bash
+      register: checkout_fault_alert_times_result
+      changed_when: false
+
+    - name: Freeze the controlled Alertmanager payload
+      ansible.builtin.set_fact:
+        checkout_fault_alert_times: >-
+          {{ checkout_fault_alert_times_result.stdout | from_json }}
+        checkout_fault_alert_labels:
+          alertname: "{{ checkout_oom_scenario.alert.name }}"
+          namespace: "{{ online_boutique_namespace }}"
+          severity: critical
+          service: "{{ checkout_oom_scenario.alert.service }}"
+          rca_enabled: "{{ checkout_oom_scenario.alert.rca_enabled }}"
+          verification_id: "{{ checkout_fault_id }}"
+
+    - name: Submit the controlled OOM alert through Alertmanager
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ checkout_fault_alertmanager_port }}/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': checkout_fault_alert_labels,
+            'annotations': {
+              'summary': 'Controlled checkoutservice OOM evaluation'
+            },
+            'startsAt': checkout_fault_alert_times.starts_at,
+            'endsAt': checkout_fault_alert_times.ends_at,
+            'generatorURL': 'https://prometheus.invalid/controlled-checkout-oom'
+          }] }}
+        status_code: 200
+      changed_when: true
+
+    - name: Mark the controlled Alertmanager alert as submitted
+      ansible.builtin.set_fact:
+        checkout_fault_alert_submitted: true
+
+    - name: Wait for a unique frozen Context Package
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT CASE
+              WHEN count(*) FILTER (WHERE incident.status = 'FAILED') > 0
+                THEN 'FAILED'
+              WHEN count(*) FILTER (
+                WHERE incident.status IN ('ANALYZING', 'REPORTED', 'PARTIAL')
+                  AND EXISTS (
+                    SELECT 1 FROM context_packages context
+                    WHERE context.incident_id = incident.incident_id
+                  )
+              ) = 1 THEN 'READY'
+              ELSE 'WAITING'
+            END FROM incidents incident
+            WHERE incident.document->'alert'->'labels'->>'verification_id'
+              = '{{ checkout_fault_id }}';"
+      register: checkout_fault_context_wait
+      changed_when: false
+      until: checkout_fault_context_wait.stdout | trim in ['READY', 'FAILED']
+      retries: 40
+      delay: 5
+
+    - name: Require successful Incident collection and localization
+      ansible.builtin.assert:
+        that:
+          - checkout_fault_context_wait.stdout | trim == 'READY'
+        fail_msg: The controlled Incident failed before a Context Package was frozen.
+
+    - name: Export the completed Incident Evidence snapshot
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT json_build_object(
+              'incident', incident.document,
+              'context', (
+                SELECT context.document FROM context_packages context
+                WHERE context.incident_id = incident.incident_id
+                ORDER BY context.frozen_at DESC LIMIT 1
+              ),
+              'evidence', (
+                SELECT COALESCE(json_agg(evidence.document
+                  ORDER BY evidence.observed_at, evidence.evidence_id), '[]'::json)
+                FROM evidence_items evidence
+                WHERE evidence.incident_id = incident.incident_id
+              )
+            ) FROM incidents incident
+            WHERE incident.document->'alert'->'labels'->>'verification_id'
+              = '{{ checkout_fault_id }}'
+            ORDER BY incident.created_at DESC LIMIT 1;"
+      register: checkout_fault_bundle_result
+      changed_when: false
+      no_log: true
+
+    - name: Build local-only Ground Truth and RCA evaluation artifacts
+      ansible.builtin.command:
+        argv:
+          - .venv/bin/python
+          - tools/build_controlled_fault_evaluation.py
+          - --scenario
+          - evaluation/scenarios/checkoutservice-oom.yaml
+        chdir: "{{ checkout_fault_repo_root }}"
+        stdin: "{{ checkout_fault_bundle_result.stdout | trim }}"
+      environment:
+        PYTHONPATH: src
+      delegate_to: localhost
+      become: false
+      register: checkout_fault_evaluation_result
+      changed_when: true
+      no_log: true
+
+    - name: Decode the sanitized controlled-fault result
+      ansible.builtin.set_fact:
+        checkout_fault_evaluation_summary: >-
+          {{ checkout_fault_evaluation_result.stdout | from_json }}
+      no_log: true
+
+    - name: Report the sanitized controlled-fault score
+      ansible.builtin.debug:
+        msg:
+          evaluation_case_id: >-
+            {{ checkout_fault_evaluation_summary.evaluation_case_id }}
+          prediction_outcome: >-
+            {{ checkout_fault_evaluation_summary.prediction_outcome }}
+          metrics: "{{ checkout_fault_evaluation_summary.metrics }}"
+
+  always:
+    - name: Stop the external-controller workload
+      ansible.builtin.file:
+        path: "{{ checkout_fault_stop_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      when: checkout_fault_workload_started | bool
+
+    - name: Restore the exact checkoutservice baseline resources
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf set resources
+        deployment/checkoutservice
+        --namespace {{ online_boutique_namespace }}
+        --containers={{ checkout_oom_scenario.target.container }}
+        --requests=cpu={{ checkout_oom_scenario.baseline.requests.cpu
+        }},memory={{ checkout_oom_scenario.baseline.requests.memory }}
+        --limits=cpu={{ checkout_oom_scenario.baseline.limits.cpu
+        }},memory={{ checkout_oom_scenario.baseline.limits.memory }}
+      register: checkout_fault_restore_result
+      changed_when: checkout_fault_restore_result.rc == 0
+      failed_when: false
+      when: checkout_fault_lock_created | bool
+
+    - name: Remove the controlled-fault annotation
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf annotate
+        deployment/checkoutservice
+        --namespace {{ online_boutique_namespace }}
+        agent-rca.dev/controlled-fault-id-
+      register: checkout_fault_annotation_cleanup
+      changed_when: checkout_fault_annotation_cleanup.rc == 0
+      failed_when: false
+      when: checkout_fault_lock_created | bool
+
+    - name: Wait for the restored checkoutservice rollout
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        rollout status deployment/checkoutservice
+        --namespace {{ online_boutique_namespace }} --timeout=5m
+      register: checkout_fault_restore_rollout
+      changed_when: false
+      failed_when: false
+      when: checkout_fault_lock_created | bool
+
+    - name: Resolve the controlled Alertmanager alert
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ checkout_fault_alertmanager_port }}/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': checkout_fault_alert_labels,
+            'annotations': {
+              'summary': 'Controlled checkoutservice OOM evaluation'
+            },
+            'startsAt': checkout_fault_alert_times.starts_at,
+            'endsAt': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'),
+            'generatorURL': 'https://prometheus.invalid/controlled-checkout-oom'
+          }] }}
+        status_code: 200
+      register: checkout_fault_alert_resolution
+      changed_when: checkout_fault_alert_resolution.status | default(0) == 200
+      failed_when: false
+      when: checkout_fault_alert_submitted | bool
+
+    - name: Stop the remote restoration watchdog
+      ansible.builtin.shell: |
+        pid={{ checkout_fault_watchdog_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: checkout_fault_watchdog_started | bool
+
+    - name: Stop the controller cleanup watchdog
+      ansible.builtin.shell: |
+        pid={{ checkout_fault_local_watchdog_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: checkout_fault_local_watchdog_started | bool
+
+    - name: Stop the external workload process if still running
+      ansible.builtin.shell: |
+        pid={{ checkout_fault_workload_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: checkout_fault_workload_started | bool
+
+    - name: Stop the local SSH tunnel
+      ansible.builtin.shell: |
+        pid={{ checkout_fault_local_tunnel_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: checkout_fault_tunnel_started | bool
+
+    - name: Stop the remote frontend Service port-forward
+      ansible.builtin.shell: |
+        pid={{ checkout_fault_frontend_forward_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: checkout_fault_frontend_forward_started | bool
+
+    - name: Stop the remote Alertmanager Service port-forward
+      ansible.builtin.shell: |
+        pid={{ checkout_fault_alertmanager_forward_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: checkout_fault_alertmanager_forward_started | bool
+
+    - name: Remove the controlled-fault lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf delete
+        configmap {{ checkout_fault_lock_name }}
+        --namespace {{ online_boutique_namespace }}
+        --ignore-not-found=true
+      changed_when: false
+      failed_when: false
+      when: checkout_fault_lock_created | bool
+
+    - name: Remove local controlled-fault temporary files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ checkout_fault_stop_file }}"
+        - "{{ checkout_fault_workload_log }}"
+        - "{{ checkout_fault_workload_log }}.ssh"
+        - "{{ checkout_fault_local_watchdog_log }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Remove remote controlled-fault temporary files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ checkout_fault_frontend_forward_log }}"
+        - "{{ checkout_fault_alertmanager_forward_log }}"
+        - /tmp/agent-rca-checkout-oom-watchdog.log
+      changed_when: false
+
+    - name: Read the restored checkoutservice state
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get
+        deployment/checkoutservice
+        --namespace {{ online_boutique_namespace }} --output json
+      register: checkout_fault_restored_deployment_result
+      changed_when: false
+      failed_when: false
+      when: checkout_fault_lock_created | bool
+
+    - name: Read the restored checkoutservice Pod
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods
+        --namespace {{ online_boutique_namespace }}
+        --selector app=checkoutservice --output json
+      register: checkout_fault_restored_pods_result
+      changed_when: false
+      failed_when: false
+      when: checkout_fault_lock_created | bool
+
+    - name: Require successful automatic restoration
+      ansible.builtin.assert:
+        that:
+          - checkout_fault_restore_result.rc | default(1) == 0
+          - checkout_fault_restore_rollout.rc | default(1) == 0
+          - checkout_fault_restored_deployment_result.rc | default(1) == 0
+          - checkout_fault_restored_pods_result.rc | default(1) == 0
+          - >-
+            (checkout_fault_restored_deployment_result.stdout | from_json).status.readyReplicas
+            | default(0) | int == checkout_oom_scenario.restoration.ready_replicas
+          - >-
+            (checkout_fault_restored_pods_result.stdout | from_json)['items'] | length == 1
+          - >-
+            (checkout_fault_restored_pods_result.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
+            | int == checkout_oom_scenario.restoration.fresh_pod_restart_count
+        fail_msg: >-
+          checkoutservice did not return to the preregistered Ready,
+          restart-zero baseline; inspect the cluster before another run.
+      when: checkout_fault_lock_created | bool

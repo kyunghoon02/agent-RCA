@@ -1,0 +1,60 @@
+schema_version: "1.0.0"
+scenario_id: scenario-checkoutservice-oom-change-stress
+
+environment:
+  class: development
+  single_node_allowed: true
+
+target:
+  namespace: online-boutique
+  kind: Deployment
+  name: checkoutservice
+  container: server
+
+baseline:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+fault:
+  type: resource-policy
+  resources:
+    requests:
+      cpu: 100m
+      memory: 8Mi
+    limits:
+      cpu: 200m
+      memory: 8Mi
+  observation_seconds: 75
+  maximum_active_seconds: 300
+
+workload:
+  runner: external-controller
+  profile: path-weighted
+  seed: 42
+  requests_per_second: 6
+  maximum_duration_seconds: 300
+  synthetic_marker: agent-rca-controlled-load
+
+alert:
+  name: AgentRCAControlledCheckoutOOM
+  service: checkoutservice
+  rca_enabled: "true"
+
+expected:
+  outcome: ROOT_CAUSE
+  root_cause_ids:
+    - kubernetes.container-oomkilled
+  same_pod_uid_required: true
+  evidence_predicates:
+    oom_signature: kubernetes-oomkilled-or-loki-kernel-memcg
+    restart_count_delta_minimum: 1
+    memory_metric_required: true
+
+restoration:
+  restore_exact_baseline: true
+  ready_replicas: 1
+  fresh_pod_restart_count: 0

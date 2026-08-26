@@ -1,0 +1,17 @@
+---
+- name: Evaluate the controlled checkoutservice OOM scenario
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../../../platform/versions.yaml
+  vars:
+    checkout_oom_scenario: >-
+      {{ lookup(
+        'file',
+        playbook_dir + '/../../../evaluation/scenarios/checkoutservice-oom.yaml'
+      ) | from_yaml }}
+
+  roles:
+    - role: checkout_oom_fault_harness

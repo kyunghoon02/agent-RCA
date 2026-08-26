@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:controlled-fault-scenario",
+  "title": "Controlled Fault Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "fault",
+    "workload",
+    "alert",
+    "expected",
+    "restoration"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "single_node_allowed"],
+      "properties": {
+        "class": {
+          "const": "development"
+        },
+        "single_node_allowed": {
+          "const": true
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "kind", "name", "container"],
+      "properties": {
+        "namespace": {
+          "const": "online-boutique"
+        },
+        "kind": {
+          "const": "Deployment"
+        },
+        "name": {
+          "const": "checkoutservice"
+        },
+        "container": {
+          "const": "server"
+        }
+      }
+    },
+    "baseline": {
+      "$ref": "#/$defs/resources"
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "resources",
+        "observation_seconds",
+        "maximum_active_seconds"
+      ],
+      "properties": {
+        "type": {
+          "const": "resource-policy"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "observation_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 180
+        },
+        "maximum_active_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 300
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runner",
+        "profile",
+        "seed",
+        "requests_per_second",
+        "maximum_duration_seconds",
+        "synthetic_marker"
+      ],
+      "properties": {
+        "runner": {
+          "const": "external-controller"
+        },
+        "profile": {
+          "const": "path-weighted"
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "requests_per_second": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 50
+        },
+        "maximum_duration_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 600
+        },
+        "synthetic_marker": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{8,64}$"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "service", "rca_enabled"],
+      "properties": {
+        "name": {
+          "const": "AgentRCAControlledCheckoutOOM"
+        },
+        "service": {
+          "const": "checkoutservice"
+        },
+        "rca_enabled": {
+          "const": "true"
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "root_cause_ids",
+        "same_pod_uid_required",
+        "evidence_predicates"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ROOT_CAUSE"
+        },
+        "root_cause_ids": {
+          "const": ["kubernetes.container-oomkilled"]
+        },
+        "same_pod_uid_required": {
+          "const": true
+        },
+        "evidence_predicates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "oom_signature",
+            "restart_count_delta_minimum",
+            "memory_metric_required"
+          ],
+          "properties": {
+            "oom_signature": {
+              "const": "kubernetes-oomkilled-or-loki-kernel-memcg"
+            },
+            "restart_count_delta_minimum": {
+              "const": 1
+            },
+            "memory_metric_required": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "restoration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "restore_exact_baseline",
+        "ready_replicas",
+        "fresh_pod_restart_count"
+      ],
+      "properties": {
+        "restore_exact_baseline": {
+          "const": true
+        },
+        "ready_replicas": {
+          "const": 1
+        },
+        "fresh_pod_restart_count": {
+          "const": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": {
+          "$ref": "#/$defs/resourcePair"
+        },
+        "limits": {
+          "$ref": "#/$defs/resourcePair"
+        }
+      }
+    },
+    "resourcePair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memory"],
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*m$"
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*Mi$"
+        }
+      }
+    }
+  }
+}

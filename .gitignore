@@ -112,6 +112,7 @@ kubeconfig*
 evaluation/ground-truth/private/*.json
 evaluation/ground-truth/private/*.yaml
 !evaluation/ground-truth/private/README.md
+evaluation/runs/private/
 
 # Viewer frontend
 frontend/viewer/node_modules/

@@ -1829,6 +1829,56 @@ def validate_negative_evidence_reference(examples: dict[str, Any]) -> None:
         )
 
 
+def validate_controlled_fault_scenarios() -> None:
+    schemas, registry = schema_registry()
+    scenario_path = ROOT / "evaluation" / "scenarios" / "checkoutservice-oom.yaml"
+    scenario = load_yaml_documents(scenario_path)[0]
+    validate_instance(
+        schemas["controlled-fault-scenario.schema.json"],
+        scenario,
+        registry,
+        "checkoutservice-oom.yaml",
+    )
+    if scenario["baseline"] != {
+        "requests": {"cpu": "100m", "memory": "64Mi"},
+        "limits": {"cpu": "200m", "memory": "128Mi"},
+    }:
+        raise ValidationFailure("checkout OOM baseline drifted from the pinned workload")
+    if scenario["fault"]["resources"] != {
+        "requests": {"cpu": "100m", "memory": "8Mi"},
+        "limits": {"cpu": "200m", "memory": "8Mi"},
+    }:
+        raise ValidationFailure("checkout OOM fault resources changed")
+    if scenario["workload"]["runner"] != "external-controller":
+        raise ValidationFailure("controlled load would contaminate the target node")
+
+    harness = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "checkout_oom_fault_harness"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    required_safety_tokens = {
+        "confirm_controlled_fault",
+        "controlled_fault_environment",
+        "agent-rca-checkout-oom-lock",
+        "remote fail-safe resource restoration watchdog",
+        "always:",
+        "Restore the exact checkoutservice baseline resources",
+        "Require successful automatic restoration",
+    }
+    missing_tokens = sorted(required_safety_tokens - set(
+        token for token in required_safety_tokens if token in harness
+    ))
+    if missing_tokens:
+        raise ValidationFailure(
+            f"controlled-fault safety boundary is incomplete: {missing_tokens}"
+        )
+
+
 def main() -> None:
     examples = validate_contracts()
     validate_namespaces()
@@ -1839,6 +1889,7 @@ def main() -> None:
     validate_incident_platform_manifest()
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
+    validate_controlled_fault_scenarios()
     print("Phase 0 validation passed:")
     print(f"- {len(schema_registry()[0])} JSON Schemas are structurally valid")
     print("- 6 contract fixture groups are valid")
@@ -1847,6 +1898,7 @@ def main() -> None:
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
     print("- private observability, Neo4j, PostgreSQL, reconciler, and live KRCA pins are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
+    print("- the development-only checkout OOM scenario and restoration gates are valid")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 
 

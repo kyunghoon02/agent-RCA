@@ -15,7 +15,7 @@ RCA_PREDICTION ?=
 	verify-kubernetes render-observability deploy-observability \
 	verify-observability deploy-online-boutique verify-online-boutique \
 	render-stategraph deploy-stategraph verify-stategraph \
-	deploy-incident-platform verify-incident-platform
+	deploy-incident-platform verify-incident-platform evaluate-checkout-oom
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -134,6 +134,9 @@ ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/verify-incident-platform.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/evaluate-checkout-oom.yml
 
 ansible-ping:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible \
@@ -186,3 +189,12 @@ verify-incident-platform:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-incident-platform.yml
+
+evaluate-checkout-oom:
+	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
+		(echo "Refusing controlled fault: set CONFIRM_CONTROLLED_FAULT=yes" >&2; exit 2)
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/evaluate-checkout-oom.yml \
+		--extra-vars confirm_controlled_fault=yes \
+		--extra-vars controlled_fault_environment=development
