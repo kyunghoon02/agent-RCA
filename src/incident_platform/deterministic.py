@@ -71,12 +71,20 @@ class OOMKilledRule:
             if item.get("source") == "kubernetes"
             and item.get("kind") == "resource-state"
             and _facts(item).get("last_termination_reason") == "OOMKilled"
-            and _facts(item).get("restart_count_delta", 0) >= 1
         ]
         if not terminations:
             return RuleEvaluation(self.rule_id, "NOT_APPLICABLE", "")
 
         for termination in terminations:
+            restarts = [
+                item
+                for item in evidence
+                if item.get("source") == "prometheus"
+                and item.get("kind") == "metric-summary"
+                and _facts(item).get("metric") == "restart_count_delta"
+                and _facts(item).get("peak_delta", 0) >= 1
+                and _same_subject(termination, item)
+            ]
             metrics = [
                 item
                 for item in evidence
@@ -86,7 +94,7 @@ class OOMKilledRule:
                 and _facts(item).get("peak_ratio", 0) >= 0.95
                 and _same_subject(termination, item)
             ]
-            if metrics:
+            if restarts and metrics:
                 return RuleEvaluation(
                     rule_id=self.rule_id,
                     status="PROVEN",
@@ -96,19 +104,53 @@ class OOMKilledRule:
                     ),
                     supporting_evidence_ids=(
                         termination["evidence_id"],
+                        restarts[0]["evidence_id"],
                         metrics[0]["evidence_id"],
                     ),
                 )
+        matching_restarts = [
+            item
+            for termination in terminations
+            for item in evidence
+            if item.get("source") == "prometheus"
+            and item.get("kind") == "metric-summary"
+            and _facts(item).get("metric") == "restart_count_delta"
+            and _facts(item).get("peak_delta", 0) >= 1
+            and _same_subject(termination, item)
+        ]
+        matching_memory = [
+            item
+            for termination in terminations
+            for item in evidence
+            if item.get("source") == "prometheus"
+            and item.get("kind") == "metric-summary"
+            and _facts(item).get("metric") == "memory_working_set_ratio"
+            and _facts(item).get("peak_ratio", 0) >= 0.95
+            and _same_subject(termination, item)
+        ]
+        missing = []
+        if not matching_restarts:
+            missing.append(
+                "Prometheus restart_count_delta at or above 1 for the same workload"
+            )
+        if not matching_memory:
+            missing.append(
+                "Prometheus memory_working_set_ratio peak at or above 0.95 for the same workload"
+            )
         return RuleEvaluation(
             rule_id=self.rule_id,
             status="INSUFFICIENT",
-            statement="OOMKilled was observed but memory-limit corroboration is missing.",
+            statement=(
+                "OOMKilled was observed but restart and memory-limit corroboration "
+                "is incomplete."
+            ),
             supporting_evidence_ids=tuple(
-                item["evidence_id"] for item in terminations
+                dict.fromkeys(
+                    item["evidence_id"]
+                    for item in (*terminations, *matching_restarts, *matching_memory)
+                )
             ),
-            missing_requirements=(
-                "Prometheus memory_working_set_ratio peak at or above 0.95 for the same workload",
-            ),
+            missing_requirements=tuple(missing),
         )
 
 

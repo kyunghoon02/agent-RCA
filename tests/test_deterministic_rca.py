@@ -76,7 +76,20 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
         self.assertTrue(decision.missing_requirements)
         self.assertIn("Prometheus", decision.missing_requirements[0])
 
-    def test_oom_metric_from_a_different_pod_uid_cannot_prove_the_cause(self) -> None:
+    def test_oom_memory_metric_from_a_different_pod_uid_cannot_prove_the_cause(self) -> None:
+        _, evidence = load_fixture(
+            FIXTURE_DIR / "oomkilled.json",
+            lambda drafts: drafts[2]["subject"].update(
+                {"uid": "03a09977-3d7c-4df3-b89c-c760ef8509f0"}
+            ),
+        )
+
+        decision = DeterministicRCAEngine().evaluate(evidence)
+
+        self.assertEqual(decision.status, "ABSTAIN")
+        self.assertIn("Prometheus", decision.missing_requirements[0])
+
+    def test_oom_restart_metric_from_a_different_pod_uid_cannot_prove_the_cause(self) -> None:
         _, evidence = load_fixture(
             FIXTURE_DIR / "oomkilled.json",
             lambda drafts: drafts[1]["subject"].update(
@@ -87,7 +100,7 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
         decision = DeterministicRCAEngine().evaluate(evidence)
 
         self.assertEqual(decision.status, "ABSTAIN")
-        self.assertIn("Prometheus", decision.missing_requirements[0])
+        self.assertIn("restart_count_delta", decision.missing_requirements[0])
 
 
 if __name__ == "__main__":

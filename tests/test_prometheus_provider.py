@@ -66,6 +66,19 @@ def pod_memory_query() -> PrometheusQuerySpec:
     )
 
 
+def pod_restart_query() -> PrometheusQuerySpec:
+    return PrometheusQuerySpec(
+        query_id="restart_count_delta",
+        expression_template="agent_rca_pod_restart_count_delta{{scope}}",
+        namespace_label="namespace",
+        resource_label="pod",
+        subject_kind="Pod",
+        uid_label="uid",
+        step_seconds=15,
+        peak_fact="peak_delta",
+    )
+
+
 def workload_request() -> CollectionRequest:
     request = contract_request(INCIDENT_ID, "checkoutservice")
     return CollectionRequest(
@@ -240,6 +253,36 @@ class PrometheusWorkloadMetricProviderTests(unittest.TestCase):
         self.assertIn(".*", expression)
         self.assertNotIn("{scope}", expression)
 
+    def test_restart_delta_series_becomes_a_numeric_peak_fact(self) -> None:
+        client = StaticPrometheusClient(
+            PrometheusRangeResult(
+                series=(
+                    {
+                        "metric": {
+                            "namespace": "online-boutique",
+                            "pod": POD_NAME,
+                            "uid": POD_UID,
+                        },
+                        "values": [
+                            [1786496640, "0"],
+                            [1786496699, "1"],
+                        ],
+                    },
+                )
+            )
+        )
+        provider = PrometheusWorkloadMetricProvider(
+            client,
+            (pod_restart_query(),),
+            cluster_id=CLUSTER_ID,
+        )
+
+        draft = provider.collect(workload_request()).items[0]
+
+        self.assertEqual(draft.facts["metric"], "restart_count_delta")
+        self.assertEqual(draft.facts["peak_delta"], 1.0)
+        self.assertEqual(draft.subject["uid"], POD_UID)
+
     def test_workload_outside_rooted_prefix_is_rejected(self) -> None:
         provider = self.provider_for(
             (
@@ -285,7 +328,7 @@ class PrometheusWorkloadMetricProviderTests(unittest.TestCase):
         self.assertEqual(batch.status, "SUCCEEDED")
         self.assertEqual(batch.items, tuple())
 
-    def test_uid_backed_memory_evidence_proves_matching_pod_oom(self) -> None:
+    def test_uid_backed_workload_evidence_proves_matching_pod_oom(self) -> None:
         request = workload_request()
         metric_draft = self.provider_for(
             (
@@ -299,6 +342,26 @@ class PrometheusWorkloadMetricProviderTests(unittest.TestCase):
                 },
             )
         ).collect(request).items[0]
+        restart_draft = EvidenceDraft(
+            source="prometheus",
+            kind="metric-summary",
+            observed_at=request.window.end,
+            subject=metric_draft.subject,
+            summary="Pod restart counter increased in the bounded window.",
+            facts={
+                "metric": "restart_count_delta",
+                "result_status": "HAS_DATA",
+                "sample_count": 1,
+                "minimum": 1.0,
+                "maximum": 1.0,
+                "average": 1.0,
+                "latest": 1.0,
+                "peak_delta": 1.0,
+            },
+            provider="prometheus-http-api",
+            query="agent_rca_pod_restart_count_delta scoped-query",
+            locator=f"prometheus://query/restarts/Pod/{POD_NAME}",
+        )
         kubernetes_draft = EvidenceDraft(
             source="kubernetes",
             kind="resource-state",
@@ -315,7 +378,6 @@ class PrometheusWorkloadMetricProviderTests(unittest.TestCase):
             summary="Pod restarted after an OOMKilled termination.",
             facts={
                 "last_termination_reason": "OOMKilled",
-                "restart_count_delta": 1,
             },
             provider="kubernetes-api",
             query=f"get Pod {POD_NAME}",
@@ -325,6 +387,7 @@ class PrometheusWorkloadMetricProviderTests(unittest.TestCase):
         collected_at = datetime(2026, 8, 12, 1, 5, tzinfo=timezone.utc)
         evidence = (
             builder.build(kubernetes_draft, request, collected_at=collected_at),
+            builder.build(restart_draft, request, collected_at=collected_at),
             builder.build(metric_draft, request, collected_at=collected_at),
         )
 

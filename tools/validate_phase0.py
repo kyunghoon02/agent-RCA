@@ -754,6 +754,7 @@ def validate_versions_and_manifests() -> None:
         "agent_rca_api_latency_p95_milliseconds",
         "agent_rca_api_latency_baseline_p95_milliseconds",
         "agent_rca_pod_memory_working_set_ratio",
+        "agent_rca_pod_restart_count_delta",
     }
     actual_recording_rules = {
         rule["record"] for rule in groups[0].get("rules", []) if "record" in rule
@@ -965,9 +966,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-dc187cec9a9b",
+            "image_tag": "runtime-8772e2bfacc0",
             "image_digest": (
-                "sha256:b0e72a714e4912117042f58dfcf2c3359c6fe1332243e9e3bb0b4c4bd6be55d9"
+                "sha256:650865467445122e3cfac67520f4a3957a40c999a80c32ca3d259808cc4ba6c6"
             ),
         },
         "webhook": {

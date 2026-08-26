@@ -274,12 +274,21 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
     def test_workload_query_is_fixed_uid_backed_and_pod_scoped(self) -> None:
         specs = _prometheus_workload_query_specs()
 
-        self.assertEqual(len(specs), 1)
-        self.assertEqual(specs[0].query_id, "memory_working_set_ratio")
-        self.assertEqual(specs[0].resource_label, "pod")
-        self.assertEqual(specs[0].uid_label, "uid")
-        self.assertEqual(specs[0].subject_kind, "Pod")
-        self.assertEqual(specs[0].peak_fact, "peak_ratio")
+        self.assertEqual(len(specs), 2)
+        self.assertEqual(
+            {spec.query_id for spec in specs},
+            {"memory_working_set_ratio", "restart_count_delta"},
+        )
+        self.assertTrue(all(spec.resource_label == "pod" for spec in specs))
+        self.assertTrue(all(spec.uid_label == "uid" for spec in specs))
+        self.assertTrue(all(spec.subject_kind == "Pod" for spec in specs))
+        self.assertEqual(
+            {spec.query_id: spec.peak_fact for spec in specs},
+            {
+                "memory_working_set_ratio": "peak_ratio",
+                "restart_count_delta": "peak_delta",
+            },
+        )
 
     def test_kubernetes_incident_scope_adds_only_root_derived_prefixes(self) -> None:
         service = ProfileAwareIncidentCollectionService(

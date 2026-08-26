@@ -626,6 +626,42 @@
                         = metric.document->'subject'->>'uid'
                   )
               ),
+              'restart_metric_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'prometheus'
+                  AND evidence.document->'subject'->>'kind' = 'Pod'
+                  AND evidence.document->'facts'->>'metric'
+                    = 'restart_count_delta'
+                  AND evidence.document->'facts'->>'result_status' = 'HAS_DATA'
+              ),
+              'restart_metric_matching_pod_count', (
+                SELECT count(*) FROM evidence_items metric
+                WHERE metric.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND metric.document->>'source' = 'prometheus'
+                  AND metric.document->'subject'->>'kind' = 'Pod'
+                  AND metric.document->'facts'->>'metric'
+                    = 'restart_count_delta'
+                  AND EXISTS (
+                    SELECT 1 FROM evidence_items pod
+                    WHERE pod.incident_id = metric.incident_id
+                      AND pod.document->>'source' = 'kubernetes'
+                      AND pod.document->>'kind' = 'resource-state'
+                      AND pod.document->'subject'->>'kind' = 'Pod'
+                      AND pod.document->'subject'->>'name'
+                        = metric.document->'subject'->>'name'
+                      AND pod.document->'subject'->>'uid'
+                        = metric.document->'subject'->>'uid'
+                  )
+              ),
               'deployment_evidence_count', (
                 SELECT count(*) FROM evidence_items evidence
                 WHERE evidence.incident_id IN (
@@ -758,6 +794,22 @@
                     = 'memory_working_set_ratio'
                   AND context.document->'evidence_ids' ? evidence.evidence_id
               ),
+              'context_restart_metric_evidence_count', (
+                SELECT count(*)
+                FROM context_packages context
+                JOIN evidence_items evidence
+                  ON evidence.incident_id = context.incident_id
+                WHERE context.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'prometheus'
+                  AND evidence.document->'subject'->>'kind' = 'Pod'
+                  AND evidence.document->'facts'->>'metric'
+                    = 'restart_count_delta'
+                  AND context.document->'evidence_ids' ? evidence.evidence_id
+              ),
               'context_deployment_evidence_count', (
                 SELECT count(*)
                 FROM context_packages context
@@ -884,6 +936,7 @@
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int >= 20)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_metric_evidence_count | int >= 5)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_workload_metric_evidence_count | int >= 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_restart_metric_evidence_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_deployment_evidence_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_krca_feature_evidence_count | int == 9)
         and (
@@ -895,6 +948,8 @@
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).kubernetes_pod_evidence_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).workload_metric_evidence_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).workload_metric_matching_pod_count | int >= 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).restart_metric_evidence_count | int >= 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).restart_metric_matching_pod_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).deployment_evidence_count | int == 1)
       retries: 60
       delay: 2
@@ -918,6 +973,8 @@
           - incident_platform_alert_delivery.kubernetes_pod_evidence_count | int >= 1
           - incident_platform_alert_delivery.workload_metric_evidence_count | int >= 1
           - incident_platform_alert_delivery.workload_metric_matching_pod_count | int >= 1
+          - incident_platform_alert_delivery.restart_metric_evidence_count | int >= 1
+          - incident_platform_alert_delivery.restart_metric_matching_pod_count | int >= 1
           - incident_platform_alert_delivery.deployment_evidence_count | int == 1
           - incident_platform_alert_delivery.deployment_no_change_count | int == 1
           - incident_platform_alert_delivery.krca_feature_evidence_count | int == 9
@@ -947,6 +1004,7 @@
           - incident_platform_alert_delivery.context_evidence_count | int >= 20
           - incident_platform_alert_delivery.context_metric_evidence_count | int >= 5
           - incident_platform_alert_delivery.context_workload_metric_evidence_count | int >= 1
+          - incident_platform_alert_delivery.context_restart_metric_evidence_count | int >= 1
           - incident_platform_alert_delivery.context_deployment_evidence_count | int == 1
           - incident_platform_alert_delivery.context_recent_deployment_evidence_count | int == 0
           - incident_platform_alert_delivery.context_krca_feature_evidence_count | int == 9
@@ -1189,6 +1247,10 @@
           {{ incident_platform_alert_delivery.workload_metric_evidence_count }}
         workload_metric_matching_pod_count: >-
           {{ incident_platform_alert_delivery.workload_metric_matching_pod_count }}
+        restart_metric_evidence_count: >-
+          {{ incident_platform_alert_delivery.restart_metric_evidence_count }}
+        restart_metric_matching_pod_count: >-
+          {{ incident_platform_alert_delivery.restart_metric_matching_pod_count }}
         deployment_evidence_count: >-
           {{ incident_platform_alert_delivery.deployment_evidence_count }}
         deployment_no_change_count: >-
@@ -1214,6 +1276,8 @@
           {{ incident_platform_alert_delivery.context_metric_evidence_count }}
         context_workload_metric_evidence_count: >-
           {{ incident_platform_alert_delivery.context_workload_metric_evidence_count }}
+        context_restart_metric_evidence_count: >-
+          {{ incident_platform_alert_delivery.context_restart_metric_evidence_count }}
         context_deployment_evidence_count: >-
           {{ incident_platform_alert_delivery.context_deployment_evidence_count }}
         context_recent_deployment_evidence_count: >-

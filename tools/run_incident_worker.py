@@ -268,6 +268,17 @@ def _prometheus_workload_query_specs() -> tuple[PrometheusQuerySpec, ...]:
             max_samples=4000,
             peak_fact="peak_ratio",
         ),
+        PrometheusQuerySpec(
+            query_id="restart_count_delta",
+            expression_template="agent_rca_pod_restart_count_delta{{scope}}",
+            namespace_label="namespace",
+            resource_label="pod",
+            subject_kind="Pod",
+            uid_label="uid",
+            step_seconds=15,
+            max_samples=4000,
+            peak_fact="peak_delta",
+        ),
     )
 
 

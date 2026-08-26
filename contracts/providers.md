@@ -69,10 +69,15 @@ Pod 이름이 rollout마다 달라지는 workload metric은 별도
 `PrometheusWorkloadMetricProvider`가 처리한다. Incident의 exact Service root에서 만든
 prefix만 PromQL selector에 허용하며, 반환된 각 series가 그 prefix 범위에 속하는지 다시
 검사한다. `agent_rca_pod_memory_working_set_ratio` recording rule은 cAdvisor working set과
-kube-state-metrics memory limit을 container별로 비교하고 `kube_pod_info`의 Pod UID를
-결합한다. Provider는 UID가 없는 series나 범위 밖 Pod를 거부하고, series가 없으면 가상의
-Pod Evidence를 만들지 않는다. `PrometheusWorkloadMetricEvidenceProjector`는 정규화된
-summary를 동일 UID의 Kubernetes Pod Entity에만 투영한다.
+kube-state-metrics memory limit을 container별로 비교한다.
+`agent_rca_pod_restart_count_delta`는 kube-state-metrics의 누적 restart counter를 30분
+bounded increase로 변환한다. 두 rule 모두 `kube_pod_info`의 Pod UID를 결합한다. Provider는
+UID가 없는 series나 범위 밖 Pod를 거부하고, series가 없으면 가상의 Pod Evidence를 만들지
+않는다. Kubernetes API의 현재 `restartCount`를 시간 delta로 오인하지 않으며,
+`OOMKilledRule`은 동일 UID의 Kubernetes termination, Prometheus restart delta와 memory
+limit 근접 Evidence가 모두 있을 때만 원인을 `PROVEN`으로 판정한다.
+`PrometheusWorkloadMetricEvidenceProjector`는 정규화된 summary를 동일 UID의 Kubernetes
+Pod Entity에만 투영한다.
 
 ### PrometheusAPIFeatureProvider
 

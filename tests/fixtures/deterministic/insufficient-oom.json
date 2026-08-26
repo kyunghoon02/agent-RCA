@@ -17,8 +17,7 @@
       },
       "summary": "checkoutservice last termination reason is OOMKilled.",
       "facts": {
-        "last_termination_reason": "OOMKilled",
-        "restart_count_delta": 1
+        "last_termination_reason": "OOMKilled"
       },
       "provider": "kubernetes-api",
       "query": "get pod checkoutservice-jkl -n online-boutique",
