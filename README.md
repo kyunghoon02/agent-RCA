@@ -5,712 +5,241 @@
 
 ## Problem
 
-Cloud-native 장애의 원인은 metric 하나나 log 한 줄에만 있지 않다. 배포 변경, workload,
-Prometheus metric, log, trace, Kubernetes Event와 Cilium/Hubble network flow를 같은
-Incident time window 안에서 함께 봐야 한다. 일반적인 LLM 요약은 운영 지식이나 시간상
-가까운 변경을 실제 원인 증거로 오인할 수도 있다.
+Cloud-native 장애의 원인은 metric 하나나 log 한 줄에만 있지 않다. 배포 변경,
+workload, metric, log, trace, Kubernetes Event와 network flow를 같은 Incident time
+window 안에서 함께 확인해야 한다. 일반적인 LLM 요약은 시간상 가까운 변경이나 운영
+문서를 실제 원인 Evidence로 오인할 수도 있다.
 
 Agent RCA는 Incident scope를 먼저 고정하고, 여러 관측 소스의 데이터를 검증된
-`EvidenceItem`으로 정규화한 뒤 관련 service와 Entity만 localization한다. 하나의 bounded
-read-only Agent가 이 Context 안에서 Evidence를 조사하고, 모든 결론은 실제
-`evidence_id`로 추적한다. Orchestrator 내부의 deterministic `Evidence Gate`가 근거와
-scope를 다시 검사하며, Evidence가 부족하거나 충돌하면 원인을 추측하지 않고
-`ABSTAIN`한다.
+`EvidenceItem`으로 정규화한다. 이후 KRCA와 Temporal StateGraph가 조사 범위를 줄이고,
+bounded read-only Agent가 그 범위 안에서 Evidence를 검사한다. 모든 결론은 실제
+`evidence_id`로 추적하며, 근거가 부족하거나 충돌하면 추측하지 않고 `ABSTAIN`한다.
 
-## How Agent RCA Works
-
-```mermaid
-flowchart LR
-    I[Infrastructure Incident<br/>change, workload, failure] --> D[Detection<br/>Alertmanager]
-    D --> C[Bounded Evidence Collection]
-
-    M[Prometheus<br/>metrics] --> C
-    L[Loki and Tempo<br/>logs and traces] --> C
-    K[Kubernetes API<br/>state and Events] --> C
-    H[Cilium and Hubble<br/>network flows] --> C
-
-    C --> N[Normalize<br/>scope, provenance, redaction, hash]
-    N --> S[KRCA and Temporal StateGraph<br/>localize investigation scope]
-    S --> A[Agent RCA Orchestrator<br/>bounded read-only investigation]
-    A --> G{Evidence Gate}
-    G -->|sufficient and consistent| R[Evidence-grounded<br/>RCA Report]
-    G -->|missing or contradictory| X[ABSTAIN<br/>with explicit gaps]
-```
-
-이 프로젝트에서 Agent는 log를 받아 답을 생성하는 독립된 wrapper가 아니다. 실제
-인프라 Evidence를 제한된 범위에서 조사하는 진단 구성요소다. 현재 RCA 경로는
-read-only이며 write/admin tool과 자동 복구는 허용하지 않는다. 복구가 필요하면 운영자가
-Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtime Evidence로 다시
-검증해야 한다.
-
-## Verified Scope
-
-- **Infrastructure runtime:** Terraform과 Ansible로 GCP 단일 VM, kubeadm Kubernetes,
-  Cilium/Hubble과 observability stack을 구성하고 재부팅 후 복구 및 주요 component
-  readiness를 검증했다.
-- **Live telemetry path:** Online Boutique의 실제 trace와 Prometheus recording rule을
-  normalized metric Evidence와 KRCA drilldown까지 연결한 live smoke를 확인했다.
-- **Live Incident collection and localization:** `rca_enabled=true`인 제어 경보가
-  Alertmanager의 인증된 내부 webhook을 거쳐 PostgreSQL에 저장되고, lease/fencing
-  worker가 rooted Kubernetes workload/Pod Event, Deployment revision, service metric과
-  UID-backed Pod memory/restart-delta metric, 선택된 KRCA API dependency profile Evidence를
-  수집한다.
-  이어서 KRCA feature를 logical
-  Service의 `CALLS` 관계로 projection하고, Top-N 또는 안전한 source fallback으로 Neo4j
-  bounded StateGraph 탐색을
-  실행해 Frozen Context를 저장하고 `ANALYZING`까지 전이한 뒤, exact `context_id`가 고정된
-  analysis work를 `READY`로 남기는 경로를 확인했다.
-- **RCA core:** Incident/Evidence contract, bounded collector, localization, Context-pinned
-  analysis claim, deterministic Evidence candidate selection, compact Agent investigation
-  view, read-only Agent tool과 Evidence Gate를 fixture와 contract test로 검증했다. 같은
-  compact 경로를 새 controlled OOM Incident의 target-only Kubernetes Job으로 실행해
-  `ANALYZING→REPORTED`, `conclusive` Report, 유효한 Evidence citation 3개와 Agent Run
-  audit 저장까지 live 확인했다.
-- **Controlled fault evaluation:** 개발 환경 전용 checkout OOM harness가 external-controller
-  traffic, resource fault, Alertmanager delivery, Frozen Context, private Ground Truth와
-  post-run scorer를 end-to-end 실행하고 매회 원래 resource/Ready/restart-zero 상태로
-  자동 복구했다. 기존 memory-threshold gate의 고정 시나리오 5회가 모두 `ABSTAIN`한
-  false negative를 기록했고, 그 분포를 근거로 exact OOM signature와 same-UID restart를
-  요구하는 v2 gate를 만들었다. v2의 별도 live 확인 1회는 `ROOT_CAUSE`와 Top-1 `1.0`을
-  기록했다.
-- **아직 증명하지 않은 범위:** 연속 Agent Deployment, 15개 scenario 반복 정확도와
-  production HA는 아직 검증하지 않았다. compact Agent의 live token 값은 한 쌍의
-  controlled OOM run에서만 관측했으며 일반화된 절감률이나 품질 보장은 아니다.
-
-세부 구현과 runtime 상태는 [Implementation Status](#implementation-status)에서 분리해 기록한다.
-
-## Target Architecture
+## Architecture
 
 ![Agent RCA cloud-neutral logical architecture with a Kubernetes reference runtime](assets/agent-rca-target-architecture.svg)
 
-> Cloud-neutral logical architecture이며, single-node kubeadm Kubernetes는 현재
-> reference runtime이다.
-
-## Incident Investigation Flow
+> 논리 아키텍처는 cloud-neutral이며, 현재 reference runtime은 GCP Compute Engine의
+> single-node kubeadm Kubernetes다.
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant AM as Alertmanager
-    participant IC as Incident Core
-    participant IW as Incident Worker
-    participant BC as Bounded Collector
-    participant ES as Evidence Sources
-    participant LS as KRCA + StateGraph
-    participant KR as Knowledge Retriever
-    participant AO as Agent RCA Orchestrator
-    participant EG as Evidence Gate (internal)
+flowchart LR
+    AM[Alertmanager] -->|rca_enabled=true| RX[Authenticated Receiver]
+    RX --> Q[(PostgreSQL Incident and Work Queue)]
+    Q --> CW[Collection Worker]
 
-    AM->>IC: Alert webhook
-    IC->>IC: Normalize, deduplicate, persist RECEIVED + READY work
-    IW->>IC: Claim work with lease and fencing token
-    IC-->>IW: COLLECTING Incident and frozen alert scope
-    IW->>BC: Start bounded collection
-    par Metrics, API dependencies and logs
-        BC->>ES: Query Prometheus profiles and Loki
-        ES-->>BC: Telemetry
-    and Kubernetes and network
-        BC->>ES: Query API, Events and Hubble
-        ES-->>BC: Resource state and flows
-    end
-    Note over IC,BC: Normalize scope, provenance, redaction, hash and schema
-    BC-->>IW: Validated EvidenceItems
-    IW->>IC: Persist Evidence and advance to LOCALIZING
-    IC->>IC: Enqueue READY localization work in the same transaction
-    IW->>IC: Claim localization work with a new lease and fencing token
-    IW->>LS: KRCA Top-N or source fallback, exact Entity resolution
-    LS->>LS: Project Evidence to temporal entities and relations
-    IW->>LS: Bounded StateGraph localization
-    LS-->>IC: Persist Frozen Context and advance to ANALYZING
-    IC-->>AO: Full Frozen Context
-    AO->>AO: Select at most 8 diverse Evidence candidates and build compact view
-    AO->>KR: Retrieve scoped references
-    KR-->>AO: Versioned Top-K knowledge
-    AO->>AO: Invoke one bounded external LLM Agent
-    loop At most 12 read-only tool calls
-        AO->>IC: inspect_evidence(evidence_id)
-        IC-->>AO: Context-scoped normalized Evidence
-        AO->>KR: inspect_reference(reference_document_id)
-        KR-->>AO: This-run bounded excerpt
-    end
-    AO->>EG: Hypotheses and citations
-    alt Evidence is sufficient and consistent
-        EG-->>IC: Evidence-grounded Report
-    else Evidence is missing or contradictory
-        EG-->>IC: ABSTAIN with explicit gaps
-    end
+    P[Prometheus] --> CW
+    L[Loki] --> CW
+    K[Kubernetes API and Events] --> CW
+    D[Deployment History] --> CW
+
+    CW --> EB[EvidenceBuilder]
+    EB --> E[(Normalized Evidence)]
+    E --> PJ[Domain Projectors]
+    PJ --> SG[(Temporal StateGraph)]
+    SG --> FC[Frozen Context]
+    FC -->|agent_rca_enabled=true| AO[Agent RCA Orchestrator]
+    AO --> EG{Evidence Gate}
+    EG -->|sufficient and consistent| R[RCA Report]
+    EG -->|missing or contradictory| A[ABSTAIN]
 ```
 
-KRCA-style API Drilldown은 failure-rate와 latency propagation으로 Top-N service
-seed를 만들고, Temporal StateGraph는 관련 Entity와 시간 구간만 `Frozen Context`로
-고정한다. Operational Knowledge는 localized Entity 범위 안의 조사 reference로만
-사용하며 root cause는 실제 `evidence_id` 없이는 확정하지 않는다.
+Alert 수신과 LLM 실행은 분리돼 있다. `rca_enabled=true`는 Alertmanager가 RCA 대상
+Incident만 webhook으로 전달하게 하고, `agent_rca_enabled=true`는 연속 Agent Worker가
+해당 Incident의 analysis work를 자동 claim할 수 있게 한다. Receiver는 Provider를 직접
+호출하지 않고 PostgreSQL에 durable work를 먼저 저장하므로, Alertmanager 응답과 Evidence
+수집 실패가 서로 영향을 주지 않는다.
+
+## Core Components
+
+| Component | Input | Responsibility | Output |
+|---|---|---|---|
+| Alert Receiver | Alertmanager webhook | 인증, payload 검증, 정규화, 중복 제거 | `RECEIVED` Incident와 collection work |
+| Incident Workers | PostgreSQL work row | lease/fencing 기반 claim과 lifecycle 진행 | collection/localization result |
+| Providers | Incident scope와 time window | bounded read-only telemetry 조회 | `EvidenceDraft` batch |
+| EvidenceBuilder | Provider draft | scope, provenance, redaction, hash, schema 검증 | immutable `EvidenceItem` |
+| Projectors | validated Evidence | domain Evidence를 temporal Entity와 relation으로 변환 | versioned Graph records |
+| StateGraph and Resolver | Graph records와 Incident source | exact Entity resolution과 bounded localization | `Frozen Context` |
+| Agent RCA Orchestrator | Frozen Context | Evidence 후보 선택과 bounded read-only tool investigation | structured RCA draft |
+| Evidence Gate | Agent draft와 inspected Evidence | citation, scope, completeness와 consistency 재검증 | Report 또는 `ABSTAIN` |
+| Viewer | 저장된 Incident artifacts | Incident, Evidence, Context, work와 Report 조회 | read-only UI/API |
+
+Provider가 Graph record를 직접 만들지는 않는다. 모든 Provider output은
+`EvidenceBuilder`를 통과한 후에만 저장되고, domain Projector만 검증된 Evidence를
+StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 Neo4j에 저장하며,
+상위 service와 Agent는 Cypher를 직접 실행하지 않는다.
+
+## Evidence Sources
+
+| Source | 현재 Incident 경로 | 역할 |
+|---|---|---|
+| Prometheus | 연결됨 | service 오류율·latency, Pod memory ratio와 restart delta, KRCA API dependency feature |
+| Kubernetes API | 연결됨 | Service, Deployment, ReplicaSet, Pod와 EndpointSlice 상태 |
+| Kubernetes Event | 연결됨 | OOM, scheduling, mount, image pull 등 resource Event |
+| Loki/Alloy | 부분 연결 | Pod UID에 귀속된 kernel memcg OOM Evidence |
+| Deployment history | 연결됨 | retained ReplicaSet 기반 image/resource 변경과 변경 부재 |
+| Tempo | telemetry 검증 연결 | trace 저장과 service graph 생성, Incident trace Provider는 미연결 |
+| Cilium/Hubble | platform 조회 가능 | flow/drop/policy-verdict Incident Provider는 미연결 |
+| Application log | 계획 | 일반 application/container log Incident Provider는 미연결 |
+
+새 Provider도 동일한 `EvidenceDraft → EvidenceBuilder → EvidenceItem` 경계를 사용한다.
+새 오류 유형을 지원하려면 Provider뿐 아니라 schema, Projector, localization policy와
+평가 scenario를 함께 추가해야 한다.
 
 ## Evidence and Safety Boundaries
 
-| 입력 계층 | 역할 | 원인 증명 가능 여부 |
+| Layer | Role | Can prove root cause? |
 |---|---|---|
-| Runtime Evidence | metric, log, resource state, Event, network flow와 change history | 가능, `evidence_id` 필수 |
-| Graph Context | Evidence에서 파생된 Entity, 상태·관계와 시간 구간 | 조사 범위 결정 |
+| Runtime Evidence | metric, log, resource state, Event, flow와 change history | 가능, `evidence_id` 필수 |
+| Graph Context | Evidence에서 파생된 Entity, relation과 time interval | 조사 범위 결정 |
 | Operational Knowledge | versioned architecture, catalog, runbook과 SLO | 불가능, 조사 reference 전용 |
-| Incident Memory | 검증된 과거 Incident와 일반화된 진단 경험 | 후속 단계, runtime Evidence로 재검증 필요 |
-| Ground Truth | fault fixture 정답과 평가 label | RCA runtime 접근 금지 |
+| Incident Memory | 검증된 과거 Incident와 일반화된 진단 경험 | 후속 단계, 현재 Evidence로 재검증 필요 |
+| Ground Truth | fault fixture 정답과 평가 label | runtime 접근 금지 |
 
-모든 provider와 Agent tool은 다음 불변 조건을 따른다.
+모든 Provider와 Agent tool은 다음 조건을 따른다.
 
 - namespace, resource와 Incident time window를 벗어난 query를 거부한다.
-- write/admin tool, 자동 복구와 LLM이 생성한 shell 또는 `kubectl` 실행을 허용하지 않는다.
-- 원본 telemetry는 source retention에 유지하고 Evidence에는 필요한 요약과 provenance만 저장한다.
-- 검색 결과 없음, retention 만료, timeout, 권한 거부와 provider failure를 구분한다.
-- 일부 collector가 실패해도 성공한 Evidence를 보존하고 불완전성을 Report에 표시한다.
+- write/admin tool, 자동 복구와 LLM 생성 shell 또는 `kubectl` 실행을 허용하지 않는다.
+- 원본 telemetry는 source retention에 두고 Evidence에는 필요한 요약과 provenance만 저장한다.
+- no data, retention expiry, timeout, 권한 거부와 Provider failure를 구분한다.
+- 일부 Provider가 실패해도 성공한 Evidence를 보존하고 불완전성을 Report에 표시한다.
 - root cause는 runtime Evidence 인용 없이는 확정할 수 없다.
+
+## Current Status
+
+> 기준일: 2026-08-27. 구현 여부와 실제 reference runtime 검증을 구분한다.
+
+| Area | Status | Runtime evidence |
+|---|---|---|
+| GCP and Kubernetes | Live | Compute Engine `e2-standard-8`, kubeadm Kubernetes v1.36.4, containerd와 Cilium/Hubble 구성 및 재부팅 복구 확인 |
+| Observability | Live | Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo와 OpenTelemetry Collector 배포 |
+| Incident pipeline | Live | authenticated webhook부터 PostgreSQL work claim, Evidence 수집, localization과 `ANALYZING`까지 연결 |
+| Temporal StateGraph | Live | PostgreSQL observation journal, Neo4j projection, exact resolver와 Frozen Context 저장 확인 |
+| Continuous Agent Worker | Live, single replica | opt-in Incident 1건을 자동 claim해 bounded tool investigation, Evidence Gate와 `REPORTED` 저장 확인 |
+| RCA Viewer | Partially live | private ClusterIP API와 local same-origin BFF 조회 확인. public ingress와 사용자 인증은 없음 |
+| Operational Knowledge | Implemented, runtime pending | lexical/vector/Hybrid retriever와 pilot benchmark는 있으나 live pgvector corpus 평가는 미완료 |
+| Fault evaluation | In progress | checkout OOM harness와 scorer 연결. 다른 fault scenario와 반복 평가는 미완료 |
+
+현재 live Agent 확인은 controlled OOM 한 건에서 LLM 2회, read-only tool 3회와 총
+15,928 tokens로 `conclusive` Report를 저장한 결과다. 이는 전체 정확도나 비용 절감을
+일반화하는 성과값이 아니라, 연속 Agent runtime이 실제 Incident를 끝까지 처리했다는
+연결성 증거다.
 
 ## Reference Runtime
 
-- cloud: Google Cloud
-- compute: Compute Engine `e2-standard-8` 단일 VM, 8 vCPU / 32GB memory
-- Kubernetes: upstream Kubernetes, kubeadm single-node bootstrap
-- container runtime: containerd
-- dataplane and network evidence: Cilium CNI와 Hubble
-- observability: Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo,
-  OpenTelemetry Collector와 Kubernetes API/Event
-- graph: Neo4j Community 기반 temporal StateGraph
-- operational knowledge index: Git source + PostgreSQL/pgvector derived index
-- reference workload: [Google Online Boutique](platform/online-boutique/README.md)
-  `v0.10.6` controlled incident target
-- state: versioning을 활성화한 사전 생성 GCS Terraform backend
-- identity: 전용 최소 권한 VM service account
-- RCA permission: Kubernetes와 observability source에 대한 bounded read-only access
+| Layer | Implementation |
+|---|---|
+| Cloud | Google Cloud Compute Engine |
+| Kubernetes | upstream Kubernetes, kubeadm single-node bootstrap |
+| Container and network | containerd, Cilium CNI와 Hubble |
+| Observability | Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo와 OTel Collector |
+| Persistence | PostgreSQL 17.6, Neo4j Community와 local-path PVC |
+| Reference workload | [Google Online Boutique](platform/online-boutique/README.md) `v0.10.6` |
+| Provisioning | Terraform이 GCP foundation, Ansible이 host/cluster와 pinned workload 배포 담당 |
 
-Terraform은 VPC, subnet, firewall, IAM과 Compute Engine lifecycle까지만 소유한다.
-Ansible은 containerd와 kubeadm host/cluster bootstrap을 소유하고, Ansible이 실행하는
-고정 Helm release와 manifest가 Cilium/Hubble 및 observability stack을 설치한다. target
-workload와 Agent RCA 배포는 그 다음 Kubernetes deployment 계층이 담당한다. Reference runtime은 교체할 수 있으며 RCA core와
-Evidence contract는 GCP나 특정 workload ontology에 종속되지 않는다.
+이 runtime은 application/Kubernetes/Cilium fault 실험용이다. production HA, cross-node
+networking, zone 장애와 managed control-plane 장애를 증명하지 않는다. PostgreSQL과
+Neo4j PVC는 단일 VM disk에 묶여 있으며 `Retain` reclaim policy는 backup이 아니다.
 
-## Representative Incident Validation Plan
+## Evaluation
 
-전체 평가는 최소 15개 Incident를 반복하지만, 포트폴리오에서는 다음 4개 scenario를
-깊이 있는 case study로 먼저 제시한다. 아래 항목은 아직 성과값이 아니라 controlled
-fault 실험 후보이며, 실제 runtime Evidence와 Ground Truth 비교가 끝난 결과만 완료로
-표시한다.
+평가는 실제 Kubernetes runtime에서 재현한 `Change × Workload` Incident를 사용한다.
+Ground Truth는 Agent runtime과 격리하고, 완료된 Prediction에만 결합해 accuracy,
+Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 계산한다.
 
-| Scenario | Change × Workload | 수집할 핵심 Evidence | 검증할 원인 | 상태 |
-|---|---|---|---|---|
-| `checkoutservice` OOMKilled | memory limit 감소 × 고정 checkout traffic | kernel memcg OOM, memory metric, restart, resource limit와 rollout 시각 | 변경과 workload가 결합한 memory exhaustion | legacy gate 5회 false negative 측정, v2 gate live 확인 1회 Top-1 `1.0` |
-| NetworkPolicy 차단 | policy 변경 × 정상 service traffic | Hubble drop flow, timeout, policy diff와 적용 시각 | 특정 service path를 차단한 policy regression | 계획 |
-| Deployment regression | image/config 변경 × path-weighted traffic | RED metric, trace, application log와 ReplicaSet revision | 새 revision에서 발생한 API path regression | 계획 |
-| Load-only saturation | 변경 없음 × 단계적 stress | latency/error, CPU·memory와 change 부재 Evidence | 배포 변경이 아닌 capacity/workload 문제 | 계획 |
-
-각 case study는 fault 주입만 보여주지 않는다. baseline과 fault window, Agent가 실제로
-검사한 `evidence_id`, Report 또는 `ABSTAIN`, Ground Truth 일치 여부, 진단 시간과 false
-positive를 함께 기록한다. RCA core는 계속 read-only로 유지하며 operator remediation을
-수행한 경우에도 recovery signal은 별도 post-action Evidence로 수집한다.
-
-## Evaluation Strategy
-
-Agent RCA는 공개 사용자 수가 아니라 실제 Kubernetes runtime에서 재현한
-`Change × Workload` Incident로 평가한다. 변경이 잠재 결함을 만들고 특정 요청 경로,
-동시성 또는 부하가 이를 드러내는 운영 상황을 중심으로 다음 네 실험 셀을 비교한다.
-
-| Change | Workload | 평가 목적 |
+| Representative scenario | Evidence focus | Status |
 |---|---|---|
-| 없음 | normal | 정상 baseline과 false positive 측정 |
-| 있음 | normal | 배포·설정 자체의 regression 분리 |
-| 없음 | stress | 순수 traffic·capacity 문제 분리 |
-| 있음 | stress | 변경과 workload가 결합된 Incident 평가 |
+| `checkoutservice` OOMKilled | kernel memcg OOM, same-UID restart, resource limit | v1 고정 scenario 5회 false negative 분석, v2 live 확인 1회 Top-1 `1.0` |
+| NetworkPolicy regression | Hubble drop, policy verdict와 change time | 계획 |
+| Deployment regression | RED metric, trace, log와 ReplicaSet revision | 계획 |
+| Load-only saturation | latency/error, CPU·memory와 change 부재 | 계획 |
 
-Change Evidence에는 Git commit과 manifest diff, Deployment/ReplicaSet revision, image
-digest, ConfigMap metadata hash, resource limit, NetworkPolicy와 rollout/rollback 시각을
-포함한다. Secret value는 수집하지 않으며 Change history만으로 root cause를 확정하지
-않는다. 변경이 실제 metric, log, Event, trace 또는 Hubble flow 변화와 시간적·인과적으로
-일치해야 한다.
+OOM v1 결과는 순간 memory metric을 필수 조건으로 사용하면 실제 kernel OOM을 놓칠 수
+있음을 보여줬다. v2는 exact kernel signature와 same-UID restart를 필수 Evidence로 사용하며,
+memory ratio는 보조 관측으로 남긴다. 목표 평가는 최소 15개 scenario를 각각 5회 반복하는
+것이며, 현재 한 번의 v2 성공은 그 목표를 달성한 결과가 아니다.
 
-대상 node의 resource signal을 오염시키지 않도록 load generator는 target node와 다른
-failure domain에서 실행한다. baseline, spike, soak와 path-weighted workload마다 seed와
-rate를 기록하고, 최소 15개 Incident scenario를 각각 5회 반복한다. 동일한 Frozen
-Evidence는 A/B/C/D variant에 재사용하며 root-cause accuracy, Evidence precision/recall,
-`ABSTAIN` correctness, latency, tool/LLM cost와 반복 재현성을 비교한다. Fault manifest와
-Ground Truth는 Agent runtime에서 계속 격리한다.
+상세 규칙은 [Evaluation Preregistration](evaluation/preregistration.yaml)과
+[KRCA Drilldown Contract](contracts/krca-drilldown.md)에 기록한다.
 
-현재 post-run scorer는 private Ground Truth의 expected root cause와 relevant Evidence ID를
-완료된 Prediction snapshot에만 결합한다. case/scenario/Incident가 다르거나 label이
-snapshot 밖 Evidence를 가리키면 평가를 거부하며, 공개 가능한 Result에는 정답 label과
-Evidence ID 대신 count와 metric만 기록한다. Variant A Fast Path는
-`DeterministicDecision`에서 Prediction을 직접 생성할 수 있다. 이 scorer 구현은 평가
-방법을 고정한 것이며 아직 15-scenario × 5회 accuracy 결과를 의미하지 않는다.
+## Known Limitations
 
-### Knowledge Retrieval Ablation
+- single-node runtime이라 monitored workload, observability와 Agent control plane이 같은
+  failure domain에 있다.
+- PostgreSQL, Neo4j와 local PV의 backup/restore 및 HA가 구현되지 않았다.
+- Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
+- Agent Worker queue depth와 oldest-wait metric, 실제 운영 notification channel이 아직 없다.
+- public Viewer ingress, session authentication과 role authorization이 없다.
+- OOM 외 fault matrix와 반복 평가가 완료되지 않았다.
+- 자동 remediation은 의도적으로 지원하지 않는다.
 
-Operational Knowledge 검색은 기존 `entity-key+lexical`을 baseline으로 유지하고 동일한
-Frozen Context/query/corpus에서 `entity-key+vector`와
-`entity-key+lexical+vector-rrf`를 비교한다. 승인 상태, 유효 기간, Entity 범위와 content
-hash는 세 variant에서 동일한 hard filter로 고정하며 Vector 검색은 eligible 문서의
-순위만 바꾼다.
+## Quick Start
 
-| Variant | 목적 | 측정값 |
-|---|---|---|
-| Lexical | 기존 deterministic baseline | Hit@K, Recall@K, MRR@K, nDCG@K, p95 latency |
-| Vector | semantic retrieval ablation | 동일 |
-| Hybrid RRF | exact term과 semantic paraphrase 결합 | 동일 + lexical 대비 absolute delta |
-
-현재 포함된 2개 문서/12개 query benchmark는 평가 pipeline pilot이며 정확도 개선
-성과값이 아니다. 승인 문서 20개와 frozen query 30개 이상으로 확장한 뒤 생성되는
-corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수치로 승격한다.
-
-## Implementation Status
-
-> 기준일: 2026-08-27. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
-
-| 영역 | 현재 상태 | Runtime 상태 |
-|---|---|---|
-| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING`→Context-pinned analysis work `READY`→Agent Report까지 live 연결. 연속 Agent claim은 `agent_rca_enabled=true`와 2026-08-27 activation cutoff를 동시에 요구하며, 수동 exact target one-shot은 다른 work의 claim/reap을 수행하지 않는 명시적 override로 유지한다 |
-| Bounded HTTP, Prometheus, Kubernetes, Loki, Deployment provider | adapter와 contract test 구현 | Incident worker가 exact Service root에서 ownership/selector로 제한한 Service/Deployment/ReplicaSet/Pod/EndpointSlice 상태와 Service/Pod Event, Deployment revision diff, 고정 allowlist Service Prometheus query 4개, UID-backed Pod memory ratio/restart delta query 2개, Pod-UID-scoped kernel memcg OOM Loki query 및 선택된 KRCA profile 전용 `prometheus-api` collector를 병렬 실행한다. 모든 Evidence에는 trusted `cluster_id`가 주입된다. 일반 application log와 Hubble Incident collector는 아직 미연결 |
-| PostgreSQL repository | Incident artifact, fenced collection/localization/analysis work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC에 migration 6개 적용. `ANALYZING`과 Frozen Context 생성 순서 모두에서 exact `context_id`를 고정하는 analysis work가 live 제어 Incident에 `READY`로 생성됨 |
-| KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile, Evidence-to-Top-N과 profile completeness/fallback 구현 | browse/cart/checkout 3개 profile의 23개 edge가 active-traffic smoke에서 모두 `HAS_DATA`. Incident worker는 alert의 allowlisted `krca_profile`만 수집하며, 최신 제어 경보에서는 9개 edge 중 4개 `HAS_DATA`·5개 `INSUFFICIENT_DATA`를 명시하고 incomplete profile에 source fallback을 선택해 근거 없는 Top-N 생성을 차단 |
-| Entity resolver와 Temporal StateGraph | Kubernetes/Service·Pod Prometheus/KRCA/Deployment/Loki kernel OOM Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 71개 Evidence→324개 record→81개 current Entity/91개 current Relation 및 `APPLIED` journal을 검증. 최신 제어 Incident는 저장 Evidence 22개 중 21개와 StateGraph path 40개를 Frozen Context에 고정하고 `ANALYZING`에 도달. 별도 OOM Incident의 kernel Evidence도 같은 UID Pod Event로 Context에 포함됨 |
-| Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
-| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, deterministic source-diverse Evidence candidate selector(최대 8개), 중복 path를 제거한 compact `AgentInvestigationView`, 최대 4개 ID의 bounded Evidence batch/Reference read-only tool, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | 단일 replica의 연속 Deployment를 활성화했다. claim당 60초 최소 간격, 3회 연속 실패 시 300초 circuit, per-run LLM/tool/token/wall-time 상한과 read-only tool 경계를 적용한다. 새 opt-in controlled OOM은 1회 claim, LLM 2회/tool 3회, 총 15,928 tokens로 `conclusive` Report를 저장했다. cutoff 이전 `READY` 35건과 cutoff 이후 opt-in 없는 1건의 attempt 합계는 모두 0이었다. Prometheus는 worker `up=1`, processed=1, circuit=0을 수집하며 5개 운영 alert rule을 로드했다. 이는 single-node 개발 reference runtime의 연속 실행 증거이지 HA production 증거는 아니다 |
-| Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract, 인증된 GET transport, Next.js UI와 same-origin server-side BFF, private API Deployment 및 전용 read-only DB role 구현 | cluster-local API Ready, DB role의 SELECT 허용·mutation 거부와 local BFF를 통한 live list/detail/work/Evidence 조회 검증. public ingress/domain, 사용자 session/role 인증, observability deep link runtime 설정과 production query plan은 미구현 |
-| Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider/change Projector, Ground Truth/Prediction/Result/Observation 계약, ID-free 분포 집계기, external-controller workload와 development-only OOM fault harness 구현 | exact baseline과 명시적 승인, cluster lock, controller/remote watchdog, `always` 복구를 강제한다. legacy gate의 고정 OOM 5회는 모두 exact kernel memcg OOM과 restart를 수집했지만 30초 memory peak가 0.399~0.506에 머물러 전부 `ABSTAIN`했다. v2 gate의 별도 live 확인 1회는 `ROOT_CAUSE`, Top-1/Top-3 `1.0`, Evidence precision `1.0`/recall `0.666667`로 완료되고 원상 복구됐다. v2 5회 반복, Git/ArgoCD change source와 15-scenario dataset은 미구현 |
-| GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회 및 controlled application OOM/복구를 검증; destroy와 VM failure runtime은 미검증 |
-| Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. Alloy DaemonSet이 host journal을 read-only로 읽어 kernel memcg OOM의 Pod UID를 Loki label로 정규화한다. KRCA API recording rule 4개와 UID-backed Pod memory ratio/restart delta rule 2개, frontend failure-rate opt-in alert rule 및 인증된 Alertmanager webhook live 적용 |
-| Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정하고, 3개 source patch와 Cloud Build/Artifact Registry digest pin을 추가한 Kustomize overlay 및 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 10개 application service 모두 server span, Collector target `up=1`, RED/service graph metric, Tempo trace와 23-edge KRCA live smoke 및 checkout OOM fault/복구 검증 완료. bounded external-controller checkout traffic은 OOM harness에 연결됐고, 지속 외부 load와 나머지 fault matrix는 미연결 |
-
-Single-node reference runtime은 application/Kubernetes/Cilium fault 실험용이며
-production HA, cross-node networking, node pool autoscaling, zone 장애 또는 managed
-control-plane 장애를 증명하지 않는다. VM 장애까지 분석하려면 Agent control plane을
-별도 failure domain으로 분리해야 한다.
-
-현재 cluster에서 실제로 연결된 Incident 수집 경로는 다음과 같다.
-
-```text
-controlled alert or opt-in PrometheusRule with rca_enabled=true
-→ AlertmanagerConfig의 exact label route
-→ Bearer-authenticated private ClusterIP webhook
-→ payload/body/alert-count 검증
-→ Alertmanager normalization
-→ fingerprint + startsAt + alert + source Entity 기반 deduplication key
-→ PostgreSQL unique Incident insert + READY collection work insert (same transaction)
-→ RECEIVED Incident + INCIDENT_CREATED audit
-→ worker의 FOR UPDATE SKIP LOCKED claim + lease/fencing token
-→ COLLECTING 전이
-→ rooted Kubernetes workload inventory/Service·Pod Event + Deployment revision + Service Prometheus query 4개 + UID-backed Pod memory/restart-delta + Pod-UID-scoped Loki kernel OOM query 병렬 수집
-→ alert의 allowlisted krca_profile에 한해 격리된 API dependency range query 수집
-→ EvidenceBuilder의 scope·provenance·redaction·hash·schema 검증
-→ normalized Evidence 저장
-→ LOCALIZING 전이 + READY localization work insert (same transaction)
-→ collection work SUCCEEDED
-→ localization worker의 FOR UPDATE SKIP LOCKED claim + 별도 lease/fencing token
-→ KRCA feature status와 profile edge completeness 검증
-→ HAS_DATA면 KRCA Top-N, 부족하면 exact source Service fallback
-→ Kubernetes 상태, Deployment change/absence, Service·Pod metric, kernel OOM Event와 API dependency CALLS를 temporal Graph record로 projection
-→ Neo4j exact logical Service resolution
-→ bounded time/domain/relation/entity/depth StateGraph 탐색
-→ 현재 Incident에 연결된 Evidence를 Frozen Context에 고정하고 ANALYZING 전이
-→ 현재 Incident에 저장된 evidence_id만 남긴 Frozen Context 저장
-→ ANALYZING 전이 + localization work SUCCEEDED
-→ migration 6 trigger가 exact context_id가 고정된 READY analysis work 생성
-→ `agent_rca_enabled=true` + activation cutoff를 만족하는 analysis work만 연속 Agent Worker claim
-→ bounded read-only tools → Evidence Gate → Agent Run audit + Report → REPORTED
-```
-
-webhook은 `observability` namespace에서만 접근 가능한 NetworkPolicy와 namespace-local
-Secret을 사용하고 request body 1MiB, request당 alert 100개로 제한한다. 동일 alert의 재전송은
-같은 deduplication key로 기존 Incident를 반환하며 새 감사 이벤트나 work row를 만들지
-않는다. HTTP receiver가 Provider를 직접 호출하지 않고 먼저 durable queue에 기록하므로
-Alertmanager 응답 시간과 Evidence 수집 실패를 분리한다. worker는 동시에 하나의 row만
-claim하며 120초 lease, 최대 3회 시도와 매 claim마다 새 fencing token을 사용한다. lease가
-만료된 stale worker는 최신 token 없이 완료나 실패를 저장할 수 없고, collection commit 뒤
-work 완료만 누락된 경우 reaper가 Incident의 downstream 상태를 기준으로 terminal work 상태를
-복구한다. collection과 localization은 서로 다른 table과 claim token을 사용하므로 한 단계의
-stale worker가 다음 단계의 완료를 덮어쓸 수 없다. exact Entity가 없거나 여러 개면 임의로
-선택하지 않고 Incident와 localization work를 `FAILED`로 닫는다.
-
-2026-08-26 최신 live 검증에서는 제어 경보 1건이 정확히 하나의 Incident가 되어
-`RECEIVED → COLLECTING → LOCALIZING → ANALYZING`으로 이동했다. `kubernetes`,
-`deployment`, `prometheus`, `prometheus-workload`, `loki-kernel-oom`,
-`prometheus-api` collector 6개가 normalized Evidence 22개를 저장했고, 여기에는 rooted Pod 상태, 동일 UID Pod의
-memory working-set ratio와 30분 restart counter delta, Deployment `NO_CHANGES` Evidence가
-포함됐다.
-성공한 collection/localization work와 exact Context에 고정된 `READY` analysis work가 각각
-1개씩 남았다. 최신 제어 시점에는 최근 traffic이 없어 KRCA feature 9개가 모두
-`INSUFFICIENT_DATA`였고, 불완전한 profile에서 근거 없는 Top-N 대신 exact source Service
-fallback을 사용했다. Context 1개에는 Evidence 21개와
-StateGraph path 40개가 고정됐다. metric summary와 Deployment change-absence Event는
-Context Evidence에는 포함되지만 `recent_change_evidence_ids`에는 포함되지 않았다.
-실제 `OnlineBoutiqueFrontendHighFailureRate` rule도 Prometheus에 healthy 상태로 로드하며
-`agent_rca_enabled=true`를 명시한다. 현재 worker는 `online-boutique`의 Service-scoped
-Incident만 처리한다. 2026-08-27 연속 Deployment 검증에서는 opt-in controlled OOM 한 건을
-자동으로 1회 claim해 `REPORTED`까지 처리했고, LLM 2회/tool 3회, 총 15,928 tokens의
-`conclusive` Report를 저장했다. 같은 시점에 cutoff 이전 `READY` 35건과 cutoff 이후 opt-in
-없는 검증 Incident 1건은 attempt 합계 0을 유지했다. Worker metrics ServiceMonitor target은
-`up=1`, processed counter는 1, circuit gauge는 0이었다.
-
-## Core Localization Design
-
-Provider는 `GraphRecord`를 직접 만들지 않는다. `EvidenceDraft`를 반환하면
-`EvidenceBuilder`가 provenance, redaction, hash와 schema를 검증하고, domain
-Projector만 검증된 Evidence를 Entity, `SnapshotInterval`, `RelationInterval`과
-`EventAggregate`로 변환한다.
-
-Incident Prometheus Provider는 cluster identity를 query result label에서 신뢰하지 않고
-worker의 trusted `cluster_id`를 Evidence subject에 주입한다. allowlist query가 만든 scalar
-summary만 `PrometheusMetricEvidenceProjector`가 logical Service의 time-bounded Event로
-변환하며 raw sample, query text와 임의의 nested fact는 Graph attribute로 복사하지 않는다.
-이 Event는 Context Evidence에는 포함되지만 배포·설정 변경을 뜻하지 않으므로
-`recent_change_evidence_ids`에서는 제외한다.
-
-Pod workload metric은 exact Service root에서 파생된 Pod prefix와 trusted Pod UID를 모두
-강제한다. Kubernetes API의 누적 `restartCount`를 시간 delta로 해석하지 않고,
-kube-state-metrics counter의 30분 increase만 `restart_count_delta` Evidence로 만든다.
-deterministic OOM gate는 동일 UID의 Kubernetes `OOMKilled` 또는 trusted Loki kernel
-memcg OOM 중 하나와 Prometheus restart delta 1 이상이 함께 있을 때만 `PROVEN`을
-반환한다. 30초 scrape의 memory working-set ratio는 순간 OOM peak를 놓칠 수
-있으므로 보조 관측으로 보존하지만 필수 gate나 supporting citation으로 사용하지 않는다.
-containerd가 OOM event를 잃어 Kubernetes가 `Error`와 exit code 137만 남기는 경우에는,
-Alloy/Loki의
-`CONSTRAINT_MEMCG` kernel line에서 추출한 UID와 Kubernetes의 scoped Pod UID가 일치하는
-Evidence를 Kubernetes `OOMKilled` 대신 사용할 수 있다. exit code 137 자체는 OOM
-signature로 인정하지 않는다.
-
-2026-08-26 controlled live OOM에서는 Kubernetes가 실제로 `Error`/137만 남긴 같은 Pod
-UID에 대해 Loki kernel OOM match 3회, Prometheus restart delta peak 3,
-memory working-set ratio peak 0.9619를 수집했다. `LokiKernelOOMProvider`는 원본 PID와
-cgroup line을 저장하지 않고 Pod UID, constraint, match count와 시각만 `log-pattern`
-Evidence로 정규화했다. `LokiKernelOOMEvidenceProjector`가 그 Evidence를 Frozen Context에
-포함했고 당시 v1 Evidence Gate는 세 supporting Evidence ID로
-`kubernetes.container-oomkilled`를 `PROVEN`으로 판정했다. fault 뒤 checkoutservice는
-원래 64Mi request/128Mi limit, Ready 1개와 restart 0 상태로 복구했고 임시 load Pod와
-검증 alert는 제거했다. 삭제·rollout된 과거 Pod UID를 current Kubernetes inventory로
-소급 매핑하는 기능은 아직 없으므로 해당 경우에는 추측하지 않고 abstain한다.
-
-자동 harness는 성공 Evidence가 나올 때까지 반복하는 방식이 아니다.
-고정 seed의 controller-side checkout traffic, 8Mi request/limit와 75초 관측 창을 먼저
-시나리오로 고정하고, 결과와 무관하게 Alert를 제출한다. Ground Truth는 주입 manifest와
-동일 Pod UID의 exact kernel OOM/restart를 기준으로 runtime 밖에서 만들며 memory 표본은
-관측값 그대로 관련 Evidence에 포함한다. legacy
-`oom-signature-restart-memory-0.95-v1` policy의 고정 시나리오 5회에서는 kernel memcg OOM이
-5/5, restart delta가 2~3으로 관측됐지만 memory peak는 0.399~0.506, reference threshold
-통과는 0/5였다. 결과는 모두 `ABSTAIN`, 평균 Top-1 `0.0`이었다. 이 분포를 근거로 threshold를
-낮추지 않고 순간 metric을 필수 gate에서 제거한 `oom-signature-restart-v2`를 만들었다.
-v2의 별도 live 확인 1회는 memory peak 0.537에도 exact kernel signal과 same-UID restart
-delta 4를 근거로 `ROOT_CAUSE`, Top-1/Top-3 `1.0`, Evidence precision `1.0`, recall
-`0.666667`을 기록했다. memory Evidence를 억지로 supporting citation에 넣지 않아 recall은
-2/3으로 남는다. private Ground Truth, Prediction, Result, Observation 파일은 Git에서
-제외되고 Agent runtime에는 mount되지 않는다. ID-free summary는 policy별로만 집계해 전후
-결과를 섞지 않는다.
-
-이 development-only 실험은 다음처럼 명시적으로 승인해야 실행된다.
-
-```bash
-make evaluate-checkout-oom CONFIRM_CONTROLLED_FAULT=yes
-
-# v2가 preregistered 5회를 채운 뒤 policy별 ID-free summary 생성
-make summarize-checkout-oom EVIDENCE_GATE_POLICY=oom-signature-restart-v2
-```
-
-`DeploymentHistoryProvider`는 exact Deployment와 그 UID를 owner로 가진 retained
-ReplicaSet만 읽는다. revision 생성 시각이 Incident window 안이면 이전 retained pod
-template과 비교해 image fingerprint 및 CPU·memory requests/limits 변경만
-`deployment-change` Evidence로 정규화한다. 원본 registry 경로, 환경변수와 Secret 값은
-복사하지 않는다. window 안 변경이 없으면 `NO_CHANGES`, 이력이 잘렸거나 비교할 수 없으면
-`HISTORY_INCOMPLETE`를 명시한다. `DeploymentChangeEvidenceProjector`는 실제
-`CHANGE_DETECTED`만 recent change로 취급하고 absence/incomplete Event는 조사 참고로만
-남긴다. 이 이력은 Kubernetes의 `revisionHistoryLimit` 안에서만 완전하며 Git commit이나
-ArgoCD sync history를 대체하지 않는다.
-
-현재 cluster에서 검증한 Kubernetes topology 경로는 다음과 같다.
-
-```text
-short-lived read-only ServiceAccount token
-→ bounded Service/Deployment/ReplicaSet/Pod/EndpointSlice/Node inventory
-→ EvidenceDraft → EvidenceBuilder의 scope·redaction·hash·schema 검증
-→ StateGraphObservationRepository에 cycle + Evidence를 STAGED로 선저장
-→ KubernetesEvidenceProjector
-→ Neo4jStateGraphRepository의 atomic complete-set reconcile
-→ observation cycle을 APPLIED로 확정
-→ exact ServiceToEntityResolver
-→ IncidentLocalizationService → Frozen Context
-```
-
-Incident 경로는 같은 rooted inventory를 재사용한 뒤, 그 결과에 포함된 Pod 이름에만 Event
-query를 허용한다. 따라서 Alert의 logical Service 이름을 임의 prefix 검색으로 확장하지
-않으면서도 교체되는 ReplicaSet/Pod 상태를 현재 Incident Evidence에 포함할 수 있다.
-
-이 경로의 complete-set Reconciler는 inventory Provider가 `SUCCEEDED`인 경우에만 현재
-projection 반영과 사라진 Entity/Snapshot/Relation interval 종료를 같은 repository
-transaction으로 수행한다. `PARTIAL`, timeout과 빈 projection은 absence로 해석하지 않아
-아무 interval도 닫지 않는다. Graph transaction과 observation journal 사이에는 분산
-transaction을 두지 않는다. 대신 cycle과 정규화 Evidence를 먼저 `STAGED`하고 Graph가
-성공한 뒤 `APPLIED`한다. Graph 성공 후 상태 확정이 실패해도 같은 cycle의 Graph 적용은
-저장된 Evidence로 idempotent하게 재시도할 수 있고, 이미 `APPLIED`인 cycle은 Provider나
-Graph를 다시 실행하지 않는다.
-
-이 background observation은 `IncidentRepository`에 가짜 Incident를 만들지 않고 별도
-`StateGraphObservationRepository`에 저장한다. 현재 Evidence schema가 요구하는 내부
-`incident_id`는 cycle의 `evidence_scope_id`로만 취급하며 Incident foreign key를 만들지
-않는다. `APPLIED` cycle/Evidence는 72시간, 적용되지 않은 `STAGED` cycle은 24시간 보존한
-뒤 Graph ordinary history GC 다음에 정리한다. Reconciler가 갱신하는 open interval은 최신
-cycle Evidence ID로 교체해 ID가 무한히 누적되지 않게 하고, 일반 Incident `ingest`는 기존
-merge 의미를 유지한다. 현재 runtime은 cluster-local PostgreSQL journal에 migration을
-idempotent하게 적용하고 Kubernetes CronJob으로 5분마다 one-shot reconciliation을
-실행한다. `concurrencyPolicy=Forbid`와 verification 중 명시적 suspend/resume으로 같은
-시각 구간의 동시 projection을 막는다. Watch 기반 증분 수집은 아직 연결하지 않았으며
-주기 full inventory가 누락 보정 경계다. 2026-08-24 live 검증에서는 one-shot 직후 다음
-예약 Job이 성공해 PostgreSQL journal이 cycle `1→2`, Evidence `66→132`로 증가했고 두
-cycle 모두 `APPLIED`였다.
-
-```text
-Validated Evidence
-→ domain Projector
-→ versioned EntityIdentity + temporal Graph records
-→ exact/time-bounded ServiceToEntityResolver
-→ bounded InvestigationScope
-→ IncidentLocalizationService
-→ Frozen Context
-```
-
-Kubernetes 실제 리소스 identity는 trusted `cluster_id + metadata.uid`이고, UID가 없는
-참조는 cluster-aware placeholder로 남긴다. 동일 좌표의 실제 리소스가 나중에 확인되면
-기존 Entity를 덮어쓰지 않고 `RESOLVES_TO`로 연결한다. 애플리케이션의 논리 Service와
-Kubernetes Service도 별도 Entity로 두고 `REPRESENTED_BY`로 연결한다. Resolver는
-cluster, namespace, exact service name, Incident time window와 결과 상한을 강제하며
-0개는 `NOT_FOUND`, 복수 후보는 `AMBIGUOUS`로 처리한다.
-
-KRCA-style API Drilldown은 호출 edge마다 failure-rate propagation과 latency signal 중
-더 강한 값을 사용한다.
-
-```text
-allowlisted API dependency + bounded PromQL range queries
-→ dynamic window / max-lag correlation / p-value / latency features
-→ hashed metric-summary Evidence
-→ APIEdgeSignal
-→ KRCA Top-N services
-→ exact Entity resolution
-→ multi-seed InvestigationScope
-```
-
-Feature Provider는 query/edge/sample budget을 호출 전에 검사하고 namespace, service,
-operation label이 scope와 정확히 일치하는 단일 series만 허용한다. 원본 sample은
-Evidence나 StateGraph에 저장하지 않는다. 필수 series 누락, truncation 또는 정렬 표본
-부족은 완전한 `APIEdgeSignal`로 승격하지 않고 fallback 대상으로 남긴다.
-
-현재 reference runtime의 연결 경로는 다음과 같다. 버전 관리되는
-[Online Boutique KRCA profile](config/online-boutique-krca.yaml)이 허용된 API operation과
-PromQL만 정의하며 endpoint나 credential은 저장하지 않는다.
-
-```text
-instrumented Online Boutique server span
-→ OpenTelemetry Collector span metrics
-→ Prometheus recording rules (request rate, failure rate, p95, baseline p95)
-→ PrometheusAPIFeatureProvider
-→ EvidenceBuilder의 schema·scope·provenance·hash 검증
-→ metric-summary Evidence
-→ KRCAPIEdgeEvidenceProjector의 logical Service + time-bounded CALLS projection
-→ APIEdgeEvidenceProjector의 complete HAS_DATA signal 변환
-→ KRCA drilldown 또는 explicit source fallback
-```
-
-고정 upstream에 tracing이 없던 Java `adservice`, .NET `cartservice`, Go
-`shippingservice`는 repository의 source patch를 exact commit에 적용해 전용 Cloud Build
-identity로 빌드한다. 이미지는 private Artifact Registry에 저장하고 SHA-256 digest만 Git에
-고정한다. 배포 시 Ansible은 VM metadata의 project identity와 단기 access token으로 임시
-image overlay/pull secret을 만들며 project ID나 장기 service-account key를 repository에
-저장하지 않는다.
-
-이 live 연결은 metric 수집과 Evidence 변환이 실제 데이터로 동작한다는 증거다. 현재
-smoke는 10회의 정상 browse/cart/checkout 흐름으로 최소 7개 aligned sample을 확인했지만
-지속 부하 성능을 증명하지 않는다. 정상 traffic에서도 짧은 burst는 상대적 anomaly를
-만들 수 있으므로 Top-N 결과 자체를 실제 root cause나 정확도 성과로 해석하지 않는다.
-Fault 정확도와 false positive는 별도의 지속 외부 baseline load 및
-`Change × Workload` 반복 실험으로 검증한다.
-
-```text
-Score(P, C) = max(FailureRateScore(P, C), LatencyScore(P, C))
-```
-
-threshold를 통과한 API만 탐색하고 Top-N service를 StateGraph localization seed로
-전달한다. Evidence가 부족하거나 충돌하면 `AdaptiveScopeController`가 승인된 다음
-순위 seed 또는 현재 Graph 경계만 fixed time/domain/relation budget 안에서 확장한다.
-새 Context가 없거나 budget이 소진되면 best hypothesis와 한계를 남기고 `ABSTAIN`한다.
-
-Persistent StateGraph는 JSON 파일을 Graph처럼 읽는 구조가 아니다. Projector가 만든
-versioned JSON Graph record를 Repository 입구에서 검증한 뒤 Neo4j의 Entity/Snapshot/Event
-node와 temporal relationship로 저장한다. exact lookup과 bounded BFS는
-`StateGraphRepository` 뒤에서 Cypher로 실행되며 상위 service와 Agent는 Cypher를 직접
-만들 수 없다. 일반 closed history는 72시간, Frozen Context에 포함된 Entity와 조사
-시간창은 30일 pin으로 보존하고 open interval은 TTL만으로 삭제하지 않는다.
-Neo4j Community는 HTTP를 끄고 cluster 내부 Bolt Service만 노출하며 5Gi
-`agent-rca-local` PVC를 사용한다. StorageClass의 `Retain`은 backup이 아니므로 VM의 로컬
-디스크를 삭제하면 Graph history도 복구할 수 없다.
-
-Operational Knowledge도 StateGraph 내부에 저장하지 않는다. Retriever는 Frozen Context의
-Graph Entity에서 `domain`, `entity-type`, `name`, scope와 entity ID key를 파생하고,
-Git index의 approved/version/time/hash metadata를 hard filter로 적용한다. 기존 lexical
-baseline과 pgvector semantic rank를 각각 보존하고 Hybrid에서는 raw score를 더하지 않고
-RRF로 결합한다. 최대 5개, 12,000자, query term 16개, 5초, index 500개 상한을 넘을 수
-없으며 no match, stale only, timeout과 repository failure를 서로 다른 audit 상태로 남긴다.
-반환값은 `RetrievedReference`라서 `evidence_id`가 없고 검색 방식과 무관하게 그 자체로
-원인을 증명할 수 없다.
-
-Agent runtime은 전체 Frozen Context를 repository와 Evidence Gate에 그대로 보존한다. LLM에는
-deterministic `EvidenceCandidateSelector`가 recent change, source Entity 정합성, freshness,
-quality와 Evidence source 다양성을 기준으로 고른 최대 8개 후보와, 그 후보에 연결된
-중복 제거 topology path만 `AgentInvestigationView`로 전달한다. 전체 facts와 provenance는
-prompt catalog에서 제외하고 후보 ID를 실제 tool로 검사할 때만 반환한다.
-LLM은 `inspect_evidence(evidence_id)`와
-`inspect_reference(reference_document_id)`만 호출할 수 있고 shell, web, file, Kubernetes
-write/admin tool은 등록하지 않는다. SDK가 생성한 구조화 draft는 곧바로 Report가 되지
-않는다. deterministic Evidence Gate가 Context 밖 ID, 검사하지 않은 citation, Context 밖
-Entity, reference-only 결론, 낮은 completeness, collector failure와 budget 초과를 거부한
-뒤에만 Agent Run audit와 RCA Report를 저장하고 `ANALYZING -> REPORTED`로 전이한다.
-실패 시에는 가능한 범위에서 content-free audit를 남기고 `FAILED`로 전이한다.
-
-상세 scoring, feature provider 책임과 fixture 기본값은
-[KRCA-style API Drilldown Contract](contracts/krca-drilldown.md), Graph record 구조는
-[StateGraph Model](contracts/graph/stategraph-model.yaml)에 기록한다.
-
-## Verification
+로컬 contract와 core test:
 
 ```bash
 make bootstrap-dev
 make validate-core
-make render-stategraph
-make deploy-stategraph
-make verify-stategraph
-make smoke-live-stategraph
-make render-incident-platform
-make build-incident-platform-image GCLOUD_BIN=/path/to/gcloud
-make deploy-incident-platform
-make verify-incident-platform
-make smoke-agent-rca
-make smoke-live-krca
-make sync-knowledge-vectors
-make evaluate-knowledge-retrieval
-make gcp-readiness
-kubectl kustomize platform/online-boutique
 ```
 
-`make validate-core`는 schema contract, Alertmanager HTTP 경계, Incident lifecycle,
-Collector concurrency·timeout·retry·partial failure, Evidence redaction/hash,
-deterministic RCA, StateGraph, KRCA/localization과 bounded Knowledge retrieval fixture를
-비롯해 Agent Evidence Gate와 read-only Viewer query fixture를 확인한다.
+manifest와 Ansible 정적 검증:
 
-`make deploy-stategraph`는 digest-pinned Neo4j Community StatefulSet, 내부 Bolt Service와
-5Gi PVC를 배포하고 인증·Pod 안정성·read-only RBAC를 검증한다.
-`make smoke-live-stategraph`는 InMemory journal을 사용하는 격리된 one-shot 경로로 exact
-resolver와 Frozen Context까지 확인한다. 실제 지속 경로는
-`make deploy-incident-platform`이 digest-pinned runtime image, authenticated private
-Incident webhook과 worker, 내부 PostgreSQL 17.6, 5Gi PVC와 5분 CronJob을 적용한다. 검증은
-실제 Alertmanager 제어 경보→fenced collection claim→rooted Kubernetes, Deployment,
-Prometheus Service·Pod metric과 선택된 KRCA profile Evidence 총 22개 저장→fenced localization claim→KRCA
-fallback/Neo4j exact resolve→21개 Evidence를 인용하는 Frozen Context 저장→`ANALYZING`과 두
-단계의 성공 work 및 Context-pinned analysis work `READY` 저장, opt-in 없는 work의 attempt 0
-보존, 연속 Agent Worker/ServiceMonitor/PrometheusRule readiness, 그리고 one-shot Job의
-Kubernetes Evidence→PostgreSQL `STAGED/APPLIED` journal→Neo4j projection을 함께 확인한다.
-두 StatefulSet의
-`agent-rca-local` PVC는 single-node VM disk에 묶이며 `Retain`은 backup이 아니다. VM
-disk 삭제나 손상에 대비한 backup/restore와 HA는 아직 구현하지 않았다.
+```bash
+make terraform-validate
+make ansible-syntax
+make render-observability
+make render-stategraph
+make render-incident-platform
+```
 
-`make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
-fixture Incident로 bounded Agents SDK run을 수행한다. 2026-08-27 live 확인은
-`gpt-5.6-luna`의 LLM 3회/Evidence tool 2회 호출, Evidence citation 2개,
-`inconclusive` Report와 Incident `REPORTED` 저장으로 완료됐다. 키 값과 model input은
-출력하지 않는다. 같은 날 최적화 전 cluster PostgreSQL target-only one-shot은 exact
-controlled OOM Incident 한 건을 claim해 LLM 4회, Evidence access 12회와 총 80,893 tokens로
-`conclusive` Report를 저장했다. 이후 새 digest의 compact 경로를 별도 controlled OOM
-Incident에 target-only Kubernetes Job으로 재검증했다. 전체 Context Evidence 24개 중 후보
-8개와 deduplicated StateGraph path 12/18개를 13,539B input projection으로 제한해 LLM 2회,
-tool 3회, input 14,504/output 1,278, 총 15,782 tokens와 16.1초를 기록했다. Report는
-`conclusive`였고 Agent audit의 citation 3개는 모두 해당 Incident Evidence에 존재했다.
-이 80.5% run-to-run 차이는 Evidence snapshot과 모델 실행이 완전히 동일하지 않아 일반화된
-절감률로 보지 않는다. target-only Job은 제거했으며 현재는 Kubernetes Secret을 참조하는
-단일 replica 연속 Agent Deployment가 활성 상태다. 자동 claim은 opt-in 라벨과 activation
-cutoff를 모두 만족해야 하고 60초 최소 간격 및 3회 실패/300초 circuit으로 제한된다. 별도
-controlled OOM 자동 run은 LLM 2회/tool 3회, 총 15,928 tokens와 supporting Evidence 2개로
-`conclusive` read-only Report를 저장했다.
+구성된 development inventory에 배포하고 검증:
 
-`make smoke-live-krca`는 기본적으로 로컬 `127.0.0.1:19090`의 loopback-only Prometheus
-tunnel과 최근 controlled traffic을 요구한다. 구성된 3개 profile을 bounded range query로
-수집해 Provider batch와 normalized Evidence를 검증하고 KRCA drilldown까지 실행한다.
-이 명령의 `CONNECTED`는 연결성을 뜻하며 fault 원인 정확도를 뜻하지 않는다.
+```bash
+make deploy-stategraph
+make deploy-incident-platform
+make verify-incident-platform
+```
 
-`make sync-knowledge-vectors`는 승인된 Git corpus를 bounded chunk로 나누고 opt-in
-pgvector migration/index에 hash와 embedding model을 함께 저장한다. 이어서
-`make evaluate-knowledge-retrieval`이 lexical/vector/Hybrid를 같은 frozen benchmark로
-비교한다. 두 명령은 `POSTGRES_DSN`과 embedding API가 필요하며 현재 저장소에서는 live
-성공 또는 정확도 향상 수치를 아직 주장하지 않는다.
+Controlled fault는 development 환경에서만 명시적으로 승인해 실행한다.
 
-`POSTGRES_TEST_DSN`이 없으면 Incident repository와 StateGraph observation journal의
-live PostgreSQL contract test를 건너뛴다. 승인된
-테스트 DSN을 제공하면 random schema만 생성·검증·제거하며 공유 DB를 truncate하지
-않는다. Neo4j live contract는 기본적으로 skip하며, 명시적으로 승인된 test instance에
-`NEO4J_TEST_URI`, `NEO4J_TEST_USERNAME`, `NEO4J_TEST_PASSWORD`를 제공할 때만 실행하고
-테스트가 만든 Entity/Pin만 제거한다. `make gcp-readiness`는 설계 gate와 실제
-`plan/apply` 준비 상태를 분리하며, project, billing, location, auth, API와 GCS
-backend runtime evidence를 검사한다. Online Boutique remote base render에는 GitHub
-접근이 필요하다.
+```bash
+make evaluate-checkout-oom CONFIRM_CONTROLLED_FAULT=yes
+```
 
-### Read-only Viewer UI
-
-`frontend/viewer`는 저장된 Incident, Evidence, Frozen Context, work 상태와 RCA Report를
-조회하는 read-only 운영 화면이다. mutation 요청을 보내지 않으며 LLM prompt, reasoning
-trace, Secret과 원본 ConfigMap 값을 렌더링하지 않는다.
+Viewer는 기본적으로 deterministic fixture를 사용한다. live API를 읽을 때 bearer token은
+browser에 노출하지 않고 server-side BFF의 `VIEWER_API_TOKEN`으로 설정한다.
 
 ```bash
 npm --prefix frontend/viewer install
 npm --prefix frontend/viewer run dev
 ```
 
-`http://localhost:3100/incidents`에서 확인한다. `NEXT_PUBLIC_VIEWER_API_BASE_URL`이
-없으면 deterministic fixture adapter로 동작하고 모든 화면 상단에 `Demo Data`를 표시한다.
-live Viewer API를 읽으려면 같은 origin의 proxy route를 가리키게 하고 bearer token은
-browser 환경변수가 아니라 server-side `VIEWER_API_TOKEN`으로 둔다.
-
-```bash
-NEXT_PUBLIC_VIEWER_API_BASE_URL=/api/viewer
-VIEWER_API_ORIGIN=http://<viewer-api-host>:<port>
-VIEWER_API_TOKEN=<bearer token, 16자 이상>
-```
-
-`npm --prefix frontend/viewer run typecheck`와 `npm --prefix frontend/viewer test`가
-adapter 계약, Incident 목록 filter, lifecycle stepper, Evidence insufficient-data 표시,
-Agent 결과가 없는 empty state, API 실패 시 이전 데이터 유지와 polling 중복 방지를 확인한다.
-Grafana/Loki/Tempo deep link는 `NEXT_PUBLIC_GRAFANA_URL` 등이 설정되고 http/https
-allowlist를 통과할 때만 렌더링한다.
-
-Viewer API는 `incident-platform` namespace의 private ClusterIP로 배포하며 전용 PostgreSQL
-role은 table `SELECT`만 허용하고 mutation을 거부한다. authenticated list/detail/work
-request와 local same-origin BFF를 통한 실제 Incident/Evidence 조회까지 검증했다. UI 자체의
-cluster Deployment, public ingress/domain과 사용자 session 인증은 아직 없으므로 외부에서
-직접 접근할 수 없다. Agent runtime은 연속 실행 중이지만 opt-in 라벨이나 activation cutoff를
-통과하지 못한 analysis work는 `READY`와 Report 0건으로 남는 것이 정상이다. opt-in work만
-Agent Run과 Report가 추가되어 Viewer에 표시된다.
-
 ## Repository Structure
 
 ```text
-config/              프로젝트 범위, GCP/cluster readiness, RCA routing 정책
-contracts/           Incident, Evidence, Graph, RCA 및 provider 계약
-db/migrations/       core PostgreSQL schema migration
-db/vector_migrations/ opt-in pgvector Knowledge schema
-assets/              README 공개 이미지
-evaluation/          평가 사전등록과 Ground Truth 격리 정책
-frontend/viewer/     read-only Incident/RCA Viewer UI (Next.js)
-infra/terraform/     GCP VPC, IAM과 Compute Engine provisioning 경계
+automation/          kubeadm과 platform 배포 Ansible
+config/              project scope, readiness와 RCA routing policy
+contracts/           Incident, Evidence, Graph, RCA와 Provider contract
+db/                  PostgreSQL와 opt-in pgvector migration
+docs/                architecture decision, runtime evidence와 reproduction guide
+evaluation/          preregistration, scenario와 Ground Truth isolation policy
+frontend/viewer/     read-only Incident/RCA Viewer
+infra/terraform/     GCP VPC, IAM과 Compute Engine provisioning
 knowledge/           versioned operational reference와 retrieval index
-platform/            cloud-neutral Kubernetes manifest와 Kustomize base
-src/                 Incident/Evidence/RCA core
-tests/               deterministic fixture와 core unit test
-tools/               정적 검증 도구
+platform/            Kubernetes manifest와 Kustomize base
+src/                 Incident, Evidence, StateGraph와 Agent RCA core
+tests/               deterministic fixture와 contract test
+tools/               validation, smoke와 evaluation tool
 ```
 
-## Design and Reproduction Guides
+## Documentation
 
 - [Provider Contract](contracts/providers.md)
+- [Evidence Contract](contracts/schemas/evidence-item.schema.json)
 - [KRCA-style API Drilldown](contracts/krca-drilldown.md)
 - [Temporal StateGraph Model](contracts/graph/stategraph-model.yaml)
+- [Viewer Contract](contracts/viewer.md)
 - [Agent RCA Runtime Scope](config/project-scope.yaml)
 - [Evaluation Preregistration](evaluation/preregistration.yaml)
-- [Infrastructure Reproduction](infra/terraform/README.md)
+- [GCP Infrastructure](infra/terraform/README.md)
+- [Kubernetes Bootstrap and Deployment](automation/ansible/README.md)
