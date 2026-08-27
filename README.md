@@ -62,7 +62,10 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   analysis work를 `READY`로 남기는 경로를 확인했다.
 - **RCA core:** Incident/Evidence contract, bounded collector, localization, Context-pinned
   analysis claim, deterministic Evidence candidate selection, compact Agent investigation
-  view, read-only Agent tool과 Evidence Gate를 fixture와 contract test로 검증했다.
+  view, read-only Agent tool과 Evidence Gate를 fixture와 contract test로 검증했다. 같은
+  compact 경로를 새 controlled OOM Incident의 target-only Kubernetes Job으로 실행해
+  `ANALYZING→REPORTED`, `conclusive` Report, 유효한 Evidence citation 3개와 Agent Run
+  audit 저장까지 live 확인했다.
 - **Controlled fault evaluation:** 개발 환경 전용 checkout OOM harness가 external-controller
   traffic, resource fault, Alertmanager delivery, Frozen Context, private Ground Truth와
   post-run scorer를 end-to-end 실행하고 매회 원래 resource/Ready/restart-zero 상태로
@@ -70,9 +73,9 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   false negative를 기록했고, 그 분포를 근거로 exact OOM signature와 same-UID restart를
   요구하는 v2 gate를 만들었다. v2의 별도 live 확인 1회는 `ROOT_CAUSE`와 Top-1 `1.0`을
   기록했다.
-- **아직 증명하지 않은 범위:** compact investigation view를 적용한 이후의 external LLM
-  token 절감 수치, 연속 Agent Deployment, 15개 scenario 반복 정확도와 production HA는
-  아직 검증하지 않았다.
+- **아직 증명하지 않은 범위:** 연속 Agent Deployment, 15개 scenario 반복 정확도와
+  production HA는 아직 검증하지 않았다. compact Agent의 live token 값은 한 쌍의
+  controlled OOM run에서만 관측했으며 일반화된 절감률이나 품질 보장은 아니다.
 
 세부 구현과 runtime 상태는 [Implementation Status](#implementation-status)에서 분리해 기록한다.
 
@@ -267,7 +270,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile, Evidence-to-Top-N과 profile completeness/fallback 구현 | browse/cart/checkout 3개 profile의 23개 edge가 active-traffic smoke에서 모두 `HAS_DATA`. Incident worker는 alert의 allowlisted `krca_profile`만 수집하며, 최신 제어 경보에서는 9개 edge 중 4개 `HAS_DATA`·5개 `INSUFFICIENT_DATA`를 명시하고 incomplete profile에 source fallback을 선택해 근거 없는 Top-N 생성을 차단 |
 | Entity resolver와 Temporal StateGraph | Kubernetes/Service·Pod Prometheus/KRCA/Deployment/Loki kernel OOM Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 71개 Evidence→324개 record→81개 current Entity/91개 current Relation 및 `APPLIED` journal을 검증. 최신 제어 Incident는 저장 Evidence 22개 중 21개와 StateGraph path 42개를 Frozen Context에 고정하고 `ANALYZING`에 도달. 별도 OOM Incident의 kernel Evidence도 같은 UID Pod Event로 Context에 포함됨 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
-| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, deterministic source-diverse Evidence candidate selector(최대 8개), 중복 path를 제거한 compact `AgentInvestigationView`, 최대 4개 ID의 bounded Evidence batch/Reference read-only tool, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. 42개 중복 path fixture에서 model-facing Context projection은 20,446B→2,483B(87.9%)로 줄었지만 이는 local serialization 측정이며 live token 절감값이 아니다. 2026-08-27 최적화 전 cluster one-shot은 exact controlled OOM Incident 한 건을 claim해 LLM 4회/Evidence access 12회, supporting Evidence 4개인 `conclusive` Report와 Agent Run audit를 PostgreSQL에 저장했고 input 79,051/output 1,842, 총 80,893 tokens를 사용했다. 앞선 single-item tool 2회 실험은 각각 6/10 turn budget을 소진해 두 target만 `FAILED`로 닫혔고, 나머지 backlog의 attempt는 0으로 유지됐다. compact 경로의 live one-shot 재검증 전까지 Agent Deployment는 기본 Kustomize에서 제외됨 |
+| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, deterministic source-diverse Evidence candidate selector(최대 8개), 중복 path를 제거한 compact `AgentInvestigationView`, 최대 4개 ID의 bounded Evidence batch/Reference read-only tool, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. 42개 중복 path fixture에서 model-facing Context projection은 20,446B→2,483B(87.9%)로 감소했다. 2026-08-27 최적화 전 controlled OOM cluster one-shot은 LLM 4회/Evidence access 12회와 총 80,893 tokens를 사용했다. 새 digest의 compact target-only Kubernetes Job은 새 OOM Incident의 24개 Context Evidence 중 후보 8개와 StateGraph path 12/18개를 13,539B로 투영해 LLM 2회/tool 3회, input 14,504/output 1,278, 총 15,782 tokens로 `conclusive` Report를 저장했다. Evidence Gate가 인용 3개 모두의 존재를 확인했고 다른 work를 reap하지 않았다. 두 run 사이의 80.5% 차이는 서로 다른 Evidence snapshot과 모델 실행에서 관측한 값이며 일반화된 절감 보장은 아니다. 기존 `READY` backlog의 자동 소비를 막기 위해 상시 Agent Deployment는 계속 기본 Kustomize에서 제외됨 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract, 인증된 GET transport, Next.js UI와 same-origin server-side BFF, private API Deployment 및 전용 read-only DB role 구현 | cluster-local API Ready, DB role의 SELECT 허용·mutation 거부와 local BFF를 통한 live list/detail/work/Evidence 조회 검증. public ingress/domain, 사용자 session/role 인증, observability deep link runtime 설정과 production query plan은 미구현 |
 | Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider/change Projector, Ground Truth/Prediction/Result/Observation 계약, ID-free 분포 집계기, external-controller workload와 development-only OOM fault harness 구현 | exact baseline과 명시적 승인, cluster lock, controller/remote watchdog, `always` 복구를 강제한다. legacy gate의 고정 OOM 5회는 모두 exact kernel memcg OOM과 restart를 수집했지만 30초 memory peak가 0.399~0.506에 머물러 전부 `ABSTAIN`했다. v2 gate의 별도 live 확인 1회는 `ROOT_CAUSE`, Top-1/Top-3 `1.0`, Evidence precision `1.0`/recall `0.666667`로 완료되고 원상 복구됐다. v2 5회 반복, Git/ArgoCD change source와 15-scenario dataset은 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회 및 controlled application OOM/복구를 검증; destroy와 VM failure runtime은 미검증 |
@@ -613,13 +616,16 @@ disk 삭제나 손상에 대비한 backup/restore와 HA는 아직 구현하지 �
 fixture Incident로 bounded Agents SDK run을 수행한다. 2026-08-27 live 확인은
 `gpt-5.6-luna`의 LLM 3회/Evidence tool 2회 호출, Evidence citation 2개,
 `inconclusive` Report와 Incident `REPORTED` 저장으로 완료됐다. 키 값과 model input은
-출력하지 않는다. 같은 날 cluster PostgreSQL을 대상으로 한 target-only one-shot은 exact
-controlled OOM Incident 한 건을 claim해 LLM 4회, Evidence access 12회, supporting Evidence
-4개의 `conclusive` Report를 저장했다. 누적 사용량은 input 79,051/output 1,842 tokens였다.
-이 측정 뒤 전체 Frozen Context를 model input에서 제거하고 최대 8개 후보와 12개 deduplicated
-path만 전달하는 compact projection을 구현했지만, 새 경로의 live token 사용량은 아직
-재측정하지 않았다. 이 검증은 로컬 Worker와 SSH tunnel을 사용했으며 상시 Kubernetes
-Agent Deployment가 활성화됐다는 뜻은 아니다.
+출력하지 않는다. 같은 날 최적화 전 cluster PostgreSQL target-only one-shot은 exact
+controlled OOM Incident 한 건을 claim해 LLM 4회, Evidence access 12회와 총 80,893 tokens로
+`conclusive` Report를 저장했다. 이후 새 digest의 compact 경로를 별도 controlled OOM
+Incident에 target-only Kubernetes Job으로 재검증했다. 전체 Context Evidence 24개 중 후보
+8개와 deduplicated StateGraph path 12/18개를 13,539B input projection으로 제한해 LLM 2회,
+tool 3회, input 14,504/output 1,278, 총 15,782 tokens와 16.1초를 기록했다. Report는
+`conclusive`였고 Agent audit의 citation 3개는 모두 해당 Incident Evidence에 존재했다.
+이 80.5% run-to-run 차이는 Evidence snapshot과 모델 실행이 완전히 동일하지 않아 일반화된
+절감률로 보지 않는다. Job과 API Secret은 검증 후 제거했으며 상시 Kubernetes Agent
+Deployment는 활성화하지 않았다.
 
 `make smoke-live-krca`는 기본적으로 로컬 `127.0.0.1:19090`의 loopback-only Prometheus
 tunnel과 최근 controlled traffic을 요구한다. 구성된 3개 profile을 bounded range query로
