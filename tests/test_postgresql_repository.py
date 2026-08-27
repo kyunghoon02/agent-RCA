@@ -280,6 +280,123 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertIn("AND work.incident_id = %s", statement)
         self.assertEqual(parameters[-1], incident_id)
 
+    def test_continuous_analysis_claim_parameterizes_eligibility_boundary(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, statement, parameters=()):
+                self.calls.append((statement, parameters))
+
+            def fetchone(self):
+                return None
+
+        class RecordingConnection:
+            closed = False
+
+            def __init__(self, cursor) -> None:
+                self._cursor = cursor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        cursor = RecordingCursor()
+        repository = PostgreSQLIncidentAnalysisWorkRepository(
+            lambda: RecordingConnection(cursor)
+        )
+        label = "agent_rca_enabled"
+        activated_at = datetime(2026, 8, 27, 6, 30, tzinfo=timezone.utc)
+
+        self.assertIsNone(
+            repository.claim_next_eligible(
+                worker_id="continuous-worker",
+                now=FIXED_TIME,
+                lease_duration=timedelta(seconds=30),
+                max_attempts=3,
+                eligibility_label=label,
+                activated_at=activated_at,
+            )
+        )
+
+        statement, parameters = cursor.calls[0]
+        self.assertNotIn(label, statement)
+        self.assertIn("incident.created_at >= %s", statement)
+        self.assertIn("->>%s = 'true'", statement)
+        self.assertEqual(parameters[-2:], [activated_at, label])
+
+    def test_continuous_analysis_reaper_applies_the_same_eligibility_boundary(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, statement, parameters=()):
+                self.calls.append((statement, parameters))
+
+            def fetchall(self):
+                return []
+
+        class RecordingConnection:
+            closed = False
+
+            def __init__(self, cursor) -> None:
+                self._cursor = cursor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        cursor = RecordingCursor()
+        repository = PostgreSQLIncidentAnalysisWorkRepository(
+            lambda: RecordingConnection(cursor)
+        )
+        label = "agent_rca_enabled"
+        activated_at = datetime(2026, 8, 27, 6, 30, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            repository.reap_exhausted_eligible(
+                now=FIXED_TIME,
+                max_attempts=3,
+                eligibility_label=label,
+                activated_at=activated_at,
+            ),
+            0,
+        )
+
+        statement, parameters = cursor.calls[0]
+        self.assertNotIn(label, statement)
+        self.assertIn("incident.created_at >= %s", statement)
+        self.assertIn("->>%s = 'true'", statement)
+        self.assertEqual(parameters[-2:], [activated_at, label])
+
     def test_viewer_work_query_returns_safe_stage_state_without_claim_token(self) -> None:
         class RecordingCursor:
             def __init__(self) -> None:

@@ -173,18 +173,23 @@ class UnsupportedRemediationFakeRunner(SuccessfulFakeRunner):
         )
 
 
-def prepared_repository() -> tuple[InMemoryIncidentRepository, str, str]:
+def prepared_repository(
+    *, agent_enabled: bool = False
+) -> tuple[InMemoryIncidentRepository, str, str]:
+    labels = {
+        "alertname": "AgentRCAFixture",
+        "namespace": "online-boutique",
+        "service": "checkoutservice",
+        "severity": "critical",
+    }
+    if agent_enabled:
+        labels["agent_rca_enabled"] = "true"
     incident = AlertmanagerNormalizer().normalize(
         {
             "alerts": [
                 {
                     "status": "firing",
-                    "labels": {
-                        "alertname": "AgentRCAFixture",
-                        "namespace": "online-boutique",
-                        "service": "checkoutservice",
-                        "severity": "critical",
-                    },
+                    "labels": labels,
                     "annotations": {},
                     "startsAt": "2026-08-22T01:50:00Z",
                     "endsAt": "0001-01-01T00:00:00Z",

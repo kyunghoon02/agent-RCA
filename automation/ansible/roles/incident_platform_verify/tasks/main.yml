@@ -423,7 +423,74 @@
         | selectattr('name', 'equalto', 'AGENT_RCA_MAX_EVIDENCE_CANDIDATES')
         | map(attribute='value') | first)
         == '8'
+      - >-
+        ((incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'AGENT_WORKER_ELIGIBILITY_LABEL')
+        | map(attribute='value') | first)
+        == 'agent_rca_enabled'
+      - >-
+        ((incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'AGENT_WORKER_ACTIVATED_AT')
+        | map(attribute='value') | first)
+        == '2026-08-27T06:30:00Z'
+      - >-
+        (incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].ports
+        | selectattr('name', 'equalto', 'metrics')
+        | map(attribute='containerPort') | first
+        == 9090
+      - >-
+        (incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].readinessProbe.httpGet.path
+        == '/healthz'
     fail_msg: The Agent worker identity, image, credential, or model boundary drifted.
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Read the Agent worker metrics Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ incident_platform_agent_worker_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_agent_worker_service_result
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Read the Agent worker ServiceMonitor
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get servicemonitor {{ incident_platform_agent_worker_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_agent_worker_service_monitor_result
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Read the Agent worker PrometheusRule
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get prometheusrule {{ incident_platform_agent_worker_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_agent_worker_prometheus_rule_result
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Require the Agent worker metrics and alerting boundary
+  ansible.builtin.assert:
+    that:
+      - >-
+        (incident_platform_agent_worker_service_result.stdout | from_json).kind
+        == 'Service'
+      - >-
+        (incident_platform_agent_worker_service_monitor_result.stdout | from_json).kind
+        == 'ServiceMonitor'
+      - >-
+        (incident_platform_agent_worker_prometheus_rule_result.stdout | from_json).kind
+        == 'PrometheusRule'
+      - >-
+        ((incident_platform_agent_worker_service_result.stdout | from_json).spec.ports
+        | selectattr('name', 'equalto', 'metrics')
+        | map(attribute='port') | first) == 9090
+      - >-
+        ((incident_platform_agent_worker_prometheus_rule_result.stdout | from_json).spec.groups[0].rules
+        | selectattr('alert', 'defined') | list | length) == 5
+    fail_msg: The Agent worker ServiceMonitor or PrometheusRule drifted.
   when: incident_platform_agent_runtime_enabled | bool
 
 - name: Read the Agent RCA Alertmanager routing resource
@@ -752,6 +819,23 @@
                     = '{{ incident_platform_alert_verification_id }}'
                 ) AND work.state = 'SUCCEEDED'
               ),
+              'analysis_attempt_count', (
+                SELECT COALESCE(sum(work.attempt_count), 0)
+                FROM incident_analysis_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+              ),
+              'agent_run_count', (
+                SELECT count(*) FROM agent_runs run
+                WHERE run.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+              ),
               'context_count', (
                 SELECT count(*) FROM context_packages context
                 WHERE context.incident_id IN (
@@ -925,18 +1009,10 @@
         ((incident_platform_alert_delivery_result.stdout | trim | from_json).incident_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).localization_work_succeeded_count | int == 1)
-        and (
-          (
-            not (incident_platform_agent_runtime_enabled | bool)
-            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analyzing_count | int == 1)
-            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analysis_work_ready_count | int == 1)
-          )
-          or (
-            (incident_platform_agent_runtime_enabled | bool)
-            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).reported_count | int == 1)
-            and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analysis_work_succeeded_count | int == 1)
-          )
-        )
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analyzing_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analysis_work_ready_count | int == 1)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analysis_attempt_count | int == 0)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).agent_run_count | int == 0)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_count | int == 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int >= 20)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_metric_evidence_count | int >= 5)
@@ -989,22 +1065,13 @@
             == 9
           - incident_platform_alert_delivery.work_succeeded_count | int == 1
           - incident_platform_alert_delivery.localization_work_succeeded_count | int == 1
-          - >-
-            (
-              not (incident_platform_agent_runtime_enabled | bool)
-              and (incident_platform_alert_delivery.analyzing_count | int == 1)
-              and (incident_platform_alert_delivery.reported_count | int == 0)
-              and (incident_platform_alert_delivery.analysis_work_ready_count | int == 1)
-              and (incident_platform_alert_delivery.analysis_work_succeeded_count | int == 0)
-            )
-            or (
-              (incident_platform_agent_runtime_enabled | bool)
-              and (incident_platform_alert_delivery.analyzing_count | int == 0)
-              and (incident_platform_alert_delivery.reported_count | int == 1)
-              and (incident_platform_alert_delivery.reported_audit_count | int == 1)
-              and (incident_platform_alert_delivery.analysis_work_ready_count | int == 0)
-              and (incident_platform_alert_delivery.analysis_work_succeeded_count | int == 1)
-            )
+          - incident_platform_alert_delivery.analyzing_count | int == 1
+          - incident_platform_alert_delivery.reported_count | int == 0
+          - incident_platform_alert_delivery.reported_audit_count | int == 0
+          - incident_platform_alert_delivery.analysis_work_ready_count | int == 1
+          - incident_platform_alert_delivery.analysis_work_succeeded_count | int == 0
+          - incident_platform_alert_delivery.analysis_attempt_count | int == 0
+          - incident_platform_alert_delivery.agent_run_count | int == 0
           - incident_platform_alert_delivery.context_count | int == 1
           - incident_platform_alert_delivery.context_evidence_count | int >= 20
           - incident_platform_alert_delivery.context_metric_evidence_count | int >= 5
@@ -1274,6 +1341,10 @@
           {{ incident_platform_alert_delivery.analysis_work_ready_count }}
         analysis_work_succeeded_count: >-
           {{ incident_platform_alert_delivery.analysis_work_succeeded_count }}
+        analysis_attempt_count: >-
+          {{ incident_platform_alert_delivery.analysis_attempt_count }}
+        agent_run_count: >-
+          {{ incident_platform_alert_delivery.agent_run_count }}
         context_count: "{{ incident_platform_alert_delivery.context_count }}"
         context_evidence_count: >-
           {{ incident_platform_alert_delivery.context_evidence_count }}

@@ -12,7 +12,11 @@ from tests.test_agent_rca import (
     SuccessfulFakeRunner,
     prepared_repository,
 )
-from tools.run_agent_worker import AgentWorker, AgentWorkerRuntimeConfig
+from tools.run_agent_worker import (
+    AgentWorker,
+    AgentWorkerMetrics,
+    AgentWorkerRuntimeConfig,
+)
 
 
 UTC = timezone.utc
@@ -27,6 +31,13 @@ def config(**overrides: object) -> AgentWorkerRuntimeConfig:
         "poll_interval_seconds": 2,
         "lease_seconds": 180,
         "max_attempts": 3,
+        "eligibility_label": "agent_rca_enabled",
+        "activated_at": datetime(2026, 8, 22, 1, 0, tzinfo=UTC),
+        "min_claim_interval_seconds": 60,
+        "circuit_failure_threshold": 3,
+        "circuit_cooldown_seconds": 300,
+        "metrics_host": "127.0.0.1",
+        "metrics_port": 9090,
         "model_name": "fake-agent-model",
         "max_turns": 6,
         "max_llm_calls": 6,
@@ -50,9 +61,12 @@ def worker_with_runner(
     runner: object,
     *,
     target_prepared: bool = False,
+    agent_enabled: bool = True,
     **config_overrides: object,
 ):
-    incidents, incident_id, context_id = prepared_repository()
+    incidents, incident_id, context_id = prepared_repository(
+        agent_enabled=agent_enabled
+    )
     if target_prepared:
         config_overrides.update(
             run_once=True,
@@ -107,6 +121,44 @@ class AgentWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "RUNTIMEERROR")
         self.assertEqual(incidents.get(incident_id)["status"], "FAILED")
 
+    def test_continuous_worker_does_not_claim_incident_without_opt_in(self) -> None:
+        worker, incidents, incident_id, _ = worker_with_runner(
+            SuccessfulFakeRunner(),
+            agent_enabled=False,
+        )
+
+        result = worker.process_one()
+
+        self.assertEqual(result["status"], "IDLE")
+        self.assertEqual(incidents.get(incident_id)["status"], "ANALYZING")
+
+    def test_continuous_worker_does_not_claim_incident_before_activation(self) -> None:
+        worker, incidents, incident_id, _ = worker_with_runner(
+            SuccessfulFakeRunner(),
+            activated_at=datetime(2026, 8, 23, tzinfo=UTC),
+        )
+
+        result = worker.process_one()
+
+        self.assertEqual(result["status"], "IDLE")
+        self.assertEqual(incidents.get(incident_id)["status"], "ANALYZING")
+
+    def test_continuous_worker_rate_limits_claims_after_a_run(self) -> None:
+        worker, _, _, _ = worker_with_runner(SuccessfulFakeRunner())
+
+        self.assertEqual(worker.process_one()["status"], "PROCESSED")
+        self.assertEqual(worker.process_one()["status"], "RATE_LIMITED")
+
+    def test_consecutive_failure_opens_the_circuit(self) -> None:
+        worker, _, _, _ = worker_with_runner(
+            FailingFakeRunner(),
+            circuit_failure_threshold=1,
+        )
+
+        self.assertEqual(worker.process_one()["status"], "FAILED")
+        self.assertEqual(worker.process_one()["status"], "CIRCUIT_OPEN")
+        self.assertTrue(worker.runtime_state()["circuit_open"])
+
     def test_agent_wall_budget_must_fit_inside_the_work_lease(self) -> None:
         with self.assertRaisesRegex(ValueError, "leave at least 30 seconds"):
             config(lease_seconds=60, max_wall_time_ms=45_000)
@@ -130,6 +182,7 @@ class AgentWorkerRuntimeTests(unittest.TestCase):
         worker, incidents, incident_id, _ = worker_with_runner(
             SuccessfulFakeRunner(),
             target_prepared=True,
+            agent_enabled=False,
         )
 
         result = worker.process_one()
@@ -144,6 +197,33 @@ class AgentWorkerRuntimeTests(unittest.TestCase):
             config(run_once=True)
         with self.assertRaisesRegex(ValueError, "configured together"):
             config(target_incident_id="inc-does-not-exist")
+
+    def test_continuous_runtime_requires_an_activation_time(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ACTIVATED_AT"):
+            config(activated_at=None)
+
+    def test_metrics_expose_usage_and_circuit_state(self) -> None:
+        metrics = AgentWorkerMetrics()
+        metrics.observe(
+            {
+                "status": "PROCESSED",
+                "llm_calls": 2,
+                "tool_calls": 3,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "wall_time_ms": 2500,
+            },
+            observed_at=NOW,
+        )
+
+        rendered = metrics.render(
+            {"circuit_open": True, "consecutive_failures": 3}
+        ).decode("utf-8")
+
+        self.assertIn('agent_rca_worker_runs_total{outcome="processed"} 1', rendered)
+        self.assertIn('agent_rca_worker_tokens_total{type="total"} 150', rendered)
+        self.assertIn("agent_rca_worker_circuit_open 1", rendered)
 
 
 if __name__ == "__main__":

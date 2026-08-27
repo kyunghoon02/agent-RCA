@@ -264,13 +264,13 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
-| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING`→Context-pinned analysis work `READY`까지 live 연결. Agent Worker는 기존 `READY` backlog의 연속 API 호출을 막기 위해 기본 배포에서 비활성화하며, 승인한 exact Incident만 claim하는 one-shot 모드는 다른 work의 claim/reap을 수행하지 않는다 |
+| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING`→Context-pinned analysis work `READY`→Agent Report까지 live 연결. 연속 Agent claim은 `agent_rca_enabled=true`와 2026-08-27 activation cutoff를 동시에 요구하며, 수동 exact target one-shot은 다른 work의 claim/reap을 수행하지 않는 명시적 override로 유지한다 |
 | Bounded HTTP, Prometheus, Kubernetes, Loki, Deployment provider | adapter와 contract test 구현 | Incident worker가 exact Service root에서 ownership/selector로 제한한 Service/Deployment/ReplicaSet/Pod/EndpointSlice 상태와 Service/Pod Event, Deployment revision diff, 고정 allowlist Service Prometheus query 4개, UID-backed Pod memory ratio/restart delta query 2개, Pod-UID-scoped kernel memcg OOM Loki query 및 선택된 KRCA profile 전용 `prometheus-api` collector를 병렬 실행한다. 모든 Evidence에는 trusted `cluster_id`가 주입된다. 일반 application log와 Hubble Incident collector는 아직 미연결 |
 | PostgreSQL repository | Incident artifact, fenced collection/localization/analysis work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC에 migration 6개 적용. `ANALYZING`과 Frozen Context 생성 순서 모두에서 exact `context_id`를 고정하는 analysis work가 live 제어 Incident에 `READY`로 생성됨 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile, Evidence-to-Top-N과 profile completeness/fallback 구현 | browse/cart/checkout 3개 profile의 23개 edge가 active-traffic smoke에서 모두 `HAS_DATA`. Incident worker는 alert의 allowlisted `krca_profile`만 수집하며, 최신 제어 경보에서는 9개 edge 중 4개 `HAS_DATA`·5개 `INSUFFICIENT_DATA`를 명시하고 incomplete profile에 source fallback을 선택해 근거 없는 Top-N 생성을 차단 |
-| Entity resolver와 Temporal StateGraph | Kubernetes/Service·Pod Prometheus/KRCA/Deployment/Loki kernel OOM Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 71개 Evidence→324개 record→81개 current Entity/91개 current Relation 및 `APPLIED` journal을 검증. 최신 제어 Incident는 저장 Evidence 22개 중 21개와 StateGraph path 42개를 Frozen Context에 고정하고 `ANALYZING`에 도달. 별도 OOM Incident의 kernel Evidence도 같은 UID Pod Event로 Context에 포함됨 |
+| Entity resolver와 Temporal StateGraph | Kubernetes/Service·Pod Prometheus/KRCA/Deployment/Loki kernel OOM Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 71개 Evidence→324개 record→81개 current Entity/91개 current Relation 및 `APPLIED` journal을 검증. 최신 제어 Incident는 저장 Evidence 22개 중 21개와 StateGraph path 40개를 Frozen Context에 고정하고 `ANALYZING`에 도달. 별도 OOM Incident의 kernel Evidence도 같은 UID Pod Event로 Context에 포함됨 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
-| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, deterministic source-diverse Evidence candidate selector(최대 8개), 중복 path를 제거한 compact `AgentInvestigationView`, 최대 4개 ID의 bounded Evidence batch/Reference read-only tool, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. 42개 중복 path fixture에서 model-facing Context projection은 20,446B→2,483B(87.9%)로 감소했다. 2026-08-27 최적화 전 controlled OOM cluster one-shot은 LLM 4회/Evidence access 12회와 총 80,893 tokens를 사용했다. 새 digest의 compact target-only Kubernetes Job은 새 OOM Incident의 24개 Context Evidence 중 후보 8개와 StateGraph path 12/18개를 13,539B로 투영해 LLM 2회/tool 3회, input 14,504/output 1,278, 총 15,782 tokens로 `conclusive` Report를 저장했다. Evidence Gate가 인용 3개 모두의 존재를 확인했고 다른 work를 reap하지 않았다. 두 run 사이의 80.5% 차이는 서로 다른 Evidence snapshot과 모델 실행에서 관측한 값이며 일반화된 절감 보장은 아니다. 기존 `READY` backlog의 자동 소비를 막기 위해 상시 Agent Deployment는 계속 기본 Kustomize에서 제외됨 |
+| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, deterministic source-diverse Evidence candidate selector(최대 8개), 중복 path를 제거한 compact `AgentInvestigationView`, 최대 4개 ID의 bounded Evidence batch/Reference read-only tool, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | 단일 replica의 연속 Deployment를 활성화했다. claim당 60초 최소 간격, 3회 연속 실패 시 300초 circuit, per-run LLM/tool/token/wall-time 상한과 read-only tool 경계를 적용한다. 새 opt-in controlled OOM은 1회 claim, LLM 2회/tool 3회, 총 15,928 tokens로 `conclusive` Report를 저장했다. cutoff 이전 `READY` 35건과 cutoff 이후 opt-in 없는 1건의 attempt 합계는 모두 0이었다. Prometheus는 worker `up=1`, processed=1, circuit=0을 수집하며 5개 운영 alert rule을 로드했다. 이는 single-node 개발 reference runtime의 연속 실행 증거이지 HA production 증거는 아니다 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract, 인증된 GET transport, Next.js UI와 same-origin server-side BFF, private API Deployment 및 전용 read-only DB role 구현 | cluster-local API Ready, DB role의 SELECT 허용·mutation 거부와 local BFF를 통한 live list/detail/work/Evidence 조회 검증. public ingress/domain, 사용자 session/role 인증, observability deep link runtime 설정과 production query plan은 미구현 |
 | Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider/change Projector, Ground Truth/Prediction/Result/Observation 계약, ID-free 분포 집계기, external-controller workload와 development-only OOM fault harness 구현 | exact baseline과 명시적 승인, cluster lock, controller/remote watchdog, `always` 복구를 강제한다. legacy gate의 고정 OOM 5회는 모두 exact kernel memcg OOM과 restart를 수집했지만 30초 memory peak가 0.399~0.506에 머물러 전부 `ABSTAIN`했다. v2 gate의 별도 live 확인 1회는 `ROOT_CAUSE`, Top-1/Top-3 `1.0`, Evidence precision `1.0`/recall `0.666667`로 완료되고 원상 복구됐다. v2 5회 반복, Git/ArgoCD change source와 15-scenario dataset은 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회 및 controlled application OOM/복구를 검증; destroy와 VM failure runtime은 미검증 |
@@ -311,7 +311,8 @@ controlled alert or opt-in PrometheusRule with rca_enabled=true
 → 현재 Incident에 저장된 evidence_id만 남긴 Frozen Context 저장
 → ANALYZING 전이 + localization work SUCCEEDED
 → migration 6 trigger가 exact context_id가 고정된 READY analysis work 생성
-→ [기본 Deployment 비활성, 승인된 target-only one-shot만 검증] 별도 Agent Worker exact claim → Evidence Gate → Report → REPORTED
+→ `agent_rca_enabled=true` + activation cutoff를 만족하는 analysis work만 연속 Agent Worker claim
+→ bounded read-only tools → Evidence Gate → Agent Run audit + Report → REPORTED
 ```
 
 webhook은 `observability` namespace에서만 접근 가능한 NetworkPolicy와 namespace-local
@@ -336,16 +337,15 @@ memory working-set ratio와 30분 restart counter delta, Deployment `NO_CHANGES`
 1개씩 남았다. 최신 제어 시점에는 최근 traffic이 없어 KRCA feature 9개가 모두
 `INSUFFICIENT_DATA`였고, 불완전한 profile에서 근거 없는 Top-N 대신 exact source Service
 fallback을 사용했다. Context 1개에는 Evidence 21개와
-StateGraph path 42개가 고정됐다. metric summary와 Deployment change-absence Event는
+StateGraph path 40개가 고정됐다. metric summary와 Deployment change-absence Event는
 Context Evidence에는 포함되지만 `recent_change_evidence_ids`에는 포함되지 않았다.
-실제
-`OnlineBoutiqueFrontendHighFailureRate` rule도 Prometheus에 healthy 상태로 로드하지만,
-controlled fault로 이 rule을 firing시킨 정확도 실험은 아직 수행하지 않았다. 또한 현재
-worker는 `online-boutique`의 Service-scoped Incident만 처리한다. `ANALYZING` 이후에는
-Context-pinned analysis queue와 별도 Agent Worker 코드/manifest가 준비돼 있다. 2026-08-27에는
-target Incident ID와 one-shot flag를 함께 요구하고 다른 Incident로 fallback하지 않는 claim으로
-controlled OOM 한 건을 `REPORTED`까지 처리했다. 연속 Deployment는 API 비용과 기존 backlog
-소진을 막기 위해 기본 배포에서 계속 비활성화한다.
+실제 `OnlineBoutiqueFrontendHighFailureRate` rule도 Prometheus에 healthy 상태로 로드하며
+`agent_rca_enabled=true`를 명시한다. 현재 worker는 `online-boutique`의 Service-scoped
+Incident만 처리한다. 2026-08-27 연속 Deployment 검증에서는 opt-in controlled OOM 한 건을
+자동으로 1회 claim해 `REPORTED`까지 처리했고, LLM 2회/tool 3회, 총 15,928 tokens의
+`conclusive` Report를 저장했다. 같은 시점에 cutoff 이전 `READY` 35건과 cutoff 이후 opt-in
+없는 검증 Incident 1건은 attempt 합계 0을 유지했다. Worker metrics ServiceMonitor target은
+`up=1`, processed counter는 1, circuit gauge는 0이었다.
 
 ## Core Localization Design
 
@@ -606,7 +606,8 @@ Incident webhook과 worker, 내부 PostgreSQL 17.6, 5Gi PVC와 5분 CronJob을 �
 실제 Alertmanager 제어 경보→fenced collection claim→rooted Kubernetes, Deployment,
 Prometheus Service·Pod metric과 선택된 KRCA profile Evidence 총 22개 저장→fenced localization claim→KRCA
 fallback/Neo4j exact resolve→21개 Evidence를 인용하는 Frozen Context 저장→`ANALYZING`과 두
-단계의 성공 work 및 Context-pinned analysis work `READY` 저장, 그리고 one-shot Job의
+단계의 성공 work 및 Context-pinned analysis work `READY` 저장, opt-in 없는 work의 attempt 0
+보존, 연속 Agent Worker/ServiceMonitor/PrometheusRule readiness, 그리고 one-shot Job의
 Kubernetes Evidence→PostgreSQL `STAGED/APPLIED` journal→Neo4j projection을 함께 확인한다.
 두 StatefulSet의
 `agent-rca-local` PVC는 single-node VM disk에 묶이며 `Retain`은 backup이 아니다. VM
@@ -624,8 +625,11 @@ Incident에 target-only Kubernetes Job으로 재검증했다. 전체 Context Evi
 tool 3회, input 14,504/output 1,278, 총 15,782 tokens와 16.1초를 기록했다. Report는
 `conclusive`였고 Agent audit의 citation 3개는 모두 해당 Incident Evidence에 존재했다.
 이 80.5% run-to-run 차이는 Evidence snapshot과 모델 실행이 완전히 동일하지 않아 일반화된
-절감률로 보지 않는다. Job과 API Secret은 검증 후 제거했으며 상시 Kubernetes Agent
-Deployment는 활성화하지 않았다.
+절감률로 보지 않는다. target-only Job은 제거했으며 현재는 Kubernetes Secret을 참조하는
+단일 replica 연속 Agent Deployment가 활성 상태다. 자동 claim은 opt-in 라벨과 activation
+cutoff를 모두 만족해야 하고 60초 최소 간격 및 3회 실패/300초 circuit으로 제한된다. 별도
+controlled OOM 자동 run은 LLM 2회/tool 3회, 총 15,928 tokens와 supporting Evidence 2개로
+`conclusive` read-only Report를 저장했다.
 
 `make smoke-live-krca`는 기본적으로 로컬 `127.0.0.1:19090`의 loopback-only Prometheus
 tunnel과 최근 controlled traffic을 요구한다. 구성된 3개 profile을 bounded range query로
@@ -672,7 +676,7 @@ VIEWER_API_TOKEN=<bearer token, 16자 이상>
 
 `npm --prefix frontend/viewer run typecheck`와 `npm --prefix frontend/viewer test`가
 adapter 계약, Incident 목록 filter, lifecycle stepper, Evidence insufficient-data 표시,
-Agent 비활성 empty state, API 실패 시 이전 데이터 유지와 polling 중복 방지를 확인한다.
+Agent 결과가 없는 empty state, API 실패 시 이전 데이터 유지와 polling 중복 방지를 확인한다.
 Grafana/Loki/Tempo deep link는 `NEXT_PUBLIC_GRAFANA_URL` 등이 설정되고 http/https
 allowlist를 통과할 때만 렌더링한다.
 
@@ -680,9 +684,9 @@ Viewer API는 `incident-platform` namespace의 private ClusterIP로 배포하며
 role은 table `SELECT`만 허용하고 mutation을 거부한다. authenticated list/detail/work
 request와 local same-origin BFF를 통한 실제 Incident/Evidence 조회까지 검증했다. UI 자체의
 cluster Deployment, public ingress/domain과 사용자 session 인증은 아직 없으므로 외부에서
-직접 접근할 수 없다. Agent runtime은 기본 비활성 상태이므로 아직 analysis work가 `READY`인
-Incident는 Report 0건으로 표시되는 것이 정상이고, 검증한 one-shot Incident 한 건만 저장된
-Report와 Agent Run을 표시한다.
+직접 접근할 수 없다. Agent runtime은 연속 실행 중이지만 opt-in 라벨이나 activation cutoff를
+통과하지 못한 analysis work는 `READY`와 Report 0건으로 남는 것이 정상이다. opt-in work만
+Agent Run과 Report가 추가되어 Viewer에 표시된다.
 
 ## Repository Structure
 

@@ -776,6 +776,7 @@ def validate_versions_and_manifests() -> None:
             "service": "frontend",
             "severity": "critical",
             "rca_enabled": "true",
+            "agent_rca_enabled": "true",
             "krca_profile": "browse-and-cart-read",
         }
         or 'service_name="frontend"' not in opt_in_alert.get("expr", "")
@@ -966,9 +967,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-98a0adfd1ec8",
+            "image_tag": "runtime-82d38086e9fe",
             "image_digest": (
-                "sha256:498735bc2fdd59e8e825994308f05f36f22c33638d7aa1e91e6ab59c2cc4226f"
+                "sha256:ec6f6248b6b293ec70412028d07d092e77292fae7f23ebb9d1bde1bee9b69484"
             ),
         },
         "webhook": {
@@ -989,11 +990,17 @@ def validate_incident_platform_manifest() -> None:
             "localization_max_depth": 4,
         },
         "agent_worker": {
-            "enabled": False,
+            "enabled": True,
             "model": "gpt-5.6-luna",
             "poll_interval_seconds": 2,
             "lease_seconds": 180,
             "max_attempts": 3,
+            "eligibility_label": "agent_rca_enabled",
+            "activated_at": "2026-08-27T06:30:00Z",
+            "min_claim_interval_seconds": 60,
+            "circuit_failure_threshold": 3,
+            "circuit_cooldown_seconds": 300,
+            "metrics_port": 9090,
             "max_turns": 6,
             "max_llm_calls": 6,
             "max_tool_calls": 12,
@@ -1338,11 +1345,17 @@ def validate_incident_platform_manifest() -> None:
         raise ValidationFailure("Incident Viewer network boundary drifted")
 
     agent_worker_documents = load_yaml_documents(directory / "agent-worker.yaml")
-    if any(
-        document.get("kind") in {"Service", "Secret"}
-        for document in agent_worker_documents
-    ):
-        raise ValidationFailure("Agent worker must not expose a Service or Secret")
+    if any(document.get("kind") == "Secret" for document in agent_worker_documents):
+        raise ValidationFailure("Agent worker credentials must not be committed")
+    if {document.get("kind") for document in agent_worker_documents} != {
+        "ServiceAccount",
+        "Deployment",
+        "Service",
+        "ServiceMonitor",
+        "PrometheusRule",
+        "NetworkPolicy",
+    }:
+        raise ValidationFailure("Agent worker runtime resource set drifted")
     agent_service_account = next(
         document
         for document in agent_worker_documents
@@ -1365,8 +1378,16 @@ def validate_incident_platform_manifest() -> None:
         or agent_container.get("image")
         != "agent-rca-runtime@sha256:" + "0" * 64
         or agent_container.get("args") != ["/app/tools/run_agent_worker.py"]
+        or agent_container.get("ports")
+        != [{"name": "metrics", "containerPort": 9090, "protocol": "TCP"}]
         or agent_container.get("resources", {}).get("requests")
         != {"cpu": "100m", "memory": "256Mi"}
+        or agent_container.get("startupProbe", {}).get("httpGet")
+        != {"path": "/healthz", "port": "metrics"}
+        or agent_container.get("readinessProbe", {}).get("httpGet")
+        != {"path": "/healthz", "port": "metrics"}
+        or agent_container.get("livenessProbe", {}).get("httpGet")
+        != {"path": "/healthz", "port": "metrics"}
         or not agent_container.get("securityContext", {}).get(
             "readOnlyRootFilesystem"
         )
@@ -1375,6 +1396,23 @@ def validate_incident_platform_manifest() -> None:
     if (
         agent_env.get("AGENT_WORKER_LEASE_SECONDS", {}).get("value") != "180"
         or agent_env.get("AGENT_WORKER_MAX_ATTEMPTS", {}).get("value") != "3"
+        or agent_env.get("AGENT_WORKER_ELIGIBILITY_LABEL", {}).get("value")
+        != "agent_rca_enabled"
+        or agent_env.get("AGENT_WORKER_ACTIVATED_AT", {}).get("value")
+        != "2026-08-27T06:30:00Z"
+        or agent_env.get("AGENT_WORKER_MIN_CLAIM_INTERVAL_SECONDS", {}).get(
+            "value"
+        )
+        != "60"
+        or agent_env.get("AGENT_WORKER_CIRCUIT_FAILURE_THRESHOLD", {}).get(
+            "value"
+        )
+        != "3"
+        or agent_env.get("AGENT_WORKER_CIRCUIT_COOLDOWN_SECONDS", {}).get(
+            "value"
+        )
+        != "300"
+        or agent_env.get("AGENT_WORKER_METRICS_PORT", {}).get("value") != "9090"
         or agent_env.get("AGENT_RCA_MODEL", {}).get("value") != "gpt-5.6-luna"
         or agent_env.get("AGENT_RCA_MAX_TOOL_CALLS", {}).get("value") != "12"
         or agent_env.get("AGENT_RCA_MAX_EVIDENCE_CANDIDATES", {}).get("value")
@@ -1391,6 +1429,68 @@ def validate_incident_platform_manifest() -> None:
         != {"name": "postgresql-auth", "key": "password"}
     ):
         raise ValidationFailure("Agent worker budget or Secret boundary drifted")
+    agent_service = next(
+        document for document in agent_worker_documents if document.get("kind") == "Service"
+    )
+    if (
+        agent_service.get("spec", {}).get("type") != "ClusterIP"
+        or agent_service.get("spec", {}).get("selector")
+        != {"app.kubernetes.io/name": "incident-agent-worker"}
+        or agent_service.get("spec", {}).get("ports")
+        != [
+            {
+                "name": "metrics",
+                "port": 9090,
+                "targetPort": "metrics",
+                "protocol": "TCP",
+            }
+        ]
+    ):
+        raise ValidationFailure("Agent worker metrics Service drifted")
+    agent_service_monitor = next(
+        document
+        for document in agent_worker_documents
+        if document.get("kind") == "ServiceMonitor"
+    )
+    if (
+        agent_service_monitor.get("metadata", {}).get("labels", {}).get("release")
+        != "monitoring"
+        or agent_service_monitor.get("spec", {}).get("namespaceSelector")
+        != {"matchNames": ["incident-platform"]}
+        or agent_service_monitor.get("spec", {}).get("endpoints")
+        != [
+            {
+                "port": "metrics",
+                "path": "/metrics",
+                "interval": "30s",
+                "scrapeTimeout": "10s",
+            }
+        ]
+    ):
+        raise ValidationFailure("Agent worker ServiceMonitor drifted")
+    agent_prometheus_rule = next(
+        document
+        for document in agent_worker_documents
+        if document.get("kind") == "PrometheusRule"
+    )
+    agent_alert_names = {
+        rule.get("alert")
+        for group in agent_prometheus_rule.get("spec", {}).get("groups", [])
+        for rule in group.get("rules", [])
+    }
+    if (
+        agent_prometheus_rule.get("metadata", {}).get("labels", {}).get("release")
+        != "monitoring"
+        or agent_alert_names
+        != {
+            "AgentRCAWorkerUnavailable",
+            "AgentRCAWorkerCircuitOpen",
+            "AgentRCAWorkerHighFailureRatio",
+            "AgentRCAWorkerRapidTokenBurn",
+            "AgentRCAWorkerSlowRuns",
+        }
+    ):
+        raise ValidationFailure("Agent worker Prometheus alert boundary drifted")
     agent_network_policy = next(
         document
         for document in agent_worker_documents
@@ -1398,8 +1498,14 @@ def validate_incident_platform_manifest() -> None:
     )
     agent_policy_spec = agent_network_policy.get("spec", {})
     if (
-        agent_policy_spec.get("ingress") != []
-        or set(agent_policy_spec.get("policyTypes", [])) != {"Ingress", "Egress"}
+        set(agent_policy_spec.get("policyTypes", [])) != {"Ingress", "Egress"}
+        or len(agent_policy_spec.get("ingress", [])) != 1
+        or agent_policy_spec["ingress"][0].get("ports")
+        != [{"protocol": "TCP", "port": 9090}]
+        or agent_policy_spec["ingress"][0].get("from", [])[0].get(
+            "namespaceSelector"
+        )
+        != {"matchLabels": {"kubernetes.io/metadata.name": "observability"}}
         or len(agent_policy_spec.get("egress", [])) != 3
     ):
         raise ValidationFailure("Agent worker network boundary drifted")

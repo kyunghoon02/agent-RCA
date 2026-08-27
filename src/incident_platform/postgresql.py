@@ -33,8 +33,9 @@ from .incident_work import (
     IncidentAnalysisWorkClaim,
     IncidentWorkClaim,
     WORK_OUTCOMES,
-    validate_incident_id,
+    validate_analysis_eligibility,
     validate_claim_request,
+    validate_incident_id,
 )
 from .repository import (
     ALLOWED_TRANSITIONS,
@@ -1536,6 +1537,8 @@ class PostgreSQLIncidentAnalysisWorkRepository:
             lease_duration=lease_duration,
             max_attempts=max_attempts,
             incident_id=None,
+            eligibility_label=None,
+            activated_at=None,
         )
 
     def claim_incident(
@@ -1554,6 +1557,29 @@ class PostgreSQLIncidentAnalysisWorkRepository:
             lease_duration=lease_duration,
             max_attempts=max_attempts,
             incident_id=incident_id,
+            eligibility_label=None,
+            activated_at=None,
+        )
+
+    def claim_next_eligible(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+        eligibility_label: str,
+        activated_at: datetime,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        validate_analysis_eligibility(eligibility_label, activated_at)
+        return self._claim(
+            worker_id=worker_id,
+            now=now,
+            lease_duration=lease_duration,
+            max_attempts=max_attempts,
+            incident_id=None,
+            eligibility_label=eligibility_label,
+            activated_at=activated_at,
         )
 
     def _claim(
@@ -1564,6 +1590,8 @@ class PostgreSQLIncidentAnalysisWorkRepository:
         lease_duration: timedelta,
         max_attempts: int,
         incident_id: Optional[str],
+        eligibility_label: Optional[str],
+        activated_at: Optional[datetime],
     ) -> Optional[IncidentAnalysisWorkClaim]:
         validate_claim_request(worker_id, now, lease_duration, max_attempts)
         claim_token = f"claim-{uuid.uuid4().hex}"
@@ -1572,6 +1600,16 @@ class PostgreSQLIncidentAnalysisWorkRepository:
         parameters: List[Any] = [now, now, max_attempts]
         if incident_id is not None:
             parameters.append(incident_id)
+        eligibility_clause = ""
+        if eligibility_label is not None:
+            if activated_at is None:
+                raise ValueError("Agent activation time is required")
+            validate_analysis_eligibility(eligibility_label, activated_at)
+            eligibility_clause = """
+              AND incident.created_at >= %s
+              AND incident.document->'alert'->'labels'->>%s = 'true'
+            """
+            parameters.extend((activated_at, eligibility_label))
         with _connection(self._connection_factory) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -1590,6 +1628,7 @@ class PostgreSQLIncidentAnalysisWorkRepository:
                             AND work.attempt_count < %s)
                       )
                       {target_clause}
+                      {eligibility_clause}
                     ORDER BY work.available_at, work.incident_id
                     FOR UPDATE OF work, incident SKIP LOCKED
                     LIMIT 1
@@ -1772,12 +1811,54 @@ class PostgreSQLIncidentAnalysisWorkRepository:
                 )
 
     def reap_exhausted(self, *, now: datetime, max_attempts: int) -> int:
+        return self._reap_exhausted(
+            now=now,
+            max_attempts=max_attempts,
+            eligibility_label=None,
+            activated_at=None,
+        )
+
+    def reap_exhausted_eligible(
+        self,
+        *,
+        now: datetime,
+        max_attempts: int,
+        eligibility_label: str,
+        activated_at: datetime,
+    ) -> int:
+        validate_analysis_eligibility(eligibility_label, activated_at)
+        return self._reap_exhausted(
+            now=now,
+            max_attempts=max_attempts,
+            eligibility_label=eligibility_label,
+            activated_at=activated_at,
+        )
+
+    def _reap_exhausted(
+        self,
+        *,
+        now: datetime,
+        max_attempts: int,
+        eligibility_label: Optional[str],
+        activated_at: Optional[datetime],
+    ) -> int:
         if now.tzinfo is None or not 1 <= max_attempts <= 10:
             raise ValueError("reaper metadata is invalid")
+        eligibility_clause = ""
+        parameters: List[Any] = [now, max_attempts]
+        if eligibility_label is not None:
+            if activated_at is None:
+                raise ValueError("Agent activation time is required")
+            validate_analysis_eligibility(eligibility_label, activated_at)
+            eligibility_clause = """
+              AND incident.created_at >= %s
+              AND incident.document->'alert'->'labels'->>%s = 'true'
+            """
+            parameters.extend((activated_at, eligibility_label))
         with _connection(self._connection_factory) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """
+                    f"""
                     SELECT work.incident_id, work.attempt_count, incident.document
                     FROM incident_analysis_work_items AS work
                     JOIN incidents AS incident
@@ -1789,11 +1870,12 @@ class PostgreSQLIncidentAnalysisWorkRepository:
                         OR (incident.status = 'ANALYZING'
                             AND work.attempt_count >= %s)
                       )
+                      {eligibility_clause}
                     ORDER BY work.lease_expires_at, work.incident_id
                     FOR UPDATE OF work, incident SKIP LOCKED
                     LIMIT 50
                     """,
-                    (now, max_attempts),
+                    parameters,
                 )
                 rows = cursor.fetchall()
                 for incident_id, attempt_count, document in rows:

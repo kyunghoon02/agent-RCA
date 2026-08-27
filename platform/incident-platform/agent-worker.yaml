@@ -47,6 +47,10 @@ spec:
             - python
           args:
             - /app/tools/run_agent_worker.py
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
           env:
             - name: AGENT_WORKER_POLL_INTERVAL_SECONDS
               value: "2"
@@ -54,6 +58,20 @@ spec:
               value: "180"
             - name: AGENT_WORKER_MAX_ATTEMPTS
               value: "3"
+            - name: AGENT_WORKER_ELIGIBILITY_LABEL
+              value: agent_rca_enabled
+            - name: AGENT_WORKER_ACTIVATED_AT
+              value: "2026-08-27T06:30:00Z"
+            - name: AGENT_WORKER_MIN_CLAIM_INTERVAL_SECONDS
+              value: "60"
+            - name: AGENT_WORKER_CIRCUIT_FAILURE_THRESHOLD
+              value: "3"
+            - name: AGENT_WORKER_CIRCUIT_COOLDOWN_SECONDS
+              value: "300"
+            - name: AGENT_WORKER_METRICS_HOST
+              value: 0.0.0.0
+            - name: AGENT_WORKER_METRICS_PORT
+              value: "9090"
             - name: AGENT_RCA_MODEL
               value: gpt-5.6-luna
             - name: AGENT_RCA_MAX_TURNS
@@ -103,6 +121,24 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 20
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -116,6 +152,109 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-agent-worker
+  namespace: incident-platform
+  labels:
+    app.kubernetes.io/name: incident-agent-worker
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: incident-agent-worker
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: incident-agent-worker
+  namespace: incident-platform
+  labels:
+    release: monitoring
+    app.kubernetes.io/name: incident-agent-worker
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  namespaceSelector:
+    matchNames:
+      - incident-platform
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: incident-agent-worker
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: incident-agent-worker
+  namespace: incident-platform
+  labels:
+    release: monitoring
+    app.kubernetes.io/name: incident-agent-worker
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  groups:
+    - name: agent-rca-worker
+      rules:
+        - alert: AgentRCAWorkerUnavailable
+          expr: |
+            max(up{namespace="incident-platform", service="incident-agent-worker"}) < 1
+            or absent(up{namespace="incident-platform", service="incident-agent-worker"})
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Continuous Agent RCA worker metrics endpoint is unavailable
+        - alert: AgentRCAWorkerCircuitOpen
+          expr: max(agent_rca_worker_circuit_open) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Continuous Agent RCA worker circuit breaker is open
+        - alert: AgentRCAWorkerHighFailureRatio
+          expr: |
+            (
+              sum(increase(agent_rca_worker_runs_total{outcome!="processed"}[15m]))
+              /
+              clamp_min(sum(increase(agent_rca_worker_runs_total[15m])), 1)
+            ) > 0.5
+            and sum(increase(agent_rca_worker_runs_total[15m])) >= 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: More than half of recent Agent RCA runs failed
+        - alert: AgentRCAWorkerRapidTokenBurn
+          expr: increase(agent_rca_worker_tokens_total{type="total"}[1h]) > 100000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Agent RCA token consumption exceeded the hourly safety threshold
+        - alert: AgentRCAWorkerSlowRuns
+          expr: |
+            (
+              increase(agent_rca_worker_run_duration_seconds_sum[15m])
+              /
+              clamp_min(increase(agent_rca_worker_run_duration_seconds_count[15m]), 1)
+            ) > 45
+            and increase(agent_rca_worker_run_duration_seconds_count[15m]) >= 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Agent RCA run duration is approaching its bounded deadline
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -132,7 +271,17 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  ingress: []
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
   egress:
     - to:
         - namespaceSelector:

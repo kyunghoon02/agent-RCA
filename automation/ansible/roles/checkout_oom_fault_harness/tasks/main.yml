@@ -404,6 +404,7 @@
           severity: critical
           service: "{{ checkout_oom_scenario.alert.service }}"
           rca_enabled: "{{ checkout_oom_scenario.alert.rca_enabled }}"
+          agent_rca_enabled: "{{ checkout_oom_scenario.alert.agent_rca_enabled }}"
           verification_id: "{{ checkout_fault_id }}"
 
     - name: Submit the controlled OOM alert through Alertmanager

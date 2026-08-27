@@ -343,6 +343,48 @@ class IncidentAnalysisWorkClaimTests(unittest.TestCase):
         self.assertEqual(claim.incident_id, self.incident_id)
         self.assertEqual(claim.context_id, self.context_id)
 
+    def test_continuous_claim_requires_opt_in_and_activation(self) -> None:
+        self.assertIsNone(
+            self.work.claim_next_eligible(
+                worker_id="continuous-worker",
+                now=NOW,
+                lease_duration=timedelta(seconds=30),
+                max_attempts=3,
+                eligibility_label="agent_rca_enabled",
+                activated_at=datetime(2026, 8, 1, tzinfo=UTC),
+            )
+        )
+
+        incidents, incident_id, context_id = prepared_repository(
+            agent_enabled=True
+        )
+        opted_in_work = InMemoryIncidentAnalysisWorkRepository(incidents)
+        opted_in_work.enqueue(
+            incident_id,
+            context_id=context_id,
+            available_at=NOW,
+        )
+        self.assertIsNone(
+            opted_in_work.claim_next_eligible(
+                worker_id="continuous-worker",
+                now=NOW,
+                lease_duration=timedelta(seconds=30),
+                max_attempts=3,
+                eligibility_label="agent_rca_enabled",
+                activated_at=datetime(2026, 8, 23, tzinfo=UTC),
+            )
+        )
+        claim = opted_in_work.claim_next_eligible(
+            worker_id="continuous-worker",
+            now=NOW,
+            lease_duration=timedelta(seconds=30),
+            max_attempts=3,
+            eligibility_label="agent_rca_enabled",
+            activated_at=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.incident_id, incident_id)
+
     def test_reported_incident_completes_analysis_work(self) -> None:
         claim = self.claim()
         self.incidents.transition(

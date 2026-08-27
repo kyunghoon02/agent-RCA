@@ -152,6 +152,7 @@ spec:
             service: frontend
             severity: critical
             rca_enabled: "true"
+            agent_rca_enabled: "true"
             krca_profile: browse-and-cart-read
           annotations:
             summary: Online Boutique frontend failure rate is above 5 percent

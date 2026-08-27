@@ -16,6 +16,7 @@ from .repository import IncidentRepository
 
 _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _INCIDENT_ID = re.compile(r"^inc-[a-z0-9][a-z0-9-]{7,63}$")
+_ELIGIBILITY_LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,62}$")
 WORK_OUTCOMES = frozenset({"SUCCEEDED", "PARTIAL", "FAILED"})
 
 
@@ -40,6 +41,40 @@ def validate_incident_id(incident_id: str) -> None:
 
     if not _INCIDENT_ID.fullmatch(incident_id):
         raise ValueError("incident_id is invalid")
+
+
+def validate_analysis_eligibility(
+    eligibility_label: str,
+    activated_at: datetime,
+) -> None:
+    """Validate the continuous Agent opt-in and activation boundary."""
+
+    if not _ELIGIBILITY_LABEL.fullmatch(eligibility_label):
+        raise ValueError("Agent eligibility label is invalid")
+    if activated_at.tzinfo is None:
+        raise ValueError("Agent activation time must be timezone-aware")
+
+
+def incident_is_agent_eligible(
+    incident: Mapping[str, Any],
+    *,
+    eligibility_label: str,
+    activated_at: datetime,
+) -> bool:
+    """Return whether an Incident may consume continuous Agent capacity."""
+
+    validate_analysis_eligibility(eligibility_label, activated_at)
+    labels = incident.get("alert", {}).get("labels", {})
+    created_at = incident.get("created_at")
+    if not isinstance(labels, Mapping) or labels.get(eligibility_label) != "true":
+        return False
+    if not isinstance(created_at, str):
+        return False
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return created.tzinfo is not None and created >= activated_at
 
 
 @dataclass(frozen=True)
@@ -163,6 +198,20 @@ class IncidentAnalysisWorkRepository(Protocol):
 
         ...
 
+    def claim_next_eligible(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+        eligibility_label: str,
+        activated_at: datetime,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        """Claim only opt-in Incidents created after Agent activation."""
+
+        ...
+
     def renew(
         self,
         claim: IncidentAnalysisWorkClaim,
@@ -191,6 +240,18 @@ class IncidentAnalysisWorkRepository(Protocol):
         ...
 
     def reap_exhausted(self, *, now: datetime, max_attempts: int) -> int:
+        ...
+
+    def reap_exhausted_eligible(
+        self,
+        *,
+        now: datetime,
+        max_attempts: int,
+        eligibility_label: str,
+        activated_at: datetime,
+    ) -> int:
+        """Reap only work inside the continuous Agent eligibility boundary."""
+
         ...
 
 
@@ -673,6 +734,42 @@ class InMemoryIncidentAnalysisWorkRepository:
                 max_attempts=max_attempts,
             )
 
+    def claim_next_eligible(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+        eligibility_label: str,
+        activated_at: datetime,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        validate_claim_request(worker_id, now, lease_duration, max_attempts)
+        validate_analysis_eligibility(eligibility_label, activated_at)
+        with self._lock:
+            for incident_id, item in sorted(
+                self._items.items(),
+                key=lambda pair: (pair[1]["available_at"], pair[0]),
+            ):
+                incident = self._incidents.get(incident_id)
+                if not incident_is_agent_eligible(
+                    incident,
+                    eligibility_label=eligibility_label,
+                    activated_at=activated_at,
+                ):
+                    continue
+                claim = self._claim_available(
+                    incident_id,
+                    item,
+                    worker_id=worker_id,
+                    now=now,
+                    lease_duration=lease_duration,
+                    max_attempts=max_attempts,
+                )
+                if claim is not None:
+                    return claim
+        return None
+
     def _claim_available(
         self,
         incident_id: str,
@@ -779,6 +876,37 @@ class InMemoryIncidentAnalysisWorkRepository:
             item["error_code"] = error_code
 
     def reap_exhausted(self, *, now: datetime, max_attempts: int) -> int:
+        return self._reap_exhausted(
+            now=now,
+            max_attempts=max_attempts,
+            eligibility_label=None,
+            activated_at=None,
+        )
+
+    def reap_exhausted_eligible(
+        self,
+        *,
+        now: datetime,
+        max_attempts: int,
+        eligibility_label: str,
+        activated_at: datetime,
+    ) -> int:
+        validate_analysis_eligibility(eligibility_label, activated_at)
+        return self._reap_exhausted(
+            now=now,
+            max_attempts=max_attempts,
+            eligibility_label=eligibility_label,
+            activated_at=activated_at,
+        )
+
+    def _reap_exhausted(
+        self,
+        *,
+        now: datetime,
+        max_attempts: int,
+        eligibility_label: Optional[str],
+        activated_at: Optional[datetime],
+    ) -> int:
         if now.tzinfo is None or not 1 <= max_attempts <= 10:
             raise ValueError("reaper metadata is invalid")
         reaped = 0
@@ -790,6 +918,12 @@ class InMemoryIncidentAnalysisWorkRepository:
                 ):
                     continue
                 incident = self._incidents.get(incident_id)
+                if eligibility_label is not None and not incident_is_agent_eligible(
+                    incident,
+                    eligibility_label=eligibility_label,
+                    activated_at=activated_at,  # type: ignore[arg-type]
+                ):
+                    continue
                 if incident["status"] in {"REPORTED", "PARTIAL"}:
                     item["state"] = "SUCCEEDED"
                     item["error_code"] = None

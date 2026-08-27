@@ -43,6 +43,7 @@ alert:
   name: AgentRCAControlledCheckoutOOM
   service: checkoutservice
   rca_enabled: "true"
+  agent_rca_enabled: "true"
 
 expected:
   outcome: ROOT_CAUSE

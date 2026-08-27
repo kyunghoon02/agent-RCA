@@ -80,6 +80,7 @@ def fixture_bundle(
                 "namespace": "online-boutique",
                 "service": "checkoutservice",
                 "rca_enabled": "true",
+                "agent_rca_enabled": "true",
             },
             "annotations": {"summary": "fixture"},
         },

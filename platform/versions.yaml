@@ -97,8 +97,8 @@ incident_platform:
   reconciler:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
-    image_tag: runtime-98a0adfd1ec8
-    image_digest: sha256:498735bc2fdd59e8e825994308f05f36f22c33638d7aa1e91e6ab59c2cc4226f
+    image_tag: runtime-82d38086e9fe
+    image_digest: sha256:ec6f6248b6b293ec70412028d07d092e77292fae7f23ebb9d1bde1bee9b69484
   webhook:
     server: gunicorn
     server_version: 26.0.0
@@ -115,11 +115,17 @@ incident_platform:
     localization_max_entities: 40
     localization_max_depth: 4
   agent_worker:
-    enabled: false
+    enabled: true
     model: gpt-5.6-luna
     poll_interval_seconds: 2
     lease_seconds: 180
     max_attempts: 3
+    eligibility_label: agent_rca_enabled
+    activated_at: "2026-08-27T06:30:00Z"
+    min_claim_interval_seconds: 60
+    circuit_failure_threshold: 3
+    circuit_cooldown_seconds: 300
+    metrics_port: 9090
     max_turns: 6
     max_llm_calls: 6
     max_tool_calls: 12

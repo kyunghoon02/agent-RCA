@@ -129,7 +129,7 @@
     "alert": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "service", "rca_enabled"],
+      "required": ["name", "service", "rca_enabled", "agent_rca_enabled"],
       "properties": {
         "name": {
           "const": "AgentRCAControlledCheckoutOOM"
@@ -138,6 +138,9 @@
           "const": "checkoutservice"
         },
         "rca_enabled": {
+          "const": "true"
+        },
+        "agent_rca_enabled": {
           "const": "true"
         }
       }

@@ -9,8 +9,9 @@ import signal
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, Sequence
 
 from dotenv import load_dotenv
 
@@ -23,6 +24,7 @@ from incident_platform.agent_rca import (
 from incident_platform.incident_work import (
     IncidentAnalysisWorkClaim,
     IncidentAnalysisWorkRepository,
+    validate_analysis_eligibility,
     validate_claim_request,
     validate_incident_id,
 )
@@ -67,6 +69,19 @@ def _boolean_environment(name: str, default: bool = False) -> bool:
     raise ValueError(f"{name} must be true or false")
 
 
+def _optional_datetime_environment(name: str) -> datetime | None:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an RFC3339 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must include a timezone")
+    return parsed.astimezone(UTC)
+
+
 @dataclass(frozen=True)
 class AgentWorkerRuntimeConfig:
     worker_id: str
@@ -75,6 +90,13 @@ class AgentWorkerRuntimeConfig:
     poll_interval_seconds: float
     lease_seconds: int
     max_attempts: int
+    eligibility_label: str
+    activated_at: datetime | None
+    min_claim_interval_seconds: float
+    circuit_failure_threshold: int
+    circuit_cooldown_seconds: int
+    metrics_host: str
+    metrics_port: int
     model_name: str
     max_turns: int
     max_llm_calls: int
@@ -106,6 +128,25 @@ class AgentWorkerRuntimeConfig:
             )
         if self.target_incident_id is not None:
             validate_incident_id(self.target_incident_id)
+        if not self.run_once and self.activated_at is None:
+            raise ValueError(
+                "AGENT_WORKER_ACTIVATED_AT is required for continuous operation"
+            )
+        if not self.eligibility_label.strip():
+            raise ValueError("Agent eligibility label is required")
+        if self.activated_at is not None:
+            validate_analysis_eligibility(
+                self.eligibility_label,
+                self.activated_at,
+            )
+        if not 1 <= self.min_claim_interval_seconds <= 3600:
+            raise ValueError("Agent minimum claim interval must be between 1 and 3600")
+        if not 1 <= self.circuit_failure_threshold <= 20:
+            raise ValueError("Agent circuit failure threshold must be between 1 and 20")
+        if not 10 <= self.circuit_cooldown_seconds <= 3600:
+            raise ValueError("Agent circuit cooldown must be between 10 and 3600")
+        if not self.metrics_host.strip() or not 1 <= self.metrics_port <= 65535:
+            raise ValueError("Agent metrics endpoint is invalid")
         if not self.model_name.strip():
             raise ValueError("Agent model name is required")
         if not 1 <= self.postgres_port <= 65535:
@@ -149,6 +190,21 @@ class AgentWorkerRuntimeConfig:
             ),
             lease_seconds=int(os.environ.get("AGENT_WORKER_LEASE_SECONDS", "180")),
             max_attempts=int(os.environ.get("AGENT_WORKER_MAX_ATTEMPTS", "3")),
+            eligibility_label=os.environ.get(
+                "AGENT_WORKER_ELIGIBILITY_LABEL", "agent_rca_enabled"
+            ),
+            activated_at=_optional_datetime_environment("AGENT_WORKER_ACTIVATED_AT"),
+            min_claim_interval_seconds=float(
+                os.environ.get("AGENT_WORKER_MIN_CLAIM_INTERVAL_SECONDS", "60")
+            ),
+            circuit_failure_threshold=int(
+                os.environ.get("AGENT_WORKER_CIRCUIT_FAILURE_THRESHOLD", "3")
+            ),
+            circuit_cooldown_seconds=int(
+                os.environ.get("AGENT_WORKER_CIRCUIT_COOLDOWN_SECONDS", "300")
+            ),
+            metrics_host=os.environ.get("AGENT_WORKER_METRICS_HOST", "0.0.0.0"),
+            metrics_port=int(os.environ.get("AGENT_WORKER_METRICS_PORT", "9090")),
             model_name=os.environ.get("AGENT_RCA_MODEL", "gpt-5.6-luna"),
             max_turns=int(os.environ.get("AGENT_RCA_MAX_TURNS", "6")),
             max_llm_calls=int(os.environ.get("AGENT_RCA_MAX_LLM_CALLS", "6")),
@@ -220,6 +276,20 @@ class AgentWorker:
         self._work = work_repository
         self._agent = agent_service
         self._clock = clock
+        self._next_claim_at: datetime | None = None
+        self._consecutive_failures = 0
+        self._circuit_open_until: datetime | None = None
+
+    def runtime_state(self) -> Mapping[str, object]:
+        now = self._clock()
+        circuit_open = (
+            self._circuit_open_until is not None
+            and now < self._circuit_open_until
+        )
+        return {
+            "circuit_open": circuit_open,
+            "consecutive_failures": self._consecutive_failures,
+        }
 
     def process_one(self) -> Mapping[str, object]:
         now = self._clock()
@@ -233,15 +303,44 @@ class AgentWorker:
                 max_attempts=self._config.max_attempts,
             )
         else:
-            reaped = self._work.reap_exhausted(
+            if (
+                self._circuit_open_until is not None
+                and now < self._circuit_open_until
+            ):
+                return {
+                    "status": "CIRCUIT_OPEN",
+                    "retry_after_seconds": max(
+                        1, int((self._circuit_open_until - now).total_seconds())
+                    ),
+                    "reaped": 0,
+                }
+            if self._circuit_open_until is not None:
+                self._circuit_open_until = None
+                self._consecutive_failures = 0
+            if self._next_claim_at is not None and now < self._next_claim_at:
+                return {
+                    "status": "RATE_LIMITED",
+                    "retry_after_seconds": max(
+                        1, int((self._next_claim_at - now).total_seconds())
+                    ),
+                    "reaped": 0,
+                }
+            activated_at = self._config.activated_at
+            if activated_at is None:  # Protected by runtime configuration validation.
+                raise RuntimeError("continuous Agent activation time is missing")
+            reaped = self._work.reap_exhausted_eligible(
                 now=now,
                 max_attempts=self._config.max_attempts,
+                eligibility_label=self._config.eligibility_label,
+                activated_at=activated_at,
             )
-            claim = self._work.claim_next(
+            claim = self._work.claim_next_eligible(
                 worker_id=self._config.worker_id,
                 now=now,
                 lease_duration=timedelta(seconds=self._config.lease_seconds),
                 max_attempts=self._config.max_attempts,
+                eligibility_label=self._config.eligibility_label,
+                activated_at=activated_at,
             )
         if claim is None:
             if self._config.target_incident_id is not None:
@@ -251,7 +350,25 @@ class AgentWorker:
                     "reaped": 0,
                 }
             return {"status": "IDLE", "reaped": reaped}
-        return self._process_claim(claim, reaped=reaped)
+        if self._config.target_incident_id is None:
+            self._next_claim_at = now + timedelta(
+                seconds=self._config.min_claim_interval_seconds
+            )
+        result = self._process_claim(claim, reaped=reaped)
+        if self._config.target_incident_id is None:
+            self._update_circuit(result)
+        return result
+
+    def _update_circuit(self, result: Mapping[str, object]) -> None:
+        if result["status"] == "PROCESSED":
+            self._consecutive_failures = 0
+            self._circuit_open_until = None
+            return
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._config.circuit_failure_threshold:
+            self._circuit_open_until = self._clock() + timedelta(
+                seconds=self._config.circuit_cooldown_seconds
+            )
 
     def _process_claim(
         self,
@@ -323,8 +440,125 @@ class AgentWorker:
             "model": run.audit["model"],
             "llm_calls": run.audit["usage"]["llm_calls"],
             "tool_calls": run.audit["usage"]["tool_calls"],
+            "input_tokens": run.audit["usage"]["input_tokens"],
+            "output_tokens": run.audit["usage"]["output_tokens"],
+            "total_tokens": run.audit["usage"]["total_tokens"],
+            "wall_time_ms": run.audit["usage"]["wall_time_ms"],
             "reaped": reaped,
         }
+
+
+class AgentWorkerMetrics:
+    """Small dependency-free Prometheus registry for the continuous worker."""
+
+    _OUTCOMES: Sequence[str] = (
+        "processed",
+        "failed",
+        "failure_persistence_failed",
+        "work_completion_failed",
+    )
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._runs = {outcome: 0 for outcome in self._OUTCOMES}
+        self._llm_calls = 0
+        self._tool_calls = 0
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._total_tokens = 0
+        self._duration_seconds_sum = 0.0
+        self._duration_seconds_count = 0
+        self._last_success_timestamp = 0.0
+
+    def observe(self, result: Mapping[str, object], *, observed_at: datetime) -> None:
+        outcome = str(result.get("status", "")).lower()
+        if outcome not in self._runs:
+            return
+        with self._lock:
+            self._runs[outcome] += 1
+            if outcome != "processed":
+                return
+            self._llm_calls += int(result.get("llm_calls", 0))
+            self._tool_calls += int(result.get("tool_calls", 0))
+            self._input_tokens += int(result.get("input_tokens", 0))
+            self._output_tokens += int(result.get("output_tokens", 0))
+            self._total_tokens += int(result.get("total_tokens", 0))
+            self._duration_seconds_sum += float(result.get("wall_time_ms", 0)) / 1000
+            self._duration_seconds_count += 1
+            self._last_success_timestamp = observed_at.timestamp()
+
+    def render(self, runtime_state: Mapping[str, object]) -> bytes:
+        with self._lock:
+            lines = [
+                "# HELP agent_rca_worker_up Whether the worker metrics endpoint is serving.",
+                "# TYPE agent_rca_worker_up gauge",
+                "agent_rca_worker_up 1",
+                "# HELP agent_rca_worker_runs_total Agent runs by terminal outcome.",
+                "# TYPE agent_rca_worker_runs_total counter",
+            ]
+            lines.extend(
+                f'agent_rca_worker_runs_total{{outcome="{outcome}"}} {count}'
+                for outcome, count in self._runs.items()
+            )
+            lines.extend(
+                [
+                    "# TYPE agent_rca_worker_llm_calls_total counter",
+                    f"agent_rca_worker_llm_calls_total {self._llm_calls}",
+                    "# TYPE agent_rca_worker_tool_calls_total counter",
+                    f"agent_rca_worker_tool_calls_total {self._tool_calls}",
+                    "# TYPE agent_rca_worker_tokens_total counter",
+                    f'agent_rca_worker_tokens_total{{type="input"}} {self._input_tokens}',
+                    f'agent_rca_worker_tokens_total{{type="output"}} {self._output_tokens}',
+                    f'agent_rca_worker_tokens_total{{type="total"}} {self._total_tokens}',
+                    "# TYPE agent_rca_worker_run_duration_seconds summary",
+                    "agent_rca_worker_run_duration_seconds_sum "
+                    f"{self._duration_seconds_sum:.6f}",
+                    "agent_rca_worker_run_duration_seconds_count "
+                    f"{self._duration_seconds_count}",
+                    "# TYPE agent_rca_worker_circuit_open gauge",
+                    "agent_rca_worker_circuit_open "
+                    f"{1 if runtime_state.get('circuit_open') else 0}",
+                    "# TYPE agent_rca_worker_consecutive_failures gauge",
+                    "agent_rca_worker_consecutive_failures "
+                    f"{int(runtime_state.get('consecutive_failures', 0))}",
+                    "# TYPE agent_rca_worker_last_success_timestamp_seconds gauge",
+                    "agent_rca_worker_last_success_timestamp_seconds "
+                    f"{self._last_success_timestamp:.3f}",
+                ]
+            )
+        return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def start_metrics_server(
+    config: AgentWorkerRuntimeConfig,
+    metrics: AgentWorkerMetrics,
+    worker: AgentWorker,
+) -> ThreadingHTTPServer:
+    class MetricsHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+            if self.path == "/healthz":
+                body = b"ok\n"
+                content_type = "text/plain; charset=utf-8"
+            elif self.path == "/metrics":
+                body = metrics.render(worker.runtime_state())
+                content_type = "text/plain; version=0.0.4; charset=utf-8"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(
+        (config.metrics_host, config.metrics_port), MetricsHandler
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def build_worker(config: AgentWorkerRuntimeConfig) -> AgentWorker:
@@ -359,6 +593,8 @@ def main() -> int:
     try:
         config = AgentWorkerRuntimeConfig.from_environment()
         worker = build_worker(config)
+        metrics = AgentWorkerMetrics()
+        metrics_server = start_metrics_server(config, metrics, worker)
     except Exception as error:
         print(
             json.dumps(
@@ -371,14 +607,22 @@ def main() -> int:
 
     if config.run_once:
         result = worker.process_one()
+        metrics.observe(result, observed_at=datetime.now(UTC))
         print(json.dumps(result, sort_keys=True), flush=True)
+        metrics_server.shutdown()
+        metrics_server.server_close()
         return 0 if result["status"] == "PROCESSED" else 1
 
-    while not stop.is_set():
-        result = worker.process_one()
-        if result["status"] != "IDLE" or result.get("reaped"):
-            print(json.dumps(result, sort_keys=True), flush=True)
-        stop.wait(config.poll_interval_seconds)
+    try:
+        while not stop.is_set():
+            result = worker.process_one()
+            metrics.observe(result, observed_at=datetime.now(UTC))
+            if result["status"] not in {"IDLE", "RATE_LIMITED", "CIRCUIT_OPEN"} or result.get("reaped"):
+                print(json.dumps(result, sort_keys=True), flush=True)
+            stop.wait(config.poll_interval_seconds)
+    finally:
+        metrics_server.shutdown()
+        metrics_server.server_close()
     return 0
 
 
