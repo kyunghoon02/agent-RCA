@@ -255,6 +255,177 @@ spec:
             severity: warning
           annotations:
             summary: Agent RCA run duration is approaching its bounded deadline
+        - alert: AgentRCAWorkQueueObservationFailed
+          expr: |
+            max(agent_rca_work_queue_observation_success) < 1
+            or absent(agent_rca_work_queue_observation_success)
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Agent RCA worker cannot observe the PostgreSQL work queues
+        - alert: AgentRCAWorkQueueBacklog
+          expr: max by (stage) (agent_rca_work_items{state="ready"}) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Agent RCA work queue has more than five READY items
+        - alert: AgentRCAWorkQueueOldestReady
+          expr: max by (stage) (agent_rca_work_oldest_ready_age_seconds) > 600
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Agent RCA work has remained READY for more than ten minutes
+        - alert: AgentRCAWorkQueueStuckRunning
+          expr: max by (stage) (agent_rca_work_oldest_running_age_seconds) > 300
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Agent RCA work has remained RUNNING beyond its lease window
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: incident-agent-worker-dashboard
+  namespace: incident-platform
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: incident-agent-worker
+    app.kubernetes.io/part-of: agent-rca
+data:
+  agent-rca-operations.json: |-
+    {
+      "annotations": {"list": []},
+      "editable": false,
+      "graphTooltip": 1,
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "DOWN"}, "1": {"color": "green", "text": "UP"}}, "type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "id": 1,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "max(agent_rca_worker_up)", "refId": "A"}],
+          "title": "Worker",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "green", "text": "CLOSED"}, "1": {"color": "red", "text": "OPEN"}}, "type": "value"}]}, "overrides": []},
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "id": 2,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "max(agent_rca_worker_circuit_open)", "refId": "A"}],
+          "title": "Circuit",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "FAILED"}, "1": {"color": "green", "text": "OK"}}, "type": "value"}]}, "overrides": []},
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "id": 3,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "max(agent_rca_work_queue_observation_success)", "refId": "A"}],
+          "title": "Queue Observation",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 6}]}}, "overrides": []},
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "id": 4,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "max(agent_rca_work_items{stage=\"analysis\",state=\"ready\"})", "refId": "A"}],
+          "title": "Eligible Analysis READY",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"decimals": 0}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "id": 5,
+          "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [{"expr": "max by (stage, state) (agent_rca_work_items)", "legendFormat": "{{stage}} / {{state}}", "refId": "A"}],
+          "title": "Durable Work Items",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "id": 6,
+          "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [
+            {"expr": "max by (stage) (agent_rca_work_oldest_ready_age_seconds)", "legendFormat": "READY {{stage}}", "refId": "A"},
+            {"expr": "max by (stage) (agent_rca_work_oldest_running_age_seconds)", "legendFormat": "RUNNING {{stage}}", "refId": "B"}
+          ],
+          "title": "Oldest Work Age",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 12},
+          "id": 7,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [{"expr": "sum by (outcome) (rate(agent_rca_worker_runs_total[15m]))", "legendFormat": "{{outcome}}", "refId": "A"}],
+          "title": "Agent Run Rate",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"max": 1, "min": 0, "unit": "percentunit"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 12},
+          "id": 8,
+          "options": {"legend": {"displayMode": "hidden", "placement": "bottom", "showLegend": false}, "tooltip": {"mode": "single", "sort": "none"}},
+          "targets": [{"expr": "sum(rate(agent_rca_worker_runs_total{outcome=\"processed\"}[1h])) / clamp_min(sum(rate(agent_rca_worker_runs_total[1h])), 0.000001)", "refId": "A"}],
+          "title": "Agent Success Ratio",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 12},
+          "id": 9,
+          "options": {"legend": {"displayMode": "hidden", "placement": "bottom", "showLegend": false}, "tooltip": {"mode": "single", "sort": "none"}},
+          "targets": [{"expr": "sum(rate(agent_rca_worker_run_duration_seconds_sum[1h])) / clamp_min(sum(rate(agent_rca_worker_run_duration_seconds_count[1h])), 0.000001)", "refId": "A"}],
+          "title": "Average Agent Duration",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"decimals": 0, "unit": "short"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+          "id": 10,
+          "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [{"expr": "sum by (type) (increase(agent_rca_worker_tokens_total[1h]))", "legendFormat": "{{type}}", "refId": "A"}],
+          "title": "Hourly Token Use",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+          "id": 11,
+          "options": {"legend": {"displayMode": "hidden", "placement": "bottom", "showLegend": false}, "tooltip": {"mode": "single", "sort": "none"}},
+          "targets": [{"expr": "(time() - max(agent_rca_worker_last_success_timestamp_seconds)) and (max(agent_rca_worker_last_success_timestamp_seconds) > 0)", "refId": "A"}],
+          "title": "Seconds Since Last Successful Agent Run",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "tags": ["agent-rca", "incident-platform"],
+      "templating": {"list": []},
+      "time": {"from": "now-6h", "to": "now"},
+      "timezone": "browser",
+      "title": "Agent RCA Operations",
+      "uid": "agent-rca-operations",
+      "version": 1
+    }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

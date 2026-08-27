@@ -967,9 +967,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-82d38086e9fe",
+            "image_tag": "runtime-5370ce094cb0",
             "image_digest": (
-                "sha256:ec6f6248b6b293ec70412028d07d092e77292fae7f23ebb9d1bde1bee9b69484"
+                "sha256:c397235eb1d0b9d2d7176cde4c9ee96e8c863087c70b160789a7c05617b36164"
             ),
         },
         "webhook": {
@@ -1353,6 +1353,7 @@ def validate_incident_platform_manifest() -> None:
         "Service",
         "ServiceMonitor",
         "PrometheusRule",
+        "ConfigMap",
         "NetworkPolicy",
     }:
         raise ValidationFailure("Agent worker runtime resource set drifted")
@@ -1488,9 +1489,44 @@ def validate_incident_platform_manifest() -> None:
             "AgentRCAWorkerHighFailureRatio",
             "AgentRCAWorkerRapidTokenBurn",
             "AgentRCAWorkerSlowRuns",
+            "AgentRCAWorkQueueObservationFailed",
+            "AgentRCAWorkQueueBacklog",
+            "AgentRCAWorkQueueOldestReady",
+            "AgentRCAWorkQueueStuckRunning",
         }
     ):
         raise ValidationFailure("Agent worker Prometheus alert boundary drifted")
+    agent_dashboard_configmap = next(
+        document
+        for document in agent_worker_documents
+        if document.get("kind") == "ConfigMap"
+    )
+    try:
+        agent_dashboard = json.loads(
+            agent_dashboard_configmap.get("data", {}).get(
+                "agent-rca-operations.json", ""
+            )
+        )
+    except json.JSONDecodeError as error:
+        raise ValidationFailure("Agent RCA Grafana dashboard JSON is invalid") from error
+    dashboard_expressions = {
+        target.get("expr")
+        for panel in agent_dashboard.get("panels", [])
+        for target in panel.get("targets", [])
+    }
+    if (
+        agent_dashboard_configmap.get("metadata", {}).get("labels", {}).get(
+            "grafana_dashboard"
+        )
+        != "1"
+        or agent_dashboard.get("uid") != "agent-rca-operations"
+        or agent_dashboard.get("title") != "Agent RCA Operations"
+        or "max by (stage, state) (agent_rca_work_items)"
+        not in dashboard_expressions
+        or "max by (stage) (agent_rca_work_oldest_ready_age_seconds)"
+        not in dashboard_expressions
+    ):
+        raise ValidationFailure("Agent RCA Grafana dashboard boundary drifted")
     agent_network_policy = next(
         document
         for document in agent_worker_documents
@@ -1648,6 +1684,16 @@ def validate_observability_values() -> None:
         != "http://tempo.observability.svc.cluster.local:3200"
     ):
         raise ValidationFailure("Grafana Tempo datasource is missing or unsafe")
+    dashboard_sidecar = (
+        prometheus.get("grafana", {}).get("sidecar", {}).get("dashboards", {})
+    )
+    if dashboard_sidecar != {
+        "enabled": True,
+        "label": "grafana_dashboard",
+        "labelValue": "1",
+        "searchNamespace": "ALL",
+    }:
+        raise ValidationFailure("Grafana dashboard sidecar boundary drifted")
 
     if (
         loki.get("deploymentMode") != "Monolithic"

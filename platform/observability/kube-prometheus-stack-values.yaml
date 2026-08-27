@@ -68,6 +68,12 @@ grafana:
     limits:
       cpu: 500m
       memory: 768Mi
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
   additionalDataSources:
     - name: Loki
       uid: loki

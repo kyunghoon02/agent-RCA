@@ -100,6 +100,34 @@
   changed_when: false
   failed_when: "'ok' not in grafana_health.stdout"
 
+- name: Read the Grafana Deployment dashboard sidecar
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment monitoring-grafana
+    --namespace {{ observability_namespace }} --output json
+  register: grafana_deployment
+  changed_when: false
+
+- name: Require cross-namespace dashboard discovery
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((grafana_deployment.stdout | from_json).spec.template.spec.containers
+        | selectattr('name', 'equalto', 'grafana-sc-dashboard') | list | length) == 1
+      - >-
+        (((grafana_deployment.stdout | from_json).spec.template.spec.containers
+        | selectattr('name', 'equalto', 'grafana-sc-dashboard')
+        | map(attribute='env') | first)
+        | selectattr('name', 'equalto', 'LABEL')
+        | selectattr('value', 'equalto', 'grafana_dashboard') | list | length) == 1
+      - >-
+        (((grafana_deployment.stdout | from_json).spec.template.spec.containers
+        | selectattr('name', 'equalto', 'grafana-sc-dashboard')
+        | map(attribute='env') | first)
+        | selectattr('name', 'equalto', 'NAMESPACE')
+        | selectattr('value', 'equalto', 'ALL') | list | length) == 1
+    fail_msg: Grafana is not watching labeled dashboard ConfigMaps in all namespaces.
+
 - name: Verify Loki readiness through the Kubernetes API proxy
   ansible.builtin.command: >-
     kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw

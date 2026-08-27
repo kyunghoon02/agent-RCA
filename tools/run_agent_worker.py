@@ -24,6 +24,8 @@ from incident_platform.agent_rca import (
 from incident_platform.incident_work import (
     IncidentAnalysisWorkClaim,
     IncidentAnalysisWorkRepository,
+    IncidentWorkQueueSnapshot,
+    IncidentWorkQueueTelemetryRepository,
     validate_analysis_eligibility,
     validate_claim_request,
     validate_incident_id,
@@ -35,6 +37,7 @@ from incident_platform.knowledge import (
 from incident_platform.postgresql import (
     PostgreSQLIncidentAnalysisWorkRepository,
     PostgreSQLIncidentRepository,
+    PostgreSQLIncidentWorkQueueTelemetryRepository,
     apply_migrations,
 )
 
@@ -487,7 +490,13 @@ class AgentWorkerMetrics:
             self._duration_seconds_count += 1
             self._last_success_timestamp = observed_at.timestamp()
 
-    def render(self, runtime_state: Mapping[str, object]) -> bytes:
+    def render(
+        self,
+        runtime_state: Mapping[str, object],
+        *,
+        queue_snapshot: IncidentWorkQueueSnapshot | None = None,
+        queue_observation_success: bool = False,
+    ) -> bytes:
         with self._lock:
             lines = [
                 "# HELP agent_rca_worker_up Whether the worker metrics endpoint is serving.",
@@ -524,8 +533,58 @@ class AgentWorkerMetrics:
                     "# TYPE agent_rca_worker_last_success_timestamp_seconds gauge",
                     "agent_rca_worker_last_success_timestamp_seconds "
                     f"{self._last_success_timestamp:.3f}",
+                    "# HELP agent_rca_work_queue_observation_success Whether the latest PostgreSQL queue observation succeeded.",
+                    "# TYPE agent_rca_work_queue_observation_success gauge",
+                    "agent_rca_work_queue_observation_success "
+                    f"{1 if queue_observation_success else 0}",
                 ]
             )
+            if queue_snapshot is not None:
+                lines.extend(
+                    [
+                        "# HELP agent_rca_work_queue_last_observed_timestamp_seconds Unix timestamp of the latest successful queue observation.",
+                        "# TYPE agent_rca_work_queue_last_observed_timestamp_seconds gauge",
+                        "agent_rca_work_queue_last_observed_timestamp_seconds "
+                        f"{queue_snapshot.observed_at.timestamp():.3f}",
+                        "# HELP agent_rca_work_items Current durable work items by pipeline stage and state. Analysis includes only continuous-Agent-eligible Incidents.",
+                        "# TYPE agent_rca_work_items gauge",
+                    ]
+                )
+                for stage in queue_snapshot.stages:
+                    for state, count in (
+                        ("ready", stage.ready),
+                        ("running", stage.running),
+                        ("succeeded", stage.succeeded),
+                        ("failed", stage.failed),
+                    ):
+                        lines.append(
+                            "agent_rca_work_items"
+                            f'{{stage="{stage.stage}",state="{state}"}} {count}'
+                        )
+                lines.extend(
+                    [
+                        "# HELP agent_rca_work_oldest_ready_age_seconds Age of the oldest available READY item by stage.",
+                        "# TYPE agent_rca_work_oldest_ready_age_seconds gauge",
+                    ]
+                )
+                lines.extend(
+                    "agent_rca_work_oldest_ready_age_seconds"
+                    f'{{stage="{stage.stage}"}} '
+                    f"{stage.oldest_ready_age_seconds:.3f}"
+                    for stage in queue_snapshot.stages
+                )
+                lines.extend(
+                    [
+                        "# HELP agent_rca_work_oldest_running_age_seconds Age of the oldest RUNNING item by stage.",
+                        "# TYPE agent_rca_work_oldest_running_age_seconds gauge",
+                    ]
+                )
+                lines.extend(
+                    "agent_rca_work_oldest_running_age_seconds"
+                    f'{{stage="{stage.stage}"}} '
+                    f"{stage.oldest_running_age_seconds:.3f}"
+                    for stage in queue_snapshot.stages
+                )
         return ("\n".join(lines) + "\n").encode("utf-8")
 
 
@@ -533,6 +592,7 @@ def start_metrics_server(
     config: AgentWorkerRuntimeConfig,
     metrics: AgentWorkerMetrics,
     worker: AgentWorker,
+    queue_telemetry: IncidentWorkQueueTelemetryRepository,
 ) -> ThreadingHTTPServer:
     class MetricsHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
@@ -540,7 +600,25 @@ def start_metrics_server(
                 body = b"ok\n"
                 content_type = "text/plain; charset=utf-8"
             elif self.path == "/metrics":
-                body = metrics.render(worker.runtime_state())
+                queue_snapshot = None
+                queue_observation_success = False
+                if config.activated_at is not None:
+                    try:
+                        queue_snapshot = queue_telemetry.snapshot(
+                            now=datetime.now(UTC),
+                            analysis_eligibility_label=config.eligibility_label,
+                            analysis_activated_at=config.activated_at,
+                        )
+                        queue_observation_success = True
+                    except Exception:
+                        # Preserve worker-local metrics while exposing the failed
+                        # PostgreSQL observation as a dedicated fail-closed gauge.
+                        pass
+                body = metrics.render(
+                    worker.runtime_state(),
+                    queue_snapshot=queue_snapshot,
+                    queue_observation_success=queue_observation_success,
+                )
                 content_type = "text/plain; version=0.0.4; charset=utf-8"
             else:
                 self.send_error(404)
@@ -561,7 +639,9 @@ def start_metrics_server(
     return server
 
 
-def build_worker(config: AgentWorkerRuntimeConfig) -> AgentWorker:
+def build_worker(
+    config: AgentWorkerRuntimeConfig,
+) -> tuple[AgentWorker, IncidentWorkQueueTelemetryRepository]:
     if not os.environ.get("OPENAI_API_KEY", "").strip():
         raise ValueError("OPENAI_API_KEY is required")
     connection_factory = _postgres_connection_factory(config)
@@ -578,7 +658,10 @@ def build_worker(config: AgentWorkerRuntimeConfig) -> AgentWorker:
         OpenAIAgentsSDKRunner(config.model_name),
         policy=config.policy(),
     )
-    return AgentWorker(config, work_repository, service)
+    queue_telemetry = PostgreSQLIncidentWorkQueueTelemetryRepository(
+        connection_factory
+    )
+    return AgentWorker(config, work_repository, service), queue_telemetry
 
 
 def main() -> int:
@@ -592,9 +675,14 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
     try:
         config = AgentWorkerRuntimeConfig.from_environment()
-        worker = build_worker(config)
+        worker, queue_telemetry = build_worker(config)
         metrics = AgentWorkerMetrics()
-        metrics_server = start_metrics_server(config, metrics, worker)
+        metrics_server = start_metrics_server(
+            config,
+            metrics,
+            worker,
+            queue_telemetry,
+        )
     except Exception as error:
         print(
             json.dumps(

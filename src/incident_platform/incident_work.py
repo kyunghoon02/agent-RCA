@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import RLock
-from typing import Any, Dict, Mapping, Optional, Protocol
+from typing import Any, Dict, Mapping, Optional, Protocol, Tuple
 
 from .errors import InvalidTransition
 from .repository import IncidentRepository
@@ -18,6 +18,7 @@ _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _INCIDENT_ID = re.compile(r"^inc-[a-z0-9][a-z0-9-]{7,63}$")
 _ELIGIBILITY_LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,62}$")
 WORK_OUTCOMES = frozenset({"SUCCEEDED", "PARTIAL", "FAILED"})
+WORK_QUEUE_STAGES = ("collection", "localization", "analysis")
 
 
 def validate_claim_request(
@@ -124,6 +125,57 @@ class IncidentAnalysisWorkClaim:
             raise ValueError("analysis claim lease must be timezone-aware")
         if self.attempt_count <= 0:
             raise ValueError("analysis claim attempt_count must be positive")
+
+
+@dataclass(frozen=True)
+class IncidentWorkQueueStageSnapshot:
+    """Current work counts and wait ages for one durable pipeline stage."""
+
+    stage: str
+    ready: int
+    running: int
+    succeeded: int
+    failed: int
+    oldest_ready_age_seconds: float
+    oldest_running_age_seconds: float
+
+    def __post_init__(self) -> None:
+        if self.stage not in WORK_QUEUE_STAGES:
+            raise ValueError("work queue stage is invalid")
+        if any(
+            value < 0
+            for value in (self.ready, self.running, self.succeeded, self.failed)
+        ):
+            raise ValueError("work queue counts must be non-negative")
+        if self.oldest_ready_age_seconds < 0 or self.oldest_running_age_seconds < 0:
+            raise ValueError("work queue ages must be non-negative")
+
+
+@dataclass(frozen=True)
+class IncidentWorkQueueSnapshot:
+    """One bounded observation of all durable Incident work queues."""
+
+    observed_at: datetime
+    stages: Tuple[IncidentWorkQueueStageSnapshot, ...]
+
+    def __post_init__(self) -> None:
+        if self.observed_at.tzinfo is None:
+            raise ValueError("queue observation time must be timezone-aware")
+        if tuple(stage.stage for stage in self.stages) != WORK_QUEUE_STAGES:
+            raise ValueError("queue snapshot must contain each stage exactly once")
+
+
+class IncidentWorkQueueTelemetryRepository(Protocol):
+    """Read-only queue telemetry using the continuous Agent eligibility boundary."""
+
+    def snapshot(
+        self,
+        *,
+        now: datetime,
+        analysis_eligibility_label: str,
+        analysis_activated_at: datetime,
+    ) -> IncidentWorkQueueSnapshot:
+        ...
 
 
 class IncidentWorkRepository(Protocol):

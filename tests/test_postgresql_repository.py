@@ -14,6 +14,7 @@ from incident_platform.incidents import AlertmanagerNormalizer
 from incident_platform.postgresql import (
     PostgreSQLIncidentAnalysisWorkRepository,
     PostgreSQLIncidentRepository,
+    PostgreSQLIncidentWorkQueueTelemetryRepository,
     PostgreSQLStateGraphObservationRepository,
     apply_migrations,
 )
@@ -396,6 +397,68 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertIn("incident.created_at >= %s", statement)
         self.assertIn("->>%s = 'true'", statement)
         self.assertEqual(parameters[-2:], [activated_at, label])
+
+    def test_queue_telemetry_uses_the_continuous_analysis_boundary(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, statement, parameters=()):
+                self.calls.append((statement, parameters))
+
+            def fetchall(self):
+                return [("analysis", 1, 0, 2, 1, 120.0, 0.0)]
+
+        class RecordingConnection:
+            closed = False
+
+            def __init__(self, cursor) -> None:
+                self._cursor = cursor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        cursor = RecordingCursor()
+        repository = PostgreSQLIncidentWorkQueueTelemetryRepository(
+            lambda: RecordingConnection(cursor)
+        )
+        label = "agent_rca_enabled"
+        activated_at = datetime(2026, 8, 27, 6, 30, tzinfo=timezone.utc)
+
+        snapshot = repository.snapshot(
+            now=FIXED_TIME,
+            analysis_eligibility_label=label,
+            analysis_activated_at=activated_at,
+        )
+
+        statement, parameters = cursor.calls[0]
+        self.assertNotIn(label, statement)
+        self.assertIn("incident.created_at >= %s", statement)
+        self.assertIn("->>%s = 'true'", statement)
+        self.assertEqual(parameters[:2], (activated_at, label))
+        self.assertEqual(tuple(stage.stage for stage in snapshot.stages), (
+            "collection",
+            "localization",
+            "analysis",
+        ))
+        self.assertEqual(snapshot.stages[0].ready, 0)
+        self.assertEqual(snapshot.stages[2].ready, 1)
+        self.assertEqual(snapshot.stages[2].oldest_ready_age_seconds, 120.0)
 
     def test_viewer_work_query_returns_safe_stage_state_without_claim_token(self) -> None:
         class RecordingCursor:

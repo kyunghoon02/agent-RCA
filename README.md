@@ -112,7 +112,7 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 | Area | Status | Runtime evidence |
 |---|---|---|
 | GCP and Kubernetes | Live | Compute Engine `e2-standard-8`, kubeadm Kubernetes v1.36.4, containerd와 Cilium/Hubble 구성 및 재부팅 복구 확인 |
-| Observability | Live | Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo와 OpenTelemetry Collector 배포 |
+| Observability | Live | Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo와 OpenTelemetry Collector 배포. Agent Worker·eligible queue metric과 `Agent RCA Operations` dashboard 연결 |
 | Incident pipeline | Live | authenticated webhook부터 PostgreSQL work claim, Evidence 수집, localization과 `ANALYZING`까지 연결 |
 | Temporal StateGraph | Live | PostgreSQL observation journal, Neo4j projection, exact resolver와 Frozen Context 저장 확인 |
 | Continuous Agent Worker | Live, single replica | opt-in Incident 1건을 자동 claim해 bounded tool investigation, Evidence Gate와 `REPORTED` 저장 확인 |
@@ -168,7 +168,7 @@ memory ratio는 보조 관측으로 남긴다. 목표 평가는 최소 15개 sce
   failure domain에 있다.
 - PostgreSQL, Neo4j와 local PV의 backup/restore 및 HA가 구현되지 않았다.
 - Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
-- Agent Worker queue depth와 oldest-wait metric, 실제 운영 notification channel이 아직 없다.
+- Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
 - OOM 외 fault matrix와 반복 평가가 완료되지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.

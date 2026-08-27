@@ -4,7 +4,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from incident_platform.agent_rca import AgentRCAService
-from incident_platform.incident_work import InMemoryIncidentAnalysisWorkRepository
+from incident_platform.incident_work import (
+    InMemoryIncidentAnalysisWorkRepository,
+    IncidentWorkQueueSnapshot,
+    IncidentWorkQueueStageSnapshot,
+)
 from incident_platform.knowledge import BoundedKnowledgeRetriever
 from tests.test_agent_rca import (
     FailingFakeRunner,
@@ -217,13 +221,64 @@ class AgentWorkerRuntimeTests(unittest.TestCase):
             observed_at=NOW,
         )
 
+        queue_snapshot = IncidentWorkQueueSnapshot(
+            observed_at=NOW,
+            stages=(
+                IncidentWorkQueueStageSnapshot(
+                    stage="collection",
+                    ready=2,
+                    running=1,
+                    succeeded=10,
+                    failed=1,
+                    oldest_ready_age_seconds=45,
+                    oldest_running_age_seconds=15,
+                ),
+                IncidentWorkQueueStageSnapshot(
+                    stage="localization",
+                    ready=1,
+                    running=0,
+                    succeeded=9,
+                    failed=1,
+                    oldest_ready_age_seconds=30,
+                    oldest_running_age_seconds=0,
+                ),
+                IncidentWorkQueueStageSnapshot(
+                    stage="analysis",
+                    ready=1,
+                    running=0,
+                    succeeded=1,
+                    failed=0,
+                    oldest_ready_age_seconds=60,
+                    oldest_running_age_seconds=0,
+                ),
+            ),
+        )
         rendered = metrics.render(
-            {"circuit_open": True, "consecutive_failures": 3}
+            {"circuit_open": True, "consecutive_failures": 3},
+            queue_snapshot=queue_snapshot,
+            queue_observation_success=True,
         ).decode("utf-8")
 
         self.assertIn('agent_rca_worker_runs_total{outcome="processed"} 1', rendered)
         self.assertIn('agent_rca_worker_tokens_total{type="total"} 150', rendered)
         self.assertIn("agent_rca_worker_circuit_open 1", rendered)
+        self.assertIn("agent_rca_work_queue_observation_success 1", rendered)
+        self.assertIn(
+            'agent_rca_work_items{stage="analysis",state="ready"} 1',
+            rendered,
+        )
+        self.assertIn(
+            'agent_rca_work_oldest_ready_age_seconds{stage="analysis"} 60.000',
+            rendered,
+        )
+
+    def test_metrics_fail_closed_when_queue_observation_is_unavailable(self) -> None:
+        rendered = AgentWorkerMetrics().render(
+            {"circuit_open": False, "consecutive_failures": 0}
+        ).decode("utf-8")
+
+        self.assertIn("agent_rca_work_queue_observation_success 0", rendered)
+        self.assertNotIn("agent_rca_work_items{", rendered)
 
 
 if __name__ == "__main__":

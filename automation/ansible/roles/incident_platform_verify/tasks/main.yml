@@ -471,6 +471,15 @@
   changed_when: false
   when: incident_platform_agent_runtime_enabled | bool
 
+- name: Read the Agent RCA Grafana dashboard ConfigMap
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap {{ incident_platform_agent_worker_deployment }}-dashboard
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_agent_worker_dashboard_result
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
 - name: Require the Agent worker metrics and alerting boundary
   ansible.builtin.assert:
     that:
@@ -489,8 +498,89 @@
         | map(attribute='port') | first) == 9090
       - >-
         ((incident_platform_agent_worker_prometheus_rule_result.stdout | from_json).spec.groups[0].rules
-        | selectattr('alert', 'defined') | list | length) == 5
-    fail_msg: The Agent worker ServiceMonitor or PrometheusRule drifted.
+        | selectattr('alert', 'defined') | list | length) == 9
+      - >-
+        (incident_platform_agent_worker_dashboard_result.stdout | from_json).metadata.labels.grafana_dashboard
+        == '1'
+      - >-
+        (((incident_platform_agent_worker_dashboard_result.stdout | from_json).data['agent-rca-operations.json']
+        | from_json).uid) == 'agent-rca-operations'
+    fail_msg: The Agent worker metrics, alerts, or Grafana dashboard drifted.
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Query the live Agent RCA queue observation metric
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/observability/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=agent_rca_work_queue_observation_success
+  register: incident_platform_agent_queue_observation_metric
+  retries: 12
+  delay: 5
+  until: >-
+    ((incident_platform_agent_queue_observation_metric.stdout | from_json).data.result
+    | length == 1)
+    and ((incident_platform_agent_queue_observation_metric.stdout | from_json).data.result[0].value[1]
+    == '1')
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Query the live Agent RCA queue item metrics
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/observability/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=agent_rca_work_items
+  register: incident_platform_agent_queue_item_metrics
+  changed_when: false
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Require all queue stages and states in Prometheus
+  ansible.builtin.assert:
+    that:
+      - >-
+        (incident_platform_agent_queue_item_metrics.stdout | from_json).data.result
+        | length == 12
+      - >-
+        (incident_platform_agent_queue_item_metrics.stdout | from_json).data.result
+        | selectattr('metric.stage', 'equalto', 'collection') | list | length == 4
+      - >-
+        (incident_platform_agent_queue_item_metrics.stdout | from_json).data.result
+        | selectattr('metric.stage', 'equalto', 'localization') | list | length == 4
+      - >-
+        (incident_platform_agent_queue_item_metrics.stdout | from_json).data.result
+        | selectattr('metric.stage', 'equalto', 'analysis') | list | length == 4
+    fail_msg: Prometheus is missing an Agent RCA work queue stage or state.
+  when: incident_platform_agent_runtime_enabled | bool
+
+- name: Require Grafana to load the Agent RCA dashboard file
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - observability
+      - deployment/monitoring-grafana
+      - --container
+      - grafana
+      - --
+      - sh
+      - -ec
+      - >-
+        test -f /tmp/dashboards/agent-rca-operations.json &&
+        grep -q '"uid": "agent-rca-operations"'
+        /tmp/dashboards/agent-rca-operations.json
+  changed_when: false
   when: incident_platform_agent_runtime_enabled | bool
 
 - name: Read the Agent RCA Alertmanager routing resource

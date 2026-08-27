@@ -32,6 +32,9 @@ from .errors import InvalidTransition
 from .incident_work import (
     IncidentAnalysisWorkClaim,
     IncidentWorkClaim,
+    IncidentWorkQueueSnapshot,
+    IncidentWorkQueueStageSnapshot,
+    WORK_QUEUE_STAGES,
     WORK_OUTCOMES,
     validate_analysis_eligibility,
     validate_claim_request,
@@ -1955,6 +1958,102 @@ class PostgreSQLIncidentAnalysisWorkRepository:
         )
         if cursor.fetchone() is None:
             raise InvalidTransition("Incident analysis work claim is stale")
+
+
+class PostgreSQLIncidentWorkQueueTelemetryRepository:
+    """Read-only queue snapshot for Prometheus without exposing claim tokens."""
+
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self._connection_factory = connection_factory
+
+    def snapshot(
+        self,
+        *,
+        now: datetime,
+        analysis_eligibility_label: str,
+        analysis_activated_at: datetime,
+    ) -> IncidentWorkQueueSnapshot:
+        validate_analysis_eligibility(
+            analysis_eligibility_label,
+            analysis_activated_at,
+        )
+        if now.tzinfo is None:
+            raise ValueError("queue observation time must be timezone-aware")
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    WITH queue_rows AS (
+                        SELECT 'collection'::text AS stage, state,
+                               available_at, claimed_at
+                        FROM incident_work_items
+                        UNION ALL
+                        SELECT 'localization'::text AS stage, state,
+                               available_at, claimed_at
+                        FROM incident_localization_work_items
+                        UNION ALL
+                        SELECT 'analysis'::text AS stage, work.state,
+                               work.available_at, work.claimed_at
+                        FROM incident_analysis_work_items AS work
+                        JOIN incidents AS incident
+                          ON incident.incident_id = work.incident_id
+                        WHERE incident.created_at >= %s
+                          AND incident.document->'alert'->'labels'->>%s = 'true'
+                    )
+                    SELECT stage,
+                           COUNT(*) FILTER (WHERE state = 'READY') AS ready,
+                           COUNT(*) FILTER (WHERE state = 'RUNNING') AS running,
+                           COUNT(*) FILTER (WHERE state = 'SUCCEEDED') AS succeeded,
+                           COUNT(*) FILTER (WHERE state = 'FAILED') AS failed,
+                           GREATEST(0, COALESCE(EXTRACT(EPOCH FROM (
+                               %s::timestamptz - MIN(available_at) FILTER (
+                                   WHERE state = 'READY' AND available_at <= %s
+                               )
+                           )), 0)) AS oldest_ready_age_seconds,
+                           GREATEST(0, COALESCE(EXTRACT(EPOCH FROM (
+                               %s::timestamptz - MIN(claimed_at) FILTER (
+                                   WHERE state = 'RUNNING' AND claimed_at IS NOT NULL
+                               )
+                           )), 0)) AS oldest_running_age_seconds
+                    FROM queue_rows
+                    GROUP BY stage
+                    """,
+                    (
+                        analysis_activated_at,
+                        analysis_eligibility_label,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                observed = {
+                    row[0]: IncidentWorkQueueStageSnapshot(
+                        stage=row[0],
+                        ready=int(row[1]),
+                        running=int(row[2]),
+                        succeeded=int(row[3]),
+                        failed=int(row[4]),
+                        oldest_ready_age_seconds=float(row[5]),
+                        oldest_running_age_seconds=float(row[6]),
+                    )
+                    for row in cursor.fetchall()
+                }
+        stages = tuple(
+            observed.get(
+                stage,
+                IncidentWorkQueueStageSnapshot(
+                    stage=stage,
+                    ready=0,
+                    running=0,
+                    succeeded=0,
+                    failed=0,
+                    oldest_ready_age_seconds=0,
+                    oldest_running_age_seconds=0,
+                ),
+            )
+            for stage in WORK_QUEUE_STAGES
+        )
+        return IncidentWorkQueueSnapshot(observed_at=now, stages=stages)
 
 
 class PostgreSQLStateGraphObservationRepository:
