@@ -3,127 +3,15 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Two skins, both with full light and dark themes.
+ * Palantir Blueprint palette, in light and dark.
  *
- * `console` (default) is the original operations palette: near-neutral
- * surfaces, one accent, muted semantic hues.
- *
- * `blueprint` follows Palantir's Blueprint conventions: a blue-tinted gray
- * ramp rather than neutral gray, desaturated intent colours, and near-square
- * 2px corners.
- *
- * Only tokens change between skins. Component markup is identical, so
- * switching skins cannot alter layout or behaviour.
+ * Blueprint's ramp is blue-tinted rather than neutral gray, its intent colours
+ * are desaturated, and surfaces separate by hairline borders instead of shadow.
+ * Dark is the primary look; light is a full peer, not an afterthought.
  */
 
-/* ---------------------------------------------------------------- *
- * console — light (default)
- * ---------------------------------------------------------------- */
+/* Blueprint LightGray/Gray ramp */
 :root {
-  --background: #f6f7f9;
-  --foreground: #16191d;
-  --card: #ffffff;
-  --card-foreground: #16191d;
-  --popover: #ffffff;
-  --popover-foreground: #16191d;
-  --primary: #1f2937;
-  --primary-foreground: #f8fafc;
-  --secondary: #eceef1;
-  --secondary-foreground: #1f2937;
-  --muted: #eceef1;
-  --muted-foreground: #5b6472;
-  --accent: #e4e7eb;
-  --accent-foreground: #16191d;
-  --destructive: #b42318;
-  --destructive-foreground: #fef3f2;
-  --border: #d9dde2;
-  --input: #d9dde2;
-  --ring: #3b5f8a;
-  --surface-sunken: #eef0f3;
-
-  --status-critical: #b42318;
-  --status-critical-surface: #fdeceb;
-  --status-warning: #a15c07;
-  --status-warning-surface: #fdf3e4;
-  --status-info: #16638f;
-  --status-info-surface: #e7f2f8;
-  --status-success: #17663c;
-  --status-success-surface: #e6f4ec;
-  --status-running: #2c4d92;
-  --status-running-surface: #e9eefa;
-  --status-neutral: #4b5563;
-  --status-neutral-surface: #eceef1;
-
-  --stage-detection: #6b21a8;
-  --stage-collection: #16638f;
-  --stage-localization: #0f766e;
-  --stage-analysis: #a15c07;
-  --stage-report: #17663c;
-
-  --chrome: #1f2937;
-  --chrome-foreground: #cbd2da;
-  --chrome-border: #374151;
-  --chrome-active: #374151;
-
-  --rad-sm: 0.25rem;
-  --rad-md: 0.375rem;
-  --rad-lg: 0.5rem;
-}
-
-/* ---------------------------------------------------------------- *
- * console — dark
- * ---------------------------------------------------------------- */
-.dark {
-  --background: #0d1015;
-  --foreground: #e4e7eb;
-  --card: #14181f;
-  --card-foreground: #e4e7eb;
-  --popover: #171c24;
-  --popover-foreground: #e4e7eb;
-  --primary: #e4e7eb;
-  --primary-foreground: #14181f;
-  --secondary: #1e242d;
-  --secondary-foreground: #e4e7eb;
-  --muted: #1e242d;
-  --muted-foreground: #98a2b3;
-  --accent: #242b36;
-  --accent-foreground: #e4e7eb;
-  --destructive: #f27b72;
-  --destructive-foreground: #2a1210;
-  --border: #262d38;
-  --input: #262d38;
-  --ring: #7aa2d4;
-  --surface-sunken: #11151b;
-
-  --status-critical: #f27b72;
-  --status-critical-surface: #2b1512;
-  --status-warning: #e0a34a;
-  --status-warning-surface: #2a1f0e;
-  --status-info: #6fb6dd;
-  --status-info-surface: #10222c;
-  --status-success: #5fc08b;
-  --status-success-surface: #0f241a;
-  --status-running: #8fadea;
-  --status-running-surface: #151c2e;
-  --status-neutral: #98a2b3;
-  --status-neutral-surface: #1e242d;
-
-  --stage-detection: #c084fc;
-  --stage-collection: #6fb6dd;
-  --stage-localization: #5eccc0;
-  --stage-analysis: #e0a34a;
-  --stage-report: #5fc08b;
-
-  --chrome: #090c10;
-  --chrome-foreground: #c9ced6;
-  --chrome-border: #1f2530;
-  --chrome-active: #1e242d;
-}
-
-/* ---------------------------------------------------------------- *
- * blueprint — light. Blueprint's LightGray/Gray ramp.
- * ---------------------------------------------------------------- */
-[data-skin="blueprint"] {
   --background: #f6f7f9;
   --foreground: #1c2127;
   --card: #ffffff;
@@ -145,6 +33,12 @@
   --ring: #2d72d2;
   --surface-sunken: #edeff2;
 
+  /* Chrome is the rail and navbar: dark in both themes, as Foundry renders it. */
+  --chrome: #1c2127;
+  --chrome-foreground: #c5cbd3;
+  --chrome-border: #2f343c;
+  --chrome-active: #2f343c;
+
   --status-critical: #cd4246;
   --status-critical-surface: #fbe9e9;
   --status-warning: #c87619;
@@ -163,22 +57,10 @@
   --stage-localization: #00a396;
   --stage-analysis: #c87619;
   --stage-report: #238551;
-
-  --chrome: #1c2127;
-  --chrome-foreground: #c5cbd3;
-  --chrome-border: #2f343c;
-  --chrome-active: #2f343c;
-
-  /* Blueprint corners are nearly square, never pill-shaped panels. */
-  --rad-sm: 2px;
-  --rad-md: 2px;
-  --rad-lg: 3px;
 }
 
-/* ---------------------------------------------------------------- *
- * blueprint — dark. Blueprint's DarkGray ramp; the primary Palantir look.
- * ---------------------------------------------------------------- */
-[data-skin="blueprint"].dark {
+/* Blueprint DarkGray ramp */
+.dark {
   --background: #1c2127;
   --foreground: #e5e8eb;
   --card: #252a31;
@@ -200,6 +82,11 @@
   --ring: #4c90f0;
   --surface-sunken: #171b21;
 
+  --chrome: #111418;
+  --chrome-foreground: #c5cbd3;
+  --chrome-border: #2f343c;
+  --chrome-active: #252a31;
+
   --status-critical: #e76a6e;
   --status-critical-surface: #3a2427;
   --status-warning: #ec9a3c;
@@ -218,11 +105,6 @@
   --stage-localization: #7ae1d8;
   --stage-analysis: #fbb360;
   --stage-report: #72ca9b;
-
-  --chrome: #111418;
-  --chrome-foreground: #c5cbd3;
-  --chrome-border: #2f343c;
-  --chrome-active: #252a31;
 }
 
 @theme inline {
@@ -270,12 +152,12 @@
   --color-stage-analysis: var(--stage-analysis);
   --color-stage-report: var(--stage-report);
 
-  /* Indirected through --rad-* so a skin can restyle corners at runtime. */
-  --radius: var(--rad-sm);
-  --radius-sm: var(--rad-sm);
-  --radius-md: var(--rad-md);
-  --radius-lg: var(--rad-lg);
-  --radius-xl: var(--rad-lg);
+  /* Blueprint corners are nearly square, never pill-shaped panels. */
+  --radius: 2px;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 3px;
+  --radius-xl: 3px;
 
   --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
@@ -287,10 +169,10 @@
   }
 
   /*
-   * Tailwind spacing and type are rem-based, so the root size is a single
-   * density lever. Blueprint runs tighter than the default console skin.
+   * Tailwind spacing and type are rem-based, so the root size sets overall
+   * density. Blueprint runs tighter than a browser default.
    */
-  html[data-skin="blueprint"] {
+  html {
     font-size: 14px;
   }
 

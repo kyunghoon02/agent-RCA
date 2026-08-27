@@ -30,6 +30,8 @@
     "started_at": {"type": "string", "format": "date-time"},
     "completed_at": {"type": "string", "format": "date-time"},
     "budget": {"$ref": "#/$defs/budget"},
+    "candidate_evidence_ids": {"$ref": "#/$defs/candidateEvidenceIds"},
+    "input_projection": {"$ref": "#/$defs/inputProjection"},
     "usage": {"$ref": "#/$defs/usage"},
     "tool_events": {
       "type": "array", "maxItems": 32,
@@ -50,6 +52,10 @@
       "type": "array", "uniqueItems": true, "maxItems": 20,
       "items": {"type": "string", "pattern": "^ref-[a-z0-9][a-z0-9-]{7,63}$"}
     },
+    "candidateEvidenceIds": {
+      "type": "array", "uniqueItems": true, "minItems": 1, "maxItems": 12,
+      "items": {"type": "string", "pattern": "^ev-[a-z0-9][a-z0-9-]{7,63}$"}
+    },
     "budget": {
       "type": "object", "additionalProperties": false,
       "required": ["max_turns", "max_llm_calls", "max_tool_calls", "max_output_tokens", "max_wall_time_ms"],
@@ -57,8 +63,23 @@
         "max_turns": {"type": "integer", "minimum": 1, "maximum": 20},
         "max_llm_calls": {"type": "integer", "minimum": 1, "maximum": 20},
         "max_tool_calls": {"type": "integer", "minimum": 1, "maximum": 32},
+        "max_evidence_candidates": {"type": "integer", "minimum": 2, "maximum": 12},
         "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 8000},
         "max_wall_time_ms": {"type": "integer", "minimum": 1, "maximum": 180000}
+      }
+    },
+    "inputProjection": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "total_context_evidence", "candidate_evidence", "total_state_paths",
+        "included_state_paths", "serialized_bytes"
+      ],
+      "properties": {
+        "total_context_evidence": {"type": "integer", "minimum": 1},
+        "candidate_evidence": {"type": "integer", "minimum": 1, "maximum": 12},
+        "total_state_paths": {"type": "integer", "minimum": 0},
+        "included_state_paths": {"type": "integer", "minimum": 0, "maximum": 12},
+        "serialized_bytes": {"type": "integer", "minimum": 1}
       }
     },
     "usage": {

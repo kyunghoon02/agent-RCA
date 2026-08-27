@@ -18,6 +18,14 @@ const nextConfig = {
    * overlay, so turning it off costs nothing and keeps the rail clickable.
    */
   devIndicators: false,
+  /*
+   * Build output directory.
+   *
+   * `next dev` and `next build` share `.next`, so building while a dev server
+   * is serving corrupts it. Overriding this lets a build run alongside a
+   * running dev server instead of taking it down.
+   */
+  distDir: process.env.NEXT_DIST_DIR || ".next",
 };
 
 export default nextConfig;

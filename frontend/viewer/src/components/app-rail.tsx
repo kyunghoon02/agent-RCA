@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Siren, ShieldCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { SkinToggle } from "@/components/skin-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
@@ -77,8 +76,7 @@ export function AppRail() {
         );
       })}
 
-      <div className="mt-auto flex flex-col items-center gap-0.5">
-        <SkinToggle className="text-chrome-foreground hover:bg-chrome-active hover:text-chrome-foreground" />
+      <div className="mt-auto">
         <ThemeToggle className="text-chrome-foreground hover:bg-chrome-active hover:text-chrome-foreground" />
       </div>
     </nav>

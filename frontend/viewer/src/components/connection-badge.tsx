@@ -8,10 +8,10 @@ const PRESENTATION: Record<
   ConnectionState,
   { label: string; tone: "success" | "critical" | "warning" | "neutral"; spin?: boolean }
 > = {
-  live: { label: "Live", tone: "success" },
-  disconnected: { label: "Disconnected", tone: "critical" },
+  live: { label: "API Live", tone: "success" },
+  disconnected: { label: "API Disconnected", tone: "critical" },
   demo: { label: "Demo Data", tone: "warning" },
-  connecting: { label: "Connecting", tone: "neutral", spin: true },
+  connecting: { label: "API Connecting", tone: "neutral", spin: true },
 };
 
 const ICONS = {
@@ -21,7 +21,13 @@ const ICONS = {
   connecting: Loader,
 } as const;
 
-/** Names the data source in the header so a demo is never read as a live cluster. */
+/**
+ * Reachability of the Viewer query API — and nothing else.
+ *
+ * This must never be read as "the Agent runtime is up". Agent availability is
+ * a property of the analysis work queue and is reported on the Incident detail
+ * page, not here.
+ */
 export function ConnectionBadge() {
   const { connection } = useViewerStatus();
   const presentation = PRESENTATION[connection];

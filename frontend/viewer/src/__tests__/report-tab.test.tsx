@@ -42,10 +42,11 @@ describe("Agent-disabled empty state", () => {
     const { detail, work } = await load("inc-cartservice-0002");
     renderReport(detail, work);
 
+    // Copy is now the shared diagnosis wording, which names the queue state
+    // rather than asserting anything about a runtime being "disabled".
+    expect(screen.getByText("Waiting for Agent runtime")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Agent runtime is disabled. Frozen Context is ready for analysis.",
-      ),
+      screen.getByText(/no Agent runtime has claimed this analysis work/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/ctx-cart-0002/)).toBeInTheDocument();
     expect(screen.getByText(/This is a waiting state, not a failure/)).toBeInTheDocument();
@@ -73,7 +74,7 @@ describe("ABSTAIN report", () => {
     const { detail, work } = await load("inc-frontend-0003");
     renderReport(detail, work);
 
-    expect(screen.getByText("ABSTAIN")).toBeInTheDocument();
+    expect(screen.getAllByText("ABSTAIN").length).toBeGreaterThan(0);
     expect(screen.getByText("The Agent abstained")).toBeInTheDocument();
     expect(
       screen.getByText(/This is the intended outcome of the Evidence gate, not an error/),
@@ -132,7 +133,8 @@ describe("Conclusive report", () => {
     const { detail, work } = await load("inc-checkout-0001");
     renderReport(detail, work);
 
-    expect(screen.getByText("CONCLUSIVE")).toBeInTheDocument();
+    // Rendered twice by design: the outcome badge and the pipeline-vs-outcome line.
+    expect(screen.getAllByText("PROVEN").length).toBeGreaterThan(0);
     expect(screen.getByText(/Deployment revision 8 added an envFrom reference/)).toBeInTheDocument();
     expect(screen.getByText("gpt-4.1-mini")).toBeInTheDocument();
     expect(screen.getByText("arun-checkout-0001")).toBeInTheDocument();

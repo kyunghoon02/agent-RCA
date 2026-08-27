@@ -11,18 +11,21 @@ import {
   Loader,
   Locate,
   MinusCircle,
+  PauseCircle,
   ScanSearch,
+  ShieldQuestion,
+  Split,
   TimerOff,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { OUTCOME_LABELS, type RcaOutcome } from "@/lib/diagnosis";
 import type {
   AgentRunStatus,
   CollectorStatusValue,
   IncidentStatus,
-  ReportStatus,
   Severity,
   WorkState,
 } from "@/lib/types";
@@ -168,65 +171,86 @@ export function AgentRunStatusBadge({
 }
 
 /**
- * Conclusion label shown for an RCA Report.
+ * RCA outcome badge.
  *
- * An inconclusive report with no named root cause is an ABSTAIN: the Agent
- * declined to conclude because the Evidence did not support one. That is a
- * correct safety outcome, so it is styled as a neutral state and never as a
+ * Outcome is not pipeline status. `NOT_AVAILABLE` is the honest default and
+ * renders as a plain, non-alarming state: no Report exists yet, which is not a
  * failure.
  */
-export function conclusionLabel(
-  status: ReportStatus,
-  hasRootCause: boolean,
-): { label: string; tone: Tone; icon: LucideIcon; description: string } {
-  if (status === "inconclusive" && !hasRootCause) {
-    return {
-      label: "ABSTAIN",
-      tone: "info",
-      icon: MinusCircle,
-      description:
-        "The Agent declined to name a root cause because the available Evidence did not support one.",
-    };
-  }
-  if (status === "conclusive") {
-    return {
-      label: "CONCLUSIVE",
-      tone: "success",
-      icon: CheckCircle2,
-      description: "A root cause is named and supported by cited Evidence.",
-    };
-  }
-  if (status === "partial") {
-    return {
-      label: "PARTIAL",
-      tone: "warning",
-      icon: CircleDashed,
-      description:
-        "A root cause is named, but at least one competing hypothesis could not be resolved.",
-    };
-  }
-  return {
-    label: "INCONCLUSIVE",
-    tone: "info",
+const OUTCOME_PRESENTATION: Record<
+  RcaOutcome,
+  { tone: Tone; icon: LucideIcon; hint: string }
+> = {
+  NOT_AVAILABLE: {
+    tone: "outline",
     icon: MinusCircle,
-    description: "No conclusion was reached from the frozen Context.",
-  };
-}
+    hint: "No RCA Report has been stored for this Incident.",
+  },
+  PROVEN: {
+    tone: "success",
+    icon: CheckCircle2,
+    hint: "A root cause was recorded and supported by cited Evidence.",
+  },
+  PARTIAL: {
+    tone: "warning",
+    icon: CircleDashed,
+    // A PARTIAL Report is legal with or without an accepted root cause, so this
+    // must not assert that one was recorded. The Diagnosis panel carries the
+    // precise wording once the Report is known.
+    hint: "The investigation produced partial findings; an accepted root cause may still be unresolved.",
+  },
+  ABSTAIN: {
+    tone: "info",
+    icon: ShieldQuestion,
+    hint: "The Agent declined to name a root cause on the available Evidence.",
+  },
+  AMBIGUOUS: {
+    tone: "warning",
+    icon: Split,
+    hint: "Candidates were recorded but none was settled on.",
+  },
+};
 
-export function ConclusionBadge({
-  status,
-  hasRootCause,
+export function RcaOutcomeBadge({
+  outcome,
   className,
 }: {
-  status: ReportStatus;
-  hasRootCause: boolean;
+  outcome: RcaOutcome;
   className?: string;
 }) {
-  const { label, tone, icon: Icon } = conclusionLabel(status, hasRootCause);
+  const presentation = OUTCOME_PRESENTATION[outcome];
+  const Icon = presentation.icon;
   return (
-    <Badge tone={tone} className={cn("text-xs", className)}>
+    <Badge tone={presentation.tone} className={className} title={presentation.hint}>
       <Icon aria-hidden="true" />
-      {label}
+      {OUTCOME_LABELS[outcome]}
+    </Badge>
+  );
+}
+
+/**
+ * Whether anything has claimed the analysis queue.
+ *
+ * Deliberately worded as an observation about the work item, not a claim about
+ * cluster state: the Viewer cannot see Agent runtimes, only whether the queue
+ * was drained.
+ */
+export function AgentRuntimeBadge({
+  awaiting,
+  className,
+}: {
+  awaiting: boolean;
+  className?: string;
+}) {
+  if (!awaiting) return null;
+  return (
+    <Badge
+      tone="info"
+      className={className}
+      title="The analysis work item is READY and has never been claimed."
+    >
+      <PauseCircle aria-hidden="true" />
+      No Agent runtime has claimed this
     </Badge>
   );
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -71,6 +72,55 @@ def add_incident(
 
 
 class IncidentViewerQueryServiceTests(unittest.TestCase):
+    def test_evidence_observed_events_expose_collected_at_and_no_fenced_values(
+        self,
+    ) -> None:
+        """occurred_at is observation time; collected_at identifies the pass.
+
+        The Timeline is sorted by occurred_at, which for Evidence is
+        ``observed_at`` -- the instant the signal describes. That routinely
+        precedes the Incident, so position in the sorted Timeline cannot
+        identify which collection pass produced an item. ``collected_at`` is the
+        stored Provider run time and is exposed for that purpose.
+        """
+        repository, incident_id, _ = prepared_repository()
+
+        detail = IncidentViewerQueryService(repository).get_incident_detail(
+            incident_id
+        )
+
+        observed = [
+            item
+            for item in detail["timeline"]
+            if item["event_type"] == "EVIDENCE_OBSERVED"
+        ]
+        self.assertTrue(observed)
+
+        evidence_by_id = {
+            item["evidence_id"]: item for item in detail["evidence"]
+        }
+        for event in observed:
+            evidence_id = event["evidence_ids"][0]
+            evidence = evidence_by_id[evidence_id]
+            # Exposed verbatim from storage, never recomputed.
+            self.assertEqual(
+                event["details"]["collected_at"],
+                evidence["provenance"]["collected_at"],
+            )
+            # occurred_at stays observation time.
+            self.assertEqual(event["occurred_at"], evidence["observed_at"])
+
+        # Fenced-write and credential values must never reach the Viewer.
+        serialized = json.dumps(detail)
+        for forbidden in (
+            "claim_token",
+            "lease_token",
+            "password",
+            "secret",
+            "token",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
     def test_detail_exposes_evidence_provenance_reports_budget_and_timeline(self) -> None:
         repository, incident_id, context_id = prepared_repository()
         AgentRCAService(

@@ -127,7 +127,14 @@ export function buildTimeline(record: FixtureRecord): TimelineEvent[] {
       stage: "COLLECTION",
       event_type: "EVIDENCE_OBSERVED",
       evidence_ids: [item.evidence_id],
-      details: { source: item.source, kind: item.kind, subject: { ...item.subject } },
+      details: {
+        source: item.source,
+        kind: item.kind,
+        // Mirrors IncidentViewerQueryService: occurred_at is observation time,
+        // collected_at identifies the Provider run that produced the item.
+        collected_at: item.provenance.collected_at,
+        subject: { ...item.subject },
+      },
     });
   }
   for (const context of record.contexts) {

@@ -1,6 +1,7 @@
 """Cloud-neutral core for the Incident Response and Agent RCA Platform."""
 
 from .agent_rca import (
+    AgentInvestigationView,
     AgentInvocation,
     AgentModelRun,
     AgentRCADraft,
@@ -8,6 +9,7 @@ from .agent_rca import (
     AgentRCAService,
     AgentRCAServiceRun,
     AgentToolRuntime,
+    EvidenceCandidateSelector,
     EvidenceGate,
     OpenAIAgentsSDKRunner,
 )
@@ -169,6 +171,7 @@ from .vector_knowledge import (
 )
 
 __all__ = [
+    "AgentInvestigationView",
     "AgentInvocation",
     "AgentModelRun",
     "AgentRCADraft",
@@ -197,6 +200,7 @@ __all__ = [
     "DeploymentChangeEvidenceProjector",
     "DeploymentHistoryProvider",
     "EvidenceBuilder",
+    "EvidenceCandidateSelector",
     "EvidenceGate",
     "EvidenceBackedKRCADrilldownService",
     "EvidenceDraft",

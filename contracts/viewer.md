@@ -44,7 +44,14 @@ IncidentRepository/PostgreSQL
 
 각 상한을 넘으면 조용히 완전한 결과처럼 보이지 않도록 `truncated` flag를 반환한다.
 timeline은 detection/lifecycle audit, Evidence 관측, Context freeze, Agent completion과
-Report generation을 시간순으로 합친다. Evidence 원문 source로 추가 조회하거나 raw Secret,
+Report generation을 시간순으로 합친다.
+
+`EVIDENCE_OBSERVED` event의 `occurred_at`은 Evidence `observed_at`이며 signal이 나타내는
+시각이다. 수집 실행 시각이 아니므로 Incident 생성보다 앞설 수 있다. 같은 event의
+`details.collected_at`은 저장된 `provenance.collected_at`을 그대로 노출하며 Provider
+수집 pass를 식별한다. 두 값 모두 이미 저장된 non-secret 값이고 `claim_token`이나 lease
+값은 노출하지 않는다. 이 field가 없는 과거 payload는 pass를 알 수 없는 것으로 취급하며
+retry가 분리되었다고 표시하지 않는다. Evidence 원문 source로 추가 조회하거나 raw Secret,
 Agent prompt/reasoning trace 또는 Ground Truth를 반환하지 않는다.
 
 ## Work 상태

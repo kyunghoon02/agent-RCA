@@ -123,6 +123,7 @@ incident_platform:
     max_turns: 6
     max_llm_calls: 6
     max_tool_calls: 12
+    max_evidence_candidates: 8
     max_output_tokens: 2000
     max_wall_time_ms: 60000
 

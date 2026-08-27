@@ -33,6 +33,7 @@ from .incident_work import (
     IncidentAnalysisWorkClaim,
     IncidentWorkClaim,
     WORK_OUTCOMES,
+    validate_incident_id,
     validate_claim_request,
 )
 from .repository import (
@@ -1529,13 +1530,52 @@ class PostgreSQLIncidentAnalysisWorkRepository:
         lease_duration: timedelta,
         max_attempts: int,
     ) -> Optional[IncidentAnalysisWorkClaim]:
+        return self._claim(
+            worker_id=worker_id,
+            now=now,
+            lease_duration=lease_duration,
+            max_attempts=max_attempts,
+            incident_id=None,
+        )
+
+    def claim_incident(
+        self,
+        incident_id: str,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        validate_incident_id(incident_id)
+        return self._claim(
+            worker_id=worker_id,
+            now=now,
+            lease_duration=lease_duration,
+            max_attempts=max_attempts,
+            incident_id=incident_id,
+        )
+
+    def _claim(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+        incident_id: Optional[str],
+    ) -> Optional[IncidentAnalysisWorkClaim]:
         validate_claim_request(worker_id, now, lease_duration, max_attempts)
         claim_token = f"claim-{uuid.uuid4().hex}"
         lease_expires_at = now + lease_duration
+        target_clause = "" if incident_id is None else "AND work.incident_id = %s"
+        parameters: List[Any] = [now, now, max_attempts]
+        if incident_id is not None:
+            parameters.append(incident_id)
         with _connection(self._connection_factory) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """
+                    f"""
                     SELECT work.incident_id, work.context_id, work.state,
                            work.attempt_count, incident.document
                     FROM incident_analysis_work_items AS work
@@ -1549,11 +1589,12 @@ class PostgreSQLIncidentAnalysisWorkRepository:
                             AND work.lease_expires_at <= %s
                             AND work.attempt_count < %s)
                       )
+                      {target_clause}
                     ORDER BY work.available_at, work.incident_id
                     FOR UPDATE OF work, incident SKIP LOCKED
                     LIMIT 1
                     """,
-                    (now, now, max_attempts),
+                    parameters,
                 )
                 row = cursor.fetchone()
                 if row is None:

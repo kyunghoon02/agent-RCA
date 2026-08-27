@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatRatio, formatTimestamp } from "@/lib/format";
+import { summariseTopology, type TopologySummary } from "@/lib/topology";
 import { entityKind, entityNamespace } from "@/lib/lifecycle";
 import {
   isGraphEntityRef,
@@ -96,6 +97,7 @@ function ContextPanel({
     .map((item) => item.evidence_id)
     .filter((id) => !context.evidence_ids.includes(id));
   const scope = context.scope;
+  const topology = React.useMemo(() => summariseTopology(context), [context]);
 
   return (
     <Card>
@@ -175,22 +177,19 @@ function ContextPanel({
 
         <section>
           <SectionTitle icon={GitBranch}>
-            StateGraph paths ({context.state_paths.length})
+            Topology ({context.state_paths.length} StateGraph path
+            {context.state_paths.length === 1 ? "" : "s"})
           </SectionTitle>
           {context.state_paths.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               No StateGraph path was attached to this Context.
             </p>
           ) : (
-            <div className="flex flex-col gap-2">
-              {context.state_paths.map((path) => (
-                <StatePathRow
-                  key={path.path_id}
-                  path={path}
-                  onFocusEvidence={onFocusEvidence}
-                />
-              ))}
-            </div>
+            <TopologyView
+              topology={topology}
+              paths={context.state_paths}
+              onFocusEvidence={onFocusEvidence}
+            />
           )}
         </section>
 
@@ -450,6 +449,124 @@ function Row({ term, value }: { term: string; value: string }) {
     <div className="flex items-baseline gap-2">
       <dt className="min-w-28 shrink-0 text-muted-foreground">{term}</dt>
       <dd className="break-all font-mono">{value}</dd>
+    </div>
+  );
+}
+
+
+/**
+ * Compact topology before the raw paths.
+ *
+ * A live Context routinely carries 20+ paths that differ only in their tail, so
+ * the raw list reads as noise. Distinct entity-type shapes are shown once with
+ * a count, and the complete paths stay one click away — progressive disclosure,
+ * not removal.
+ */
+function TopologyView({
+  topology,
+  paths,
+  onFocusEvidence,
+}: {
+  topology: TopologySummary;
+  paths: StatePath[];
+  onFocusEvidence: (evidenceId: string) => void;
+}) {
+  const [showAll, setShowAll] = React.useState(false);
+  const listId = React.useId();
+
+  return (
+    <div className="flex flex-col gap-2">
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded border border-border bg-surface-sunken px-3 py-2 text-xs sm:grid-cols-4">
+        <Metric term="Entities" value={String(topology.entityCount)} />
+        <Metric term="Paths" value={String(topology.pathCount)} />
+        <Metric term="Evidence" value={String(topology.evidenceCount)} />
+        <Metric term="Recent change" value={String(topology.recentChangeCount)} />
+        <Metric term="Namespaces" value={topology.namespaces.join(", ") || "—"} />
+        <Metric term="Strategy" value={topology.strategy} />
+        <Metric term="Completeness" value={formatRatio(topology.completeness)} />
+        <Metric
+          term="Missing Evidence"
+          value={String(topology.missingEvidenceCount)}
+          tone={topology.missingEvidenceCount > 0 ? "warning" : undefined}
+        />
+      </dl>
+
+      <ul className="flex flex-col gap-1">
+        {topology.shapes.map((shape) => (
+          <li
+            key={`${shape.types.join(">")}|${shape.relations.join(">")}`}
+            className="scroll-x flex items-center gap-1.5 rounded border border-border px-2.5 py-1.5"
+          >
+            <span className="tabular shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold">
+              ×{shape.count}
+            </span>
+            {shape.types.map((type, index) => (
+              <React.Fragment key={`${type}-${index}`}>
+                {index > 0 && (
+                  <span className="flex shrink-0 items-center gap-1">
+                    <span className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                      {shape.relations[index - 1]}
+                    </span>
+                    <ArrowRight className="size-3 text-muted-foreground" aria-hidden="true" />
+                  </span>
+                )}
+                <span className="shrink-0 rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">
+                  {type}
+                </span>
+              </React.Fragment>
+            ))}
+            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+              {shape.uniqueEvidenceCount} unique Evidence
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      <div>
+        <Button
+          variant="outline"
+          size="xs"
+          aria-expanded={showAll}
+          aria-controls={listId}
+          onClick={() => setShowAll((current) => !current)}
+        >
+          {showAll ? "Hide StateGraph paths" : `Show all ${paths.length} StateGraph paths`}
+        </Button>
+      </div>
+
+      {showAll && (
+        <div id={listId} className="flex flex-col gap-2">
+          {paths.map((path) => (
+            <StatePathRow key={path.path_id} path={path} onFocusEvidence={onFocusEvidence} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Metric({
+  term,
+  value,
+  tone,
+}: {
+  term: string;
+  value: string;
+  tone?: "warning";
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {term}
+      </dt>
+      <dd
+        className={cn(
+          "truncate font-mono text-xs",
+          tone === "warning" && "text-status-warning",
+        )}
+      >
+        {value}
+      </dd>
     </div>
   );
 }

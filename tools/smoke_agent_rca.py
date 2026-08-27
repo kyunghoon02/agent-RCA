@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from openai import APIStatusError
 
 from incident_platform.agent_rca import AgentRCAService, OpenAIAgentsSDKRunner
+from incident_platform.errors import ContractViolation
 from incident_platform.knowledge import BoundedKnowledgeRetriever
 from tests.test_agent_rca import StaticKnowledgeRepository, prepared_repository
 
@@ -53,6 +54,18 @@ def main() -> int:
             )
         )
         return 2
+    except ContractViolation:
+        print(
+            json.dumps(
+                {
+                    "status": "GATE_REJECTED",
+                    "error_type": "ContractViolation",
+                    "error_code": "EVIDENCE_GATE_REJECTED",
+                },
+                sort_keys=True,
+            )
+        )
+        return 3
     print(
         json.dumps(
             {

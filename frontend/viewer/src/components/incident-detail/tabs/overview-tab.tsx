@@ -11,8 +11,9 @@ import type { LucideIcon } from "lucide-react";
 import { CollectorStatusBadge } from "@/components/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { collectorRows, describeCollector } from "@/lib/collectors";
+import { cn } from "@/lib/utils";
 import { formatTimestamp } from "@/lib/format";
-import type { IncidentDetail } from "@/lib/types";
+import type { CollectorStatus, IncidentDetail } from "@/lib/types";
 
 function CountCard({
   icon: Icon,
@@ -66,58 +67,7 @@ export function OverviewTab({ detail }: { detail: IncidentDetail }) {
         />
       </div>
 
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle>Provider collection results</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Every Provider the Viewer knows about. Providers this Incident never ran are
-            listed as not configured rather than hidden.
-          </p>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <ul className="divide-y divide-border">
-            {rows.map(({ collector, status }) => {
-              const descriptor = describeCollector(collector);
-              return (
-                <li
-                  key={collector}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 first:pt-0"
-                >
-                  <div className="min-w-56 flex-1">
-                    <p className="text-sm font-medium">{descriptor.label}</p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {descriptor.description}
-                    </p>
-                  </div>
-
-                  {status ? (
-                    <>
-                      <CollectorStatusBadge status={status.status} />
-                      <span className="tabular text-[11px] text-muted-foreground">
-                        {status.attempts} attempt{status.attempts === 1 ? "" : "s"}
-                      </span>
-                      <span className="tabular min-w-44 text-[11px] text-muted-foreground">
-                        {status.started_at ? formatTimestamp(status.started_at) : "not started"}
-                        {status.ended_at ? ` → ${formatTimestamp(status.ended_at).slice(11)}` : ""}
-                      </span>
-                      {status.error && (
-                        <span className="font-mono text-[11px] text-status-critical">
-                          {status.error}
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                      <MinusCircle className="size-3" aria-hidden="true" />
-                      not configured for this Incident
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </CardContent>
-      </Card>
+      <ProviderResults rows={rows} />
 
       <Card>
         <CardHeader className="pb-2">
@@ -188,5 +138,127 @@ function LabelledMap({
         </dl>
       )}
     </div>
+  );
+}
+
+
+type ProviderBucket = "succeeded" | "partial" | "failed" | "unconfigured";
+
+const BUCKET_META: Record<
+  ProviderBucket,
+  { label: string; tone: string; surface: string }
+> = {
+  succeeded: {
+    label: "Succeeded",
+    tone: "text-status-success",
+    surface: "border-status-success/40",
+  },
+  partial: {
+    label: "Partial",
+    tone: "text-status-warning",
+    surface: "border-status-warning/40",
+  },
+  failed: {
+    label: "Failed",
+    tone: "text-status-critical",
+    surface: "border-status-critical/40",
+  },
+  unconfigured: {
+    label: "Not configured",
+    tone: "text-muted-foreground",
+    surface: "border-border",
+  },
+};
+
+function bucketFor(status: CollectorStatus | null): ProviderBucket {
+  if (!status) return "unconfigured";
+  if (status.status === "SUCCEEDED") return "succeeded";
+  if (status.status === "PARTIAL") return "partial";
+  if (status.status === "SKIPPED" || status.status === "PENDING") return "unconfigured";
+  if (status.status === "RUNNING") return "partial";
+  return "failed";
+}
+
+/**
+ * Providers grouped by outcome.
+ *
+ * "Not configured" deliberately renders as a muted one-line summary rather than
+ * a full row per Provider: a Provider that was never wired up is not a failure
+ * and must not compete for attention with one that broke.
+ */
+function ProviderResults({
+  rows,
+}: {
+  rows: { collector: string; status: CollectorStatus | null }[];
+}) {
+  const buckets: Record<ProviderBucket, typeof rows> = {
+    succeeded: [],
+    partial: [],
+    failed: [],
+    unconfigured: [],
+  };
+  for (const row of rows) buckets[bucketFor(row.status)].push(row);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle>Provider results</CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Grouped by outcome. Providers this Incident never ran are listed as not
+          configured rather than hidden.
+        </p>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2 pt-0">
+        {(["failed", "partial", "succeeded"] as ProviderBucket[]).map((bucket) => {
+          const entries = buckets[bucket];
+          if (entries.length === 0) return null;
+          const meta = BUCKET_META[bucket];
+          return (
+            <section key={bucket} className={cn("rounded border px-2.5 py-2", meta.surface)}>
+              <h3
+                className={cn(
+                  "text-[10px] font-semibold uppercase tracking-wider",
+                  meta.tone,
+                )}
+              >
+                {meta.label} ({entries.length})
+              </h3>
+              <ul className="mt-1 flex flex-col gap-1">
+                {entries.map(({ collector, status }) => {
+                  const descriptor = describeCollector(collector);
+                  return (
+                    <li key={collector} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="min-w-40 text-xs font-medium">{descriptor.label}</span>
+                      {status && <CollectorStatusBadge status={status.status} />}
+                      {status && (
+                        <span className="tabular text-[10px] text-muted-foreground">
+                          {status.attempts} attempt{status.attempts === 1 ? "" : "s"}
+                          {status.ended_at ? ` · ${formatTimestamp(status.ended_at)}` : ""}
+                        </span>
+                      )}
+                      {status?.error && (
+                        <span className="font-mono text-[10px] text-status-critical">
+                          {status.error}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          );
+        })}
+
+        {buckets.unconfigured.length > 0 && (
+          <p className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+            <MinusCircle className="size-3 shrink-0" aria-hidden="true" />
+            <span className="font-medium">Not configured:</span>
+            {buckets.unconfigured
+              .map(({ collector }) => describeCollector(collector).label)
+              .join(", ")}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

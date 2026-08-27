@@ -98,6 +98,16 @@
     {
       "if": {"properties": {"decision": {"const": "INCONCLUSIVE"}}},
       "then": {"properties": {"root_cause": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"root_cause": {"type": "null"}}},
+      "then": {
+        "properties": {
+          "remediation": {
+            "properties": {"suggestions": {"maxItems": 0}}
+          }
+        }
+      }
     }
   ]
 }

@@ -15,6 +15,7 @@ from .repository import IncidentRepository
 
 
 _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_INCIDENT_ID = re.compile(r"^inc-[a-z0-9][a-z0-9-]{7,63}$")
 WORK_OUTCOMES = frozenset({"SUCCEEDED", "PARTIAL", "FAILED"})
 
 
@@ -32,6 +33,13 @@ def validate_claim_request(
         raise ValueError("lease duration must be between 10 seconds and 30 minutes")
     if not 1 <= max_attempts <= 10:
         raise ValueError("max_attempts must be between 1 and 10")
+
+
+def validate_incident_id(incident_id: str) -> None:
+    """Validate the shared Incident contract identity before targeted claims."""
+
+    if not _INCIDENT_ID.fullmatch(incident_id):
+        raise ValueError("incident_id is invalid")
 
 
 @dataclass(frozen=True)
@@ -140,6 +148,19 @@ class IncidentAnalysisWorkRepository(Protocol):
         lease_duration: timedelta,
         max_attempts: int,
     ) -> Optional[IncidentAnalysisWorkClaim]:
+        ...
+
+    def claim_incident(
+        self,
+        incident_id: str,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        """Claim only the requested Incident, without falling back to another."""
+
         ...
 
     def renew(
@@ -616,37 +637,82 @@ class InMemoryIncidentAnalysisWorkRepository:
                 self._items.items(),
                 key=lambda pair: (pair[1]["available_at"], pair[0]),
             ):
-                ready = item["state"] == "READY" and item["available_at"] <= now
-                expired = (
-                    item["state"] == "RUNNING"
-                    and item["lease_expires_at"] <= now
-                    and item["attempt_count"] < max_attempts
-                )
-                if not ready and not expired:
-                    continue
-                incident = self._incidents.get(incident_id)
-                if incident["status"] != "ANALYZING":
-                    continue
-                token = f"claim-{uuid.uuid4().hex}"
-                item.update(
-                    {
-                        "state": "RUNNING",
-                        "claim_token": token,
-                        "worker_id": worker_id,
-                        "lease_expires_at": now + lease_duration,
-                        "attempt_count": item["attempt_count"] + 1,
-                    }
-                )
-                return IncidentAnalysisWorkClaim(
-                    incident_id=incident_id,
-                    context_id=item["context_id"],
-                    claim_token=token,
+                claim = self._claim_available(
+                    incident_id,
+                    item,
                     worker_id=worker_id,
-                    lease_expires_at=item["lease_expires_at"],
-                    attempt_count=item["attempt_count"],
-                    incident=copy.deepcopy(incident),
+                    now=now,
+                    lease_duration=lease_duration,
+                    max_attempts=max_attempts,
                 )
+                if claim is not None:
+                    return claim
         return None
+
+    def claim_incident(
+        self,
+        incident_id: str,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        validate_incident_id(incident_id)
+        validate_claim_request(worker_id, now, lease_duration, max_attempts)
+        with self._lock:
+            item = self._items.get(incident_id)
+            if item is None:
+                return None
+            return self._claim_available(
+                incident_id,
+                item,
+                worker_id=worker_id,
+                now=now,
+                lease_duration=lease_duration,
+                max_attempts=max_attempts,
+            )
+
+    def _claim_available(
+        self,
+        incident_id: str,
+        item: Dict[str, Any],
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        max_attempts: int,
+    ) -> Optional[IncidentAnalysisWorkClaim]:
+        ready = item["state"] == "READY" and item["available_at"] <= now
+        expired = (
+            item["state"] == "RUNNING"
+            and item["lease_expires_at"] <= now
+            and item["attempt_count"] < max_attempts
+        )
+        if not ready and not expired:
+            return None
+        incident = self._incidents.get(incident_id)
+        if incident["status"] != "ANALYZING":
+            return None
+        token = f"claim-{uuid.uuid4().hex}"
+        item.update(
+            {
+                "state": "RUNNING",
+                "claim_token": token,
+                "worker_id": worker_id,
+                "lease_expires_at": now + lease_duration,
+                "attempt_count": item["attempt_count"] + 1,
+            }
+        )
+        return IncidentAnalysisWorkClaim(
+            incident_id=incident_id,
+            context_id=item["context_id"],
+            claim_token=token,
+            worker_id=worker_id,
+            lease_expires_at=item["lease_expires_at"],
+            attempt_count=item["attempt_count"],
+            incident=copy.deepcopy(incident),
+        )
 
     def renew(
         self,

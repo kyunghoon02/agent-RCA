@@ -418,6 +418,11 @@
         | selectattr('name', 'equalto', 'AGENT_RCA_MODEL')
         | map(attribute='value') | first)
         == 'gpt-5.6-luna'
+      - >-
+        ((incident_platform_agent_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'AGENT_RCA_MAX_EVIDENCE_CANDIDATES')
+        | map(attribute='value') | first)
+        == '8'
     fail_msg: The Agent worker identity, image, credential, or model boundary drifted.
   when: incident_platform_agent_runtime_enabled | bool
 

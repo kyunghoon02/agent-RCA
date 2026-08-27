@@ -15,7 +15,7 @@ import {
 import { EmptyState } from "@/components/empty-state";
 import { EntityRefLabel } from "@/components/entity-ref";
 import { Notice } from "@/components/notices";
-import { AgentRunStatusBadge, ConclusionBadge, conclusionLabel } from "@/components/status";
+import { AgentRunStatusBadge, RcaOutcomeBadge } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMillis, formatRatio, formatTimestamp } from "@/lib/format";
@@ -26,6 +26,7 @@ import type {
   RcaHypothesis,
   ReportBundle,
 } from "@/lib/types";
+import { deriveDiagnosis, outcomeFromReport } from "@/lib/diagnosis";
 import { isWaitingForAgentRuntime } from "@/lib/work";
 import { cn } from "@/lib/utils";
 import { HypothesisChart } from "./hypothesis-chart";
@@ -63,8 +64,8 @@ export function ReportTab({
 
   const report = bundle.report;
   const run = agentRuns.find((item) => item.context_id === report.context_id) ?? agentRuns.at(0);
-  const conclusion = conclusionLabel(report.status, report.root_cause !== null);
-  const isAbstain = conclusion.label === "ABSTAIN";
+  const outcome = outcomeFromReport(bundle);
+  const isAbstain = outcome === "ABSTAIN";
 
   return (
     <div className="flex flex-col gap-3">
@@ -72,7 +73,7 @@ export function ReportTab({
         <CardHeader className="gap-1.5 pb-2">
           <div className="flex flex-wrap items-center gap-2">
             <CardTitle className="font-mono">{report.report_id}</CardTitle>
-            <ConclusionBadge status={report.status} hasRootCause={report.root_cause !== null} />
+            <RcaOutcomeBadge outcome={outcome} />
             <Badge tone="outline">{report.path} path</Badge>
             <Badge tone="neutral" title="This Viewer and this Report take no action.">
               <Lock aria-hidden="true" />
@@ -82,7 +83,13 @@ export function ReportTab({
               generated {formatTimestamp(report.generated_at)}
             </span>
           </div>
-          <p className="text-xs text-muted-foreground">{conclusion.description}</p>
+          {/* Pipeline status and RCA outcome are distinct facts; show both. */}
+          <p className="text-xs text-muted-foreground">
+            Pipeline <span className="font-mono text-foreground">{incident.status}</span> ·
+            RCA outcome <span className="font-mono text-foreground">{outcome}</span> ·
+            recorded status{" "}
+            <span className="font-mono text-foreground">{report.status}</span>
+          </p>
         </CardHeader>
 
         <CardContent className="flex flex-col gap-3 pt-0">
@@ -394,18 +401,15 @@ function ReportUnavailable({
   agentRuns: AgentRunAudit[];
 }) {
   if (isWaitingForAgentRuntime(incident, work)) {
+    const diagnosis = deriveDiagnosis(incident, work, []);
     return (
-      <EmptyState
-        icon={PauseCircle}
-        title="Agent runtime is disabled. Frozen Context is ready for analysis."
-        description={
-          <>
-            The analysis work item is <strong>READY</strong> and pinned to Context{" "}
-            <code className="font-mono">{work?.analysis?.context_id}</code>. No Agent runtime
-            has claimed it, so no Report exists yet. This is a waiting state, not a failure.
-          </>
-        }
-      />
+      <EmptyState icon={PauseCircle} title={diagnosis.title} description={
+        <>
+          {diagnosis.description} The analysis work item is <strong>READY</strong> and pinned
+          to Context <code className="font-mono">{work?.analysis?.context_id}</code>. This is
+          a waiting state, not a failure.
+        </>
+      } />
     );
   }
 

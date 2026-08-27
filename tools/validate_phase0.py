@@ -997,6 +997,7 @@ def validate_incident_platform_manifest() -> None:
             "max_turns": 6,
             "max_llm_calls": 6,
             "max_tool_calls": 12,
+            "max_evidence_candidates": 8,
             "max_output_tokens": 2000,
             "max_wall_time_ms": 60000,
         },
@@ -1376,6 +1377,8 @@ def validate_incident_platform_manifest() -> None:
         or agent_env.get("AGENT_WORKER_MAX_ATTEMPTS", {}).get("value") != "3"
         or agent_env.get("AGENT_RCA_MODEL", {}).get("value") != "gpt-5.6-luna"
         or agent_env.get("AGENT_RCA_MAX_TOOL_CALLS", {}).get("value") != "12"
+        or agent_env.get("AGENT_RCA_MAX_EVIDENCE_CANDIDATES", {}).get("value")
+        != "8"
         or agent_env.get("AGENT_RCA_MAX_WALL_TIME_MS", {}).get("value")
         != "60000"
         or agent_env.get("OPENAI_API_KEY", {})

@@ -320,6 +320,29 @@ class IncidentAnalysisWorkClaimTests(unittest.TestCase):
                 error_code="STALE_WORKER",
             )
 
+    def test_targeted_claim_never_falls_back_to_another_incident(self) -> None:
+        self.assertIsNone(
+            self.work.claim_incident(
+                "inc-does-not-exist",
+                worker_id="target-worker",
+                now=NOW,
+                lease_duration=timedelta(seconds=30),
+                max_attempts=3,
+            )
+        )
+
+        claim = self.work.claim_incident(
+            self.incident_id,
+            worker_id="target-worker",
+            now=NOW,
+            lease_duration=timedelta(seconds=30),
+            max_attempts=3,
+        )
+
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.incident_id, self.incident_id)
+        self.assertEqual(claim.context_id, self.context_id)
+
     def test_reported_incident_completes_analysis_work(self) -> None:
         claim = self.claim()
         self.incidents.transition(

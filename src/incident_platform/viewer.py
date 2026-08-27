@@ -319,6 +319,13 @@ class IncidentViewerQueryService:
                     "details": {
                         "source": item["source"],
                         "kind": item["kind"],
+                        # occurred_at above is observed_at: the instant the
+                        # signal describes. collected_at is when the Provider
+                        # run that produced it finished, which is what
+                        # identifies a collection pass. Both are already stored
+                        # on the Evidence; neither is secret, and no claim
+                        # token or lease value is exposed.
+                        "collected_at": item["provenance"]["collected_at"],
                         "subject": copy.deepcopy(dict(item["subject"])),
                     },
                 }

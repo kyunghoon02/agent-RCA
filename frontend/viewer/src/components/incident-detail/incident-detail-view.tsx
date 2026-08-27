@@ -24,6 +24,8 @@ import { usePollingResource } from "@/lib/hooks/use-polling-resource";
 import { deriveLifecycle, entityNamespace, reachedStatusesFromTimeline } from "@/lib/lifecycle";
 import type { IncidentDetail, IncidentWorkState } from "@/lib/types";
 import { RefreshControls } from "@/components/incidents/refresh-controls";
+import { deriveDiagnosis } from "@/lib/diagnosis";
+import { DiagnosisPanel } from "./diagnosis-panel";
 import { LifecycleStepper } from "./lifecycle-stepper";
 import { WorkQueueCards } from "./work-queue-cards";
 import { ContextTab } from "./tabs/context-tab";
@@ -32,11 +34,12 @@ import { OverviewTab } from "./tabs/overview-tab";
 import { ReportTab } from "./tabs/report-tab";
 import { TimelineTab } from "./tabs/timeline-tab";
 
+/** RCA Report sits second: it is the primary Agent output, not an artifact. */
 const TABS = [
   { value: "overview", label: "Overview", icon: LayoutDashboard },
+  { value: "report", label: "RCA Report", icon: FileText },
   { value: "evidence", label: "Evidence", icon: Database },
   { value: "context", label: "Frozen Context", icon: Layers },
-  { value: "report", label: "RCA Report", icon: FileText },
   { value: "timeline", label: "Timeline", icon: Clock },
 ] as const;
 
@@ -114,9 +117,14 @@ export function IncidentDetailView({ incidentId }: { incidentId: string }) {
     incident.status,
     reachedStatusesFromTimeline(data.timeline),
   );
+  const diagnosis = deriveDiagnosis(incident, work.data, data.reports);
 
+  // overflow-x-clip, not -hidden: `overflow-x: hidden` forces `overflow-y` to
+  // `auto`, which turns this wrapper into a scroll container that swallows
+  // scrollIntoView from Evidence deep links. `clip` clips horizontally without
+  // creating one.
   return (
-    <div className="flex min-w-0 flex-col gap-3 overflow-x-hidden">
+    <div className="flex min-w-0 flex-col gap-3 overflow-x-clip">
       <BackLink />
 
       {adapter.mode === "fixture" && <DemoDataNotice />}
@@ -124,6 +132,15 @@ export function IncidentDetailView({ incidentId }: { incidentId: string }) {
         <StaleDataNotice error={detail.error} lastUpdatedAt={detail.lastUpdatedAt} />
       )}
       <TruncationNotice truncated={data.truncated} />
+
+      <DiagnosisPanel
+        incident={incident}
+        work={work.data}
+        reports={data.reports}
+        diagnosis={diagnosis}
+        onOpenReport={() => setTab("report")}
+        onFocusEvidence={focusEvidence}
+      />
 
       <Card className="p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -179,7 +196,12 @@ export function IncidentDetailView({ incidentId }: { incidentId: string }) {
           <OverviewTab detail={data} />
         </TabsContent>
         <TabsContent value="evidence">
-          <EvidenceTab evidence={data.evidence} focusedEvidenceId={focusedEvidenceId} />
+          <EvidenceTab
+            evidence={data.evidence}
+            contexts={data.contexts}
+            reports={data.reports}
+            focusedEvidenceId={focusedEvidenceId}
+          />
         </TabsContent>
         <TabsContent value="context">
           <ContextTab
@@ -199,7 +221,11 @@ export function IncidentDetailView({ incidentId }: { incidentId: string }) {
           />
         </TabsContent>
         <TabsContent value="timeline">
-          <TimelineTab timeline={data.timeline} onFocusEvidence={focusEvidence} />
+          <TimelineTab
+            timeline={data.timeline}
+            evidence={data.evidence}
+            onFocusEvidence={focusEvidence}
+          />
         </TabsContent>
       </Tabs>
     </div>

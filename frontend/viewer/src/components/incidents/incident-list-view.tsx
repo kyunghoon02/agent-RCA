@@ -14,6 +14,14 @@ import { getViewerAdapter } from "@/lib/adapter";
 import { DEFAULT_PAGE_SIZE, DEFAULT_POLL_INTERVAL_MS } from "@/lib/config";
 import { usePollingResource } from "@/lib/hooks/use-polling-resource";
 import type { IncidentListQuery, IncidentListResult, IncidentStatus } from "@/lib/types";
+import {
+  hasCollectorProblems,
+  hasGroupableRepeats,
+  QUICK_FILTERS,
+  type QuickFilter,
+} from "@/lib/incident-list";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { CursorPagination } from "./pagination";
 import { EMPTY_FILTERS, IncidentFilters, type FilterState } from "./incident-filters";
 import { IncidentTable, IncidentTableSkeleton } from "./incident-table";
@@ -40,6 +48,8 @@ export function IncidentListView() {
   const [polling, setPolling] = React.useState(true);
   const [intervalMs, setIntervalMs] = React.useState(DEFAULT_POLL_INTERVAL_MS);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [quickFilterId, setQuickFilterId] = React.useState<string | null>(null);
+  const [collapseRepeats, setCollapseRepeats] = React.useState(true);
 
   const cursor = cursorStack[cursorStack.length - 1] ?? null;
   const query = React.useMemo(() => buildQuery(filters, cursor), [filters, cursor]);
@@ -74,12 +84,37 @@ export function IncidentListView() {
 
   const applyStatuses = React.useCallback(
     (statuses: IncidentStatus[]) => {
+      setQuickFilterId(null);
       applyFilters({ ...filters, statuses });
     },
     [applyFilters, filters],
   );
 
-  const items = data?.items ?? [];
+  const toggleQuickFilter = React.useCallback(
+    (filter: QuickFilter) => {
+      const next = quickFilterId === filter.id ? null : filter.id;
+      setQuickFilterId(next);
+      const statuses = next && !filter.clientOnly ? filter.statuses : [];
+      applyFilters({ ...filters, statuses });
+    },
+    [applyFilters, filters, quickFilterId],
+  );
+
+  const activeQuick = QUICK_FILTERS.find((f) => f.id === quickFilterId) ?? null;
+  const rawItems = data?.items ?? [];
+  // Only the client-only filter is applied after fetching; status filters are
+  // sent to the API so pagination stays correct.
+  const items = activeQuick?.clientOnly
+    ? rawItems.filter(hasCollectorProblems)
+    : rawItems;
+  /*
+   * The control is only meaningful when this page actually holds a foldable
+   * run. Live Kubernetes entities often arrive without `cluster_id` or `uid`,
+   * and grouping on namespace/name would merge unrelated Incidents — so the
+   * control is disabled and says why rather than appearing to do nothing.
+   */
+  const groupable = React.useMemo(() => hasGroupableRepeats(items), [items]);
+
   const hasFilters =
     filters.statuses.length > 0 ||
     filters.severities.length > 0 ||
@@ -115,7 +150,59 @@ export function IncidentListView() {
         onSelectStatuses={applyStatuses}
       />
 
-      <Card className="p-3">
+      <Card className="flex flex-col gap-2 p-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Quick filters
+          </span>
+          {QUICK_FILTERS.map((filter) => (
+            <Button
+              key={filter.id}
+              type="button"
+              variant={quickFilterId === filter.id ? "secondary" : "outline"}
+              size="xs"
+              aria-pressed={quickFilterId === filter.id}
+              title={filter.description}
+              onClick={() => toggleQuickFilter(filter)}
+            >
+              {filter.label}
+              {filter.clientOnly && (
+                <Badge tone="outline" className="ml-1">
+                  page
+                </Badge>
+              )}
+            </Button>
+          ))}
+          <Button
+            type="button"
+            variant={collapseRepeats && groupable ? "secondary" : "outline"}
+            size="xs"
+            disabled={!groupable}
+            aria-pressed={groupable && collapseRepeats}
+            aria-describedby={groupable ? undefined : "collapse-repeats-note"}
+            title={
+              groupable
+                ? "Fold consecutive re-fires of the same alert on the same entity into one row."
+                : "Unavailable: no Incident on this page has a stable source Entity identity to group on."
+            }
+            className="ml-auto"
+            onClick={() => setCollapseRepeats((current) => !current)}
+          >
+            Collapse repeats
+          </Button>
+          {!groupable && (
+            <span
+              id="collapse-repeats-note"
+              className="w-full text-[11px] text-muted-foreground"
+            >
+              Collapse repeats is unavailable on this page: grouping needs a stable
+              source Entity identity (graph <code className="font-mono">entity_id</code>,
+              or Kubernetes <code className="font-mono">cluster_id</code> +{" "}
+              <code className="font-mono">uid</code>), and these Incidents do not carry
+              one. Grouping on namespace and name alone would merge unrelated Incidents.
+            </span>
+          )}
+        </div>
         <IncidentFilters value={filters} onChange={applyFilters} />
       </Card>
 
@@ -144,6 +231,7 @@ export function IncidentListView() {
               items={items}
               selectedId={selectedId}
               onSelect={setSelectedId}
+              collapseRepeats={collapseRepeats && groupable}
             />
             <CursorPagination
               page={cursorStack.length}

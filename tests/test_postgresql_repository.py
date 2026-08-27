@@ -12,6 +12,7 @@ from incident_platform.evidence import (
 )
 from incident_platform.incidents import AlertmanagerNormalizer
 from incident_platform.postgresql import (
+    PostgreSQLIncidentAnalysisWorkRepository,
     PostgreSQLIncidentRepository,
     PostgreSQLStateGraphObservationRepository,
     apply_migrations,
@@ -222,6 +223,62 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertNotIn(search, statement)
         self.assertIn(search, parameters)
         self.assertIn("LIMIT %s", statement)
+
+    def test_targeted_analysis_claim_keeps_incident_id_in_sql_parameters(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, statement, parameters=()):
+                self.calls.append((statement, parameters))
+
+            def fetchone(self):
+                return None
+
+        class RecordingConnection:
+            closed = False
+
+            def __init__(self, cursor) -> None:
+                self._cursor = cursor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        cursor = RecordingCursor()
+        repository = PostgreSQLIncidentAnalysisWorkRepository(
+            lambda: RecordingConnection(cursor)
+        )
+        incident_id = "inc-does-not-exist"
+
+        self.assertIsNone(
+            repository.claim_incident(
+                incident_id,
+                worker_id="target-worker",
+                now=FIXED_TIME,
+                lease_duration=timedelta(seconds=30),
+                max_attempts=3,
+            )
+        )
+
+        statement, parameters = cursor.calls[0]
+        self.assertNotIn(incident_id, statement)
+        self.assertIn("AND work.incident_id = %s", statement)
+        self.assertEqual(parameters[-1], incident_id)
 
     def test_viewer_work_query_returns_safe_stage_state_without_claim_token(self) -> None:
         class RecordingCursor:

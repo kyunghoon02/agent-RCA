@@ -61,7 +61,8 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   실행해 Frozen Context를 저장하고 `ANALYZING`까지 전이한 뒤, exact `context_id`가 고정된
   analysis work를 `READY`로 남기는 경로를 확인했다.
 - **RCA core:** Incident/Evidence contract, bounded collector, localization, Context-pinned
-  analysis claim, read-only Agent tool과 Evidence Gate는 fixture와 contract test로 검증했다.
+  analysis claim, deterministic Evidence candidate selection, compact Agent investigation
+  view, read-only Agent tool과 Evidence Gate를 fixture와 contract test로 검증했다.
 - **Controlled fault evaluation:** 개발 환경 전용 checkout OOM harness가 external-controller
   traffic, resource fault, Alertmanager delivery, Frozen Context, private Ground Truth와
   post-run scorer를 end-to-end 실행하고 매회 원래 resource/Ready/restart-zero 상태로
@@ -69,9 +70,9 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   false negative를 기록했고, 그 분포를 근거로 exact OOM signature와 same-UID restart를
   요구하는 v2 gate를 만들었다. v2의 별도 live 확인 1회는 `ROOT_CAUSE`와 Top-1 `1.0`을
   기록했다.
-- **아직 증명하지 않은 범위:** `ANALYZING` 이후 Agent Report까지의 cluster runtime,
-  성공한 external LLM live run, 15개 scenario 반복 정확도와 production HA는 아직
-  검증하지 않았다.
+- **아직 증명하지 않은 범위:** compact investigation view를 적용한 이후의 external LLM
+  token 절감 수치, 연속 Agent Deployment, 15개 scenario 반복 정확도와 production HA는
+  아직 검증하지 않았다.
 
 세부 구현과 runtime 상태는 [Implementation Status](#implementation-status)에서 분리해 기록한다.
 
@@ -118,7 +119,8 @@ sequenceDiagram
     LS->>LS: Project Evidence to temporal entities and relations
     IW->>LS: Bounded StateGraph localization
     LS-->>IC: Persist Frozen Context and advance to ANALYZING
-    IC-->>AO: Frozen Context
+    IC-->>AO: Full Frozen Context
+    AO->>AO: Select at most 8 diverse Evidence candidates and build compact view
     AO->>KR: Retrieve scoped references
     KR-->>AO: Versioned Top-K knowledge
     AO->>AO: Invoke one bounded external LLM Agent
@@ -259,13 +261,13 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
-| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING`→Context-pinned analysis work `READY`까지 live 연결. Agent Worker만 credit gate로 배포 비활성화 |
+| Incident lifecycle, Collector, Evidence, Fast Path Report | Alertmanager 정규화·중복 제거, 상태 전이, bounded HTTP receiver와 collection/localization/analysis fenced work repository를 구현하고 crash/reclaim 경계를 contract test로 검증 | authenticated webhook→`RECEIVED`→`COLLECTING`→Evidence 저장→`LOCALIZING`→KRCA-guided exact Entity resolve→Frozen Context 저장→`ANALYZING`→Context-pinned analysis work `READY`까지 live 연결. Agent Worker는 기존 `READY` backlog의 연속 API 호출을 막기 위해 기본 배포에서 비활성화하며, 승인한 exact Incident만 claim하는 one-shot 모드는 다른 work의 claim/reap을 수행하지 않는다 |
 | Bounded HTTP, Prometheus, Kubernetes, Loki, Deployment provider | adapter와 contract test 구현 | Incident worker가 exact Service root에서 ownership/selector로 제한한 Service/Deployment/ReplicaSet/Pod/EndpointSlice 상태와 Service/Pod Event, Deployment revision diff, 고정 allowlist Service Prometheus query 4개, UID-backed Pod memory ratio/restart delta query 2개, Pod-UID-scoped kernel memcg OOM Loki query 및 선택된 KRCA profile 전용 `prometheus-api` collector를 병렬 실행한다. 모든 Evidence에는 trusted `cluster_id`가 주입된다. 일반 application log와 Hubble Incident collector는 아직 미연결 |
 | PostgreSQL repository | Incident artifact, fenced collection/localization/analysis work와 StateGraph observation journal migration/repository contract 구현 | cluster-local PostgreSQL 17.6 StatefulSet과 5Gi PVC에 migration 6개 적용. `ANALYZING`과 Frozen Context 생성 순서 모두에서 exact `context_id`를 고정하는 analysis work가 live 제어 Incident에 `READY`로 생성됨 |
 | KRCA metric feature provider와 scorer | schema-validated PromQL/dependency profile, Evidence-to-Top-N과 profile completeness/fallback 구현 | browse/cart/checkout 3개 profile의 23개 edge가 active-traffic smoke에서 모두 `HAS_DATA`. Incident worker는 alert의 allowlisted `krca_profile`만 수집하며, 최신 제어 경보에서는 9개 edge 중 4개 `HAS_DATA`·5개 `INSUFFICIENT_DATA`를 명시하고 incomplete profile에 source fallback을 선택해 근거 없는 Top-N 생성을 차단 |
 | Entity resolver와 Temporal StateGraph | Kubernetes/Service·Pod Prometheus/KRCA/Deployment/Loki kernel OOM Evidence Projector, observation journal, atomic complete-set Reconciler, Neo4j repository, exact resolver와 Frozen Context 구현 | cluster-local PostgreSQL journal과 Neo4j에 연결된 5분 Kubernetes CronJob 배포. `concurrencyPolicy=Forbid`로 직렬화하며 live cycle에서 71개 Evidence→324개 record→81개 current Entity/91개 current Relation 및 `APPLIED` journal을 검증. 최신 제어 Incident는 저장 Evidence 22개 중 21개와 StateGraph path 42개를 Frozen Context에 고정하고 `ANALYZING`에 도달. 별도 OOM Incident의 kernel Evidence도 같은 UID Pod Event로 Context에 포함됨 |
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
-| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. Agent Deployment manifest는 준비됐지만 기본 Kustomize에서 제외됨. 2026-08-25 live API 재확인도 `credit_balance_exhausted` 429로 성공 runtime 미검증 |
+| Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, deterministic source-diverse Evidence candidate selector(최대 8개), 중복 path를 제거한 compact `AgentInvestigationView`, 최대 4개 ID의 bounded Evidence batch/Reference read-only tool, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. 42개 중복 path fixture에서 model-facing Context projection은 20,446B→2,483B(87.9%)로 줄었지만 이는 local serialization 측정이며 live token 절감값이 아니다. 2026-08-27 최적화 전 cluster one-shot은 exact controlled OOM Incident 한 건을 claim해 LLM 4회/Evidence access 12회, supporting Evidence 4개인 `conclusive` Report와 Agent Run audit를 PostgreSQL에 저장했고 input 79,051/output 1,842, 총 80,893 tokens를 사용했다. 앞선 single-item tool 2회 실험은 각각 6/10 turn budget을 소진해 두 target만 `FAILED`로 닫혔고, 나머지 backlog의 attempt는 0으로 유지됐다. compact 경로의 live one-shot 재검증 전까지 Agent Deployment는 기본 Kustomize에서 제외됨 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract, 인증된 GET transport, Next.js UI와 same-origin server-side BFF, private API Deployment 및 전용 read-only DB role 구현 | cluster-local API Ready, DB role의 SELECT 허용·mutation 거부와 local BFF를 통한 live list/detail/work/Evidence 조회 검증. public ingress/domain, 사용자 session/role 인증, observability deep link runtime 설정과 production query plan은 미구현 |
 | Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider/change Projector, Ground Truth/Prediction/Result/Observation 계약, ID-free 분포 집계기, external-controller workload와 development-only OOM fault harness 구현 | exact baseline과 명시적 승인, cluster lock, controller/remote watchdog, `always` 복구를 강제한다. legacy gate의 고정 OOM 5회는 모두 exact kernel memcg OOM과 restart를 수집했지만 30초 memory peak가 0.399~0.506에 머물러 전부 `ABSTAIN`했다. v2 gate의 별도 live 확인 1회는 `ROOT_CAUSE`, Top-1/Top-3 `1.0`, Evidence precision `1.0`/recall `0.666667`로 완료되고 원상 복구됐다. v2 5회 반복, Git/ArgoCD change source와 15-scenario dataset은 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회 및 controlled application OOM/복구를 검증; destroy와 VM failure runtime은 미검증 |
@@ -306,7 +308,7 @@ controlled alert or opt-in PrometheusRule with rca_enabled=true
 → 현재 Incident에 저장된 evidence_id만 남긴 Frozen Context 저장
 → ANALYZING 전이 + localization work SUCCEEDED
 → migration 6 trigger가 exact context_id가 고정된 READY analysis work 생성
-→ [credit gate로 현재 비활성] 별도 Agent Worker claim → Evidence Gate → Report → REPORTED
+→ [기본 Deployment 비활성, 승인된 target-only one-shot만 검증] 별도 Agent Worker exact claim → Evidence Gate → Report → REPORTED
 ```
 
 webhook은 `observability` namespace에서만 접근 가능한 NetworkPolicy와 namespace-local
@@ -337,8 +339,10 @@ Context Evidence에는 포함되지만 `recent_change_evidence_ids`에는 포함
 `OnlineBoutiqueFrontendHighFailureRate` rule도 Prometheus에 healthy 상태로 로드하지만,
 controlled fault로 이 rule을 firing시킨 정확도 실험은 아직 수행하지 않았다. 또한 현재
 worker는 `online-boutique`의 Service-scoped Incident만 처리한다. `ANALYZING` 이후에는
-Context-pinned analysis queue와 별도 Agent Worker 코드/manifest가 준비됐지만 OpenAI API
-credit smoke가 실패해 기본 배포에서는 의도적으로 비활성화했다.
+Context-pinned analysis queue와 별도 Agent Worker 코드/manifest가 준비돼 있다. 2026-08-27에는
+target Incident ID와 one-shot flag를 함께 요구하고 다른 Incident로 fallback하지 않는 claim으로
+controlled OOM 한 건을 `REPORTED`까지 처리했다. 연속 Deployment는 API 비용과 기존 backlog
+소진을 막기 위해 기본 배포에서 계속 비활성화한다.
 
 ## Core Localization Design
 
@@ -547,7 +551,11 @@ RRF로 결합한다. 최대 5개, 12,000자, query term 16개, 5초, index 500�
 반환값은 `RetrievedReference`라서 `evidence_id`가 없고 검색 방식과 무관하게 그 자체로
 원인을 증명할 수 없다.
 
-Agent runtime은 Graph-localized Context와 Evidence/Reference ID catalog만 LLM에 전달한다.
+Agent runtime은 전체 Frozen Context를 repository와 Evidence Gate에 그대로 보존한다. LLM에는
+deterministic `EvidenceCandidateSelector`가 recent change, source Entity 정합성, freshness,
+quality와 Evidence source 다양성을 기준으로 고른 최대 8개 후보와, 그 후보에 연결된
+중복 제거 topology path만 `AgentInvestigationView`로 전달한다. 전체 facts와 provenance는
+prompt catalog에서 제외하고 후보 ID를 실제 tool로 검사할 때만 반환한다.
 LLM은 `inspect_evidence(evidence_id)`와
 `inspect_reference(reference_document_id)`만 호출할 수 있고 shell, web, file, Kubernetes
 write/admin tool은 등록하지 않는다. SDK가 생성한 구조화 draft는 곧바로 Report가 되지
@@ -602,10 +610,16 @@ Kubernetes Evidence→PostgreSQL `STAGED/APPLIED` journal→Neo4j projection을 
 disk 삭제나 손상에 대비한 backup/restore와 HA는 아직 구현하지 않았다.
 
 `make smoke-agent-rca`는 Git에 포함되지 않는 `.env`의 `OPENAI_API_KEY`를 로드해 격리된
-fixture Incident로 실제 Agents SDK 호출을 한 번 수행한다. 현재 확인에서는 API가
-`credit_balance_exhausted` 429를 반환했고 2026-08-25 재확인도 동일해 live 성공은
-증명하지 못했다. 키 값과 model
-input은 출력하지 않으며, 사용 가능한 API credit가 준비되면 같은 명령으로 재검증한다.
+fixture Incident로 bounded Agents SDK run을 수행한다. 2026-08-27 live 확인은
+`gpt-5.6-luna`의 LLM 3회/Evidence tool 2회 호출, Evidence citation 2개,
+`inconclusive` Report와 Incident `REPORTED` 저장으로 완료됐다. 키 값과 model input은
+출력하지 않는다. 같은 날 cluster PostgreSQL을 대상으로 한 target-only one-shot은 exact
+controlled OOM Incident 한 건을 claim해 LLM 4회, Evidence access 12회, supporting Evidence
+4개의 `conclusive` Report를 저장했다. 누적 사용량은 input 79,051/output 1,842 tokens였다.
+이 측정 뒤 전체 Frozen Context를 model input에서 제거하고 최대 8개 후보와 12개 deduplicated
+path만 전달하는 compact projection을 구현했지만, 새 경로의 live token 사용량은 아직
+재측정하지 않았다. 이 검증은 로컬 Worker와 SSH tunnel을 사용했으며 상시 Kubernetes
+Agent Deployment가 활성화됐다는 뜻은 아니다.
 
 `make smoke-live-krca`는 기본적으로 로컬 `127.0.0.1:19090`의 loopback-only Prometheus
 tunnel과 최근 controlled traffic을 요구한다. 구성된 3개 profile을 bounded range query로
@@ -660,8 +674,9 @@ Viewer API는 `incident-platform` namespace의 private ClusterIP로 배포하며
 role은 table `SELECT`만 허용하고 mutation을 거부한다. authenticated list/detail/work
 request와 local same-origin BFF를 통한 실제 Incident/Evidence 조회까지 검증했다. UI 자체의
 cluster Deployment, public ingress/domain과 사용자 session 인증은 아직 없으므로 외부에서
-직접 접근할 수 없다. Agent runtime도 기본 비활성 상태라 analysis work가 `READY`인 Incident는
-Report 0건으로 표시되는 것이 현재의 정상 동작이다.
+직접 접근할 수 없다. Agent runtime은 기본 비활성 상태이므로 아직 analysis work가 `READY`인
+Incident는 Report 0건으로 표시되는 것이 정상이고, 검증한 one-shot Incident 한 건만 저장된
+Report와 Agent Run을 표시한다.
 
 ## Repository Structure
 

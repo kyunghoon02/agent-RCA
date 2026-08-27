@@ -24,6 +24,7 @@ from incident_platform.incident_work import (
     IncidentAnalysisWorkClaim,
     IncidentAnalysisWorkRepository,
     validate_claim_request,
+    validate_incident_id,
 )
 from incident_platform.knowledge import (
     BoundedKnowledgeRetriever,
@@ -54,9 +55,23 @@ def _required_secret_environment(name: str) -> str:
     return value
 
 
+def _boolean_environment(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
 @dataclass(frozen=True)
 class AgentWorkerRuntimeConfig:
     worker_id: str
+    run_once: bool
+    target_incident_id: str | None
     poll_interval_seconds: float
     lease_seconds: int
     max_attempts: int
@@ -64,6 +79,7 @@ class AgentWorkerRuntimeConfig:
     max_turns: int
     max_llm_calls: int
     max_tool_calls: int
+    max_evidence_candidates: int
     max_output_tokens: int
     max_wall_time_ms: int
     knowledge_root: str
@@ -83,6 +99,13 @@ class AgentWorkerRuntimeConfig:
         )
         if not 0.5 <= self.poll_interval_seconds <= 60:
             raise ValueError("Agent worker poll interval must be between 0.5 and 60")
+        if self.run_once != (self.target_incident_id is not None):
+            raise ValueError(
+                "AGENT_WORKER_RUN_ONCE and AGENT_WORKER_TARGET_INCIDENT_ID "
+                "must be configured together"
+            )
+        if self.target_incident_id is not None:
+            validate_incident_id(self.target_incident_id)
         if not self.model_name.strip():
             raise ValueError("Agent model name is required")
         if not 1 <= self.postgres_port <= 65535:
@@ -105,6 +128,7 @@ class AgentWorkerRuntimeConfig:
             max_turns=self.max_turns,
             max_llm_calls=self.max_llm_calls,
             max_tool_calls=self.max_tool_calls,
+            max_evidence_candidates=self.max_evidence_candidates,
             max_output_tokens=self.max_output_tokens,
             max_wall_time_ms=self.max_wall_time_ms,
         )
@@ -116,6 +140,10 @@ class AgentWorkerRuntimeConfig:
             worker_id=os.environ.get(
                 "AGENT_WORKER_ID", os.environ.get("HOSTNAME", "")
             ),
+            run_once=_boolean_environment("AGENT_WORKER_RUN_ONCE"),
+            target_incident_id=(
+                os.environ.get("AGENT_WORKER_TARGET_INCIDENT_ID", "").strip() or None
+            ),
             poll_interval_seconds=float(
                 os.environ.get("AGENT_WORKER_POLL_INTERVAL_SECONDS", "2")
             ),
@@ -125,6 +153,9 @@ class AgentWorkerRuntimeConfig:
             max_turns=int(os.environ.get("AGENT_RCA_MAX_TURNS", "6")),
             max_llm_calls=int(os.environ.get("AGENT_RCA_MAX_LLM_CALLS", "6")),
             max_tool_calls=int(os.environ.get("AGENT_RCA_MAX_TOOL_CALLS", "12")),
+            max_evidence_candidates=int(
+                os.environ.get("AGENT_RCA_MAX_EVIDENCE_CANDIDATES", "8")
+            ),
             max_output_tokens=int(
                 os.environ.get("AGENT_RCA_MAX_OUTPUT_TOKENS", "2000")
             ),
@@ -192,17 +223,33 @@ class AgentWorker:
 
     def process_one(self) -> Mapping[str, object]:
         now = self._clock()
-        reaped = self._work.reap_exhausted(
-            now=now,
-            max_attempts=self._config.max_attempts,
-        )
-        claim = self._work.claim_next(
-            worker_id=self._config.worker_id,
-            now=now,
-            lease_duration=timedelta(seconds=self._config.lease_seconds),
-            max_attempts=self._config.max_attempts,
-        )
+        if self._config.target_incident_id is not None:
+            reaped = 0
+            claim = self._work.claim_incident(
+                self._config.target_incident_id,
+                worker_id=self._config.worker_id,
+                now=now,
+                lease_duration=timedelta(seconds=self._config.lease_seconds),
+                max_attempts=self._config.max_attempts,
+            )
+        else:
+            reaped = self._work.reap_exhausted(
+                now=now,
+                max_attempts=self._config.max_attempts,
+            )
+            claim = self._work.claim_next(
+                worker_id=self._config.worker_id,
+                now=now,
+                lease_duration=timedelta(seconds=self._config.lease_seconds),
+                max_attempts=self._config.max_attempts,
+            )
         if claim is None:
+            if self._config.target_incident_id is not None:
+                return {
+                    "status": "TARGET_NOT_CLAIMABLE",
+                    "incident_id": self._config.target_incident_id,
+                    "reaped": 0,
+                }
             return {"status": "IDLE", "reaped": reaped}
         return self._process_claim(claim, reaped=reaped)
 
@@ -321,6 +368,11 @@ def main() -> int:
             flush=True,
         )
         return 1
+
+    if config.run_once:
+        result = worker.process_one()
+        print(json.dumps(result, sort_keys=True), flush=True)
+        return 0 if result["status"] == "PROCESSED" else 1
 
     while not stop.is_set():
         result = worker.process_one()
