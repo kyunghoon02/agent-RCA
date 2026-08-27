@@ -1,0 +1,86 @@
+---
+- name: Require the reviewed Chaos Mesh evaluation Kubernetes minor
+  ansible.builtin.assert:
+    that:
+      - kubernetes_minor == 'v1.35'
+      - kubernetes_version is match('^v1[.]35[.]')
+      - chaos_mesh_target_namespace == online_boutique_namespace
+    fail_msg: >-
+      Chaos Mesh is allowed only on the reviewed Kubernetes 1.35 evaluation
+      inventory and may target only the Online Boutique namespace.
+
+- name: Create the remote Chaos Mesh values directory
+  ansible.builtin.file:
+    path: "{{ chaos_mesh_remote_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy the pinned Chaos Mesh values to the node
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../platform/chaos-mesh/values.yaml"
+    dest: "{{ chaos_mesh_remote_values }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: chaos_mesh_values
+
+- name: Check whether the Chaos Mesh namespace exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get namespace {{ chaos_mesh_namespace }}
+  register: chaos_mesh_namespace_status
+  changed_when: false
+  failed_when: false
+
+- name: Create the Chaos Mesh namespace
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ chaos_mesh_namespace }}
+  when: chaos_mesh_namespace_status.rc != 0
+  changed_when: true
+
+- name: Reconcile the Chaos Mesh namespace labels
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    label namespace {{ chaos_mesh_namespace }}
+    app.kubernetes.io/part-of=agent-rca
+    app.kubernetes.io/managed-by=ansible
+    agent-rca.dev/purpose=controlled-fault-evaluation
+    --overwrite
+  register: chaos_mesh_namespace_labels
+  changed_when: "'not labeled' not in chaos_mesh_namespace_labels.stdout"
+
+- name: Add the Chaos Mesh Helm repository
+  ansible.builtin.command: >-
+    helm repo add {{ chaos_mesh_chart_repository_name }}
+    {{ chaos_mesh_chart_repository_url }} --force-update
+  changed_when: false
+
+- name: Update the Chaos Mesh Helm repository index
+  ansible.builtin.command: >-
+    helm repo update {{ chaos_mesh_chart_repository_name }}
+  changed_when: false
+
+- name: Inspect the Chaos Mesh release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    list --namespace {{ chaos_mesh_namespace }}
+    --filter ^{{ chaos_mesh_release_name }}$ --output json
+  register: chaos_mesh_release
+  changed_when: false
+
+- name: Install or reconcile the pinned Chaos Mesh release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    upgrade --install {{ chaos_mesh_release_name }} {{ chaos_mesh_chart_ref }}
+    --version {{ chaos_mesh_chart_version }}
+    --namespace {{ chaos_mesh_namespace }}
+    --values {{ chaos_mesh_remote_values }}
+    --atomic --wait --timeout {{ chaos_mesh_wait_timeout }}
+  when: >-
+    (chaos_mesh_release.stdout | from_json | length == 0)
+    or (chaos_mesh_chart_version not in chaos_mesh_release.stdout)
+    or (chaos_mesh_values.changed | bool)
+  changed_when: true

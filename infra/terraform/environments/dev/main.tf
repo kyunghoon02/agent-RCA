@@ -163,6 +163,18 @@ resource "google_compute_address" "vm" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_compute_address" "chaos_evaluation" {
+  count = var.enable_chaos_evaluation_node && var.enable_external_ip ? 1 : 0
+
+  name         = "${local.name_prefix}-chaos-eval-ipv4"
+  project      = var.project_id
+  region       = var.region
+  address_type = "EXTERNAL"
+  network_tier = "PREMIUM"
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_compute_firewall" "ssh" {
   count = length(var.ssh_source_ranges) > 0 ? 1 : 0
 
@@ -280,4 +292,78 @@ resource "google_compute_instance" "node" {
   }
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_compute_instance" "chaos_evaluation" {
+  count = var.enable_chaos_evaluation_node ? 1 : 0
+
+  name         = "${local.name_prefix}-chaos-eval-01"
+  project      = var.project_id
+  zone         = var.zone
+  machine_type = var.chaos_evaluation_machine_type
+
+  allow_stopping_for_update = true
+  can_ip_forward            = false
+  deletion_protection       = var.deletion_protection
+  labels = merge(local.labels, {
+    purpose            = "chaos-evaluation"
+    kubernetes_version = "1-35"
+  })
+  tags = ["${local.name_prefix}-node"]
+
+  boot_disk {
+    auto_delete = true
+
+    initialize_params {
+      image = var.source_image
+      size  = var.chaos_evaluation_boot_disk_size_gb
+      type  = "pd-balanced"
+      labels = merge(local.labels, {
+        purpose = "chaos-evaluation"
+      })
+    }
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.main.id
+    stack_type = "IPV4_ONLY"
+
+    dynamic "access_config" {
+      for_each = var.enable_external_ip ? [1] : []
+      content {
+        nat_ip       = google_compute_address.chaos_evaluation[0].address
+        network_tier = "PREMIUM"
+      }
+    }
+  }
+
+  metadata = {
+    block-project-ssh-keys = "TRUE"
+    enable-oslogin         = "TRUE"
+    serial-port-enable     = "FALSE"
+  }
+
+  service_account {
+    email  = google_service_account.vm.email
+    scopes = ["cloud-platform"]
+  }
+
+  scheduling {
+    automatic_restart   = true
+    on_host_maintenance = "MIGRATE"
+    provisioning_model  = "STANDARD"
+  }
+
+  shielded_instance_config {
+    enable_integrity_monitoring = true
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_external_ip || length(var.ssh_source_ranges) > 0
+      error_message = "At least one trusted SSH source CIDR is required when external IP is enabled."
+    }
+  }
 }

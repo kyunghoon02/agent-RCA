@@ -36,7 +36,7 @@ alloy:
 
         rule {
           target_label = "cluster_id"
-          replacement  = "agent-rca-dev"
+          replacement  = "[[ cluster_name | default('agent-rca-dev') ]]"
         }
       }
 
@@ -50,7 +50,7 @@ alloy:
         max_age    = "2h"
         matches    = "_TRANSPORT=kernel"
         labels     = {
-          cluster_id = "agent-rca-dev",
+          cluster_id = "[[ cluster_name | default('agent-rca-dev') ]]",
           job        = "kernel-journal",
         }
         forward_to = [loki.process.kernel_oom.receiver]

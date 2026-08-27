@@ -26,6 +26,11 @@
           kind: Kustomization
           resources:
             - ../online-boutique
+          configMapGenerator:
+            - name: otel-collector-config
+              behavior: merge
+              files:
+                - collector.yaml=otel-collector-config.yaml
           images:
           {% for service, digest in online_boutique.custom_image_digests.items() %}
             - name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/{{ service }}
@@ -37,6 +42,22 @@
       delegate_to: localhost
       become: false
       no_log: true
+
+    - name: Write the target-cluster OpenTelemetry Collector configuration
+      ansible.builtin.copy:
+        content: >-
+          {{
+            lookup(
+              'ansible.builtin.file',
+              playbook_dir
+              + '/../../../platform/online-boutique/otel-collector-config.yaml'
+            )
+            | replace('agent-rca-dev', cluster_name)
+          }}
+        dest: "{{ online_boutique_image_overlay.path }}/otel-collector-config.yaml"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
 
     - name: Render the pinned Online Boutique overlay locally
       ansible.builtin.command:

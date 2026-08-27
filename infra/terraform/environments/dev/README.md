@@ -10,6 +10,11 @@ runtime:
 - source-restricted SSH and kube-apiserver firewall rules;
 - one Shielded Ubuntu Compute Engine VM and balanced boot disk.
 
+An optional second Shielded VM can be enabled as a parallel Kubernetes 1.35
+Chaos Mesh evaluation node. It reuses the VPC, restricted firewall rules,
+service account and Artifact Registry. The default remains disabled so a plan
+cannot create the additional VM, disk or static address unintentionally.
+
 It does not install containerd, Kubernetes, Cilium/Hubble, observability,
 Online Boutique or Agent RCA. Those belong to later bootstrap and deployment
 layers.
@@ -36,6 +41,11 @@ terraform plan -var-file=terraform.tfvars -out=agent-rca-dev.tfplan
 terraform show agent-rca-dev.tfplan
 terraform apply agent-rca-dev.tfplan
 ```
+
+To review the parallel evaluation node without creating it, add
+`enable_chaos_evaluation_node = true` to the ignored `terraform.tfvars`, save a
+new plan and inspect it before apply. Keep the existing dev VM until Kubernetes,
+Chaos Mesh and the Agent RCA evaluation flow pass on the new node.
 
 Apply only the saved, reviewed plan. The static address and running VM can incur
 cost. Before teardown, remove Kubernetes workloads and any source-retained data,

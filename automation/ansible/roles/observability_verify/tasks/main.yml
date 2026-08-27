@@ -199,7 +199,7 @@
       - --raw
       - >-
         /api/v1/namespaces/{{ observability_namespace
-        }}/services/http:loki:3100/proxy/loki/api/v1/query_range?query=%7Bnamespace%3D%22kube-system%22%7D&limit=1&direction=backward
+        }}/services/http:loki:3100/proxy/loki/api/v1/query_range?query=%7Bnamespace%3D%22kube-system%22%2Ccluster_id%3D%22{{ cluster_name }}%22%7D&limit=1&direction=backward
   register: loki_kube_system_logs
   retries: 12
   delay: 10

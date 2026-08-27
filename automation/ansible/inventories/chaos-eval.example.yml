@@ -1,0 +1,15 @@
+all:
+  children:
+    kubernetes_nodes:
+      hosts:
+        agent_rca_chaos_eval_node:
+          ansible_host: VM_IP
+          ansible_user: replace_with_vm_whoami
+          ansible_ssh_private_key_file: ~/.ssh/google_compute_engine
+          ansible_python_interpreter: /usr/bin/python3
+          # Loaded after group_vars/all.yml to prevent the evaluation node from
+          # silently inheriting the primary cluster Kubernetes version.
+          deployment_profile_vars_file: ../group_vars/chaos-eval.yml
+    control_plane:
+      hosts:
+        agent_rca_chaos_eval_node:

@@ -1,0 +1,65 @@
+clusterScoped: false
+timezone: UTC
+enableProfiling: false
+
+customLabels:
+  agent-rca.dev/purpose: controlled-fault-evaluation
+
+controllerManager:
+  replicaCount: 1
+  allowHostNetworkTesting: false
+  enableFilterNamespace: false
+  targetNamespace: online-boutique
+  leaderElection:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+
+chaosDaemon:
+  runtime: containerd
+  socketPath: /run/containerd/containerd.sock
+  hostNetwork: false
+  privileged: true
+  mtls:
+    enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    scrape:
+      enabled: true
+
+dashboard:
+  create: true
+  replicaCount: 1
+  securityMode: true
+  service:
+    type: ClusterIP
+  persistentVolume:
+    enabled: false
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+
+dnsServer:
+  create: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

@@ -1,0 +1,140 @@
+---
+- name: Read the evaluation cluster Kubernetes version
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf version --output json
+  register: chaos_mesh_kubernetes_version
+  changed_when: false
+
+- name: Require Kubernetes 1.35 for the pinned Chaos Mesh release
+  ansible.builtin.assert:
+    that:
+      - >-
+        (chaos_mesh_kubernetes_version.stdout | from_json).serverVersion.gitVersion
+        is match('^v1[.]35[.]')
+    fail_msg: The pinned Chaos Mesh release is verified only on Kubernetes 1.35.
+
+- name: Read the Chaos Mesh Helm release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/kubernetes/admin.conf
+    list --namespace {{ chaos_mesh_namespace }}
+    --filter ^{{ chaos_mesh_release_name }}$ --output json
+  register: chaos_mesh_release_result
+  changed_when: false
+
+- name: Require the pinned deployed Chaos Mesh chart
+  ansible.builtin.assert:
+    that:
+      - (chaos_mesh_release_result.stdout | from_json | length) == 1
+      - >-
+        (chaos_mesh_release_result.stdout | from_json)[0].status == 'deployed'
+      - >-
+        (chaos_mesh_release_result.stdout | from_json)[0].chart
+        == 'chaos-mesh-' ~ chaos_mesh_chart_version
+    fail_msg: The pinned Chaos Mesh Helm release is not deployed.
+
+- name: Wait for the Chaos Mesh controller
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/chaos-controller-manager
+    --namespace {{ chaos_mesh_namespace }}
+    --timeout={{ chaos_mesh_wait_timeout }}
+  changed_when: false
+
+- name: Wait for the Chaos Mesh daemon
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status daemonset/chaos-daemon
+    --namespace {{ chaos_mesh_namespace }}
+    --timeout={{ chaos_mesh_wait_timeout }}
+  changed_when: false
+
+- name: Wait for the Chaos Mesh dashboard
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/chaos-dashboard
+    --namespace {{ chaos_mesh_namespace }}
+    --timeout={{ chaos_mesh_wait_timeout }}
+  changed_when: false
+
+- name: Wait for the Chaos Mesh DNS server
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/chaos-dns-server
+    --namespace {{ chaos_mesh_namespace }}
+    --timeout={{ chaos_mesh_wait_timeout }}
+  changed_when: false
+
+- name: Read the Chaos Mesh dashboard Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service chaos-dashboard --namespace {{ chaos_mesh_namespace }}
+    --output json
+  register: chaos_mesh_dashboard_service
+  changed_when: false
+
+- name: Require a private dashboard and one controller replica
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment chaos-controller-manager
+    --namespace {{ chaos_mesh_namespace }} --output json
+  register: chaos_mesh_controller
+  changed_when: false
+
+- name: Enforce the private single-node control boundary
+  ansible.builtin.assert:
+    that:
+      - >-
+        (chaos_mesh_dashboard_service.stdout | from_json).spec.type == 'ClusterIP'
+      - >-
+        (chaos_mesh_controller.stdout | from_json).spec.replicas | int == 1
+    fail_msg: Chaos Mesh dashboard exposure or controller replica boundary drifted.
+
+- name: Read the Chaos Mesh daemon runtime configuration
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get daemonset chaos-daemon --namespace {{ chaos_mesh_namespace }}
+    --output json
+  register: chaos_mesh_daemon
+  changed_when: false
+
+- name: Require the pinned containerd runtime mount and argument
+  ansible.builtin.assert:
+    that:
+      - >-
+        (chaos_mesh_daemon.stdout | from_json).spec.template.spec.volumes
+        | selectattr('hostPath.path', 'defined')
+        | selectattr('hostPath.path', 'equalto', '/run/containerd')
+        | list | length == 1
+      - >-
+        '--runtime' in
+        (chaos_mesh_daemon.stdout | from_json).spec.template.spec.containers[0].command
+      - >-
+        'containerd' in
+        (chaos_mesh_daemon.stdout | from_json).spec.template.spec.containers[0].command
+      - >-
+        '--runtime-socket-path' in
+        (chaos_mesh_daemon.stdout | from_json).spec.template.spec.containers[0].command
+      - >-
+        '/host-run/containerd.sock' in
+        (chaos_mesh_daemon.stdout | from_json).spec.template.spec.containers[0].command
+    fail_msg: Chaos Mesh daemon is not pinned to the containerd runtime socket.
+
+- name: Read the installed bounded fault CRDs
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get customresourcedefinitions
+    podchaos.chaos-mesh.org
+    networkchaos.chaos-mesh.org
+    stresschaos.chaos-mesh.org
+    --output name
+  register: chaos_mesh_crds
+  changed_when: false
+
+- name: Require no active controlled fault during installation verification
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get podchaos,networkchaos,stresschaos
+    --namespace {{ chaos_mesh_target_namespace }} --output name
+  register: chaos_mesh_active_faults
+  changed_when: false
+  failed_when: chaos_mesh_active_faults.stdout | trim | length > 0

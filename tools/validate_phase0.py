@@ -362,6 +362,27 @@ def validate_versions_and_manifests() -> None:
             raise ValidationFailure(
                 f"platform runtime version boundary drifted for {boundary}"
             )
+    expected_chaos_evaluation = {
+        "kubernetes_release": {
+            "minor": "v1.35",
+            "version": "v1.35.8",
+            "deb_version": "1.35.8-1.1",
+        },
+        "chaos_mesh": {
+            "namespace": "chaos-mesh",
+            "target_namespace": "online-boutique",
+            "chart_ref": "chaos-mesh/chaos-mesh",
+            "chart_repository": "https://charts.chaos-mesh.org",
+            "chart_version": "2.8.4",
+            "cluster_scoped": False,
+            "container_runtime": "containerd",
+            "runtime_socket": "/run/containerd/containerd.sock",
+        },
+    }
+    if versions.get("chaos_evaluation") != expected_chaos_evaluation:
+        raise ValidationFailure(
+            "Chaos evaluation Kubernetes and Chaos Mesh boundary drifted"
+        )
     if versions.get("helm", {}).get("version") != "v3.21.4":
         raise ValidationFailure("platform Helm version boundary drifted")
 
@@ -427,6 +448,11 @@ def validate_versions_and_manifests() -> None:
         "alloy_chart_ref": versions["observability"]["alloy"]["chart_ref"],
         "alloy_chart_repository_url": versions["observability"]["alloy"]["chart_repository"],
         "alloy_chart_version": versions["observability"]["alloy"]["chart_version"],
+        "chaos_mesh_namespace": versions["chaos_evaluation"]["chaos_mesh"]["namespace"],
+        "chaos_mesh_target_namespace": versions["chaos_evaluation"]["chaos_mesh"]["target_namespace"],
+        "chaos_mesh_chart_repository_url": versions["chaos_evaluation"]["chaos_mesh"]["chart_repository"],
+        "chaos_mesh_chart_ref": versions["chaos_evaluation"]["chaos_mesh"]["chart_ref"],
+        "chaos_mesh_chart_version": versions["chaos_evaluation"]["chaos_mesh"]["chart_version"],
     }
     for key, expected in expected_ansible_versions.items():
         if ansible_versions.get(key) != expected:
@@ -442,6 +468,163 @@ def validate_versions_and_manifests() -> None:
     for key in checksum_keys:
         if not re.fullmatch(r"[0-9a-f]{64}", ansible_versions.get(key, "")):
             raise ValidationFailure(f"Ansible download checksum is invalid for {key}")
+
+    chaos_inventory = load_yaml_documents(
+        ROOT
+        / "automation"
+        / "ansible"
+        / "inventories"
+        / "chaos-eval.example.yml"
+    )[0]
+    chaos_inventory_hosts = (
+        chaos_inventory.get("all", {})
+        .get("children", {})
+        .get("kubernetes_nodes", {})
+        .get("hosts", {})
+    )
+    chaos_inventory_host = chaos_inventory_hosts.get(
+        "agent_rca_chaos_eval_node", {}
+    )
+    if chaos_inventory_host.get("deployment_profile_vars_file") != (
+        "../group_vars/chaos-eval.yml"
+    ):
+        raise ValidationFailure(
+            "Chaos evaluation inventory must load the reviewed evaluation profile"
+        )
+    chaos_profile = load_yaml_documents(
+        ROOT / "automation" / "ansible" / "group_vars" / "chaos-eval.yml"
+    )[0]
+    if chaos_profile != {
+        "cluster_name": "agent-rca-chaos-eval",
+        "kubernetes_minor": expected_chaos_evaluation["kubernetes_release"]["minor"],
+        "kubernetes_version": expected_chaos_evaluation["kubernetes_release"]["version"],
+        "kubernetes_deb_version": expected_chaos_evaluation["kubernetes_release"]["deb_version"],
+    }:
+        raise ValidationFailure(
+            "Chaos evaluation profile must override only the reviewed Kubernetes 1.35 pin"
+        )
+
+    chaos_values = load_yaml_documents(
+        ROOT / "platform" / "chaos-mesh" / "values.yaml"
+    )[0]
+    chaos_controller = chaos_values.get("controllerManager", {})
+    chaos_daemon = chaos_values.get("chaosDaemon", {})
+    chaos_dashboard = chaos_values.get("dashboard", {})
+    if (
+        chaos_values.get("clusterScoped") is not False
+        or chaos_controller.get("targetNamespace") != "online-boutique"
+        or chaos_controller.get("allowHostNetworkTesting") is not False
+        or chaos_controller.get("replicaCount") != 1
+        or chaos_controller.get("leaderElection", {}).get("enabled") is not False
+        or chaos_daemon.get("runtime") != "containerd"
+        or chaos_daemon.get("socketPath") != "/run/containerd/containerd.sock"
+        or chaos_daemon.get("hostNetwork") is not False
+        or chaos_daemon.get("mtls", {}).get("enabled") is not True
+        or chaos_dashboard.get("securityMode") is not True
+        or chaos_dashboard.get("service", {}).get("type") != "ClusterIP"
+        or chaos_dashboard.get("persistentVolume", {}).get("enabled") is not False
+    ):
+        raise ValidationFailure("Chaos Mesh namespace or runtime safety boundary drifted")
+
+    terraform_variables = (
+        ROOT / "infra" / "terraform" / "environments" / "dev" / "variables.tf"
+    ).read_text(encoding="utf-8")
+    terraform_main = (
+        ROOT / "infra" / "terraform" / "environments" / "dev" / "main.tf"
+    ).read_text(encoding="utf-8")
+    required_terraform_tokens = {
+        'variable "enable_chaos_evaluation_node"',
+        'default     = false',
+        'resource "google_compute_instance" "chaos_evaluation"',
+        'count = var.enable_chaos_evaluation_node ? 1 : 0',
+        'purpose            = "chaos-evaluation"',
+    }
+    terraform_contract = terraform_variables + terraform_main
+    missing_terraform_tokens = sorted(
+        token for token in required_terraform_tokens if token not in terraform_contract
+    )
+    if missing_terraform_tokens:
+        raise ValidationFailure(
+            "Chaos evaluation Terraform opt-in boundary is incomplete: "
+            f"{missing_terraform_tokens}"
+        )
+
+    chaos_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "chaos_mesh_stack"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    required_chaos_role_tokens = {
+        "Require the reviewed Chaos Mesh evaluation Kubernetes minor",
+        "kubernetes_minor == 'v1.35'",
+        "chaos_mesh_target_namespace == online_boutique_namespace",
+        "--atomic --wait",
+    }
+    missing_chaos_role_tokens = sorted(
+        token for token in required_chaos_role_tokens if token not in chaos_role
+    )
+    if missing_chaos_role_tokens:
+        raise ValidationFailure(
+            "Chaos Mesh deployment safety gate is incomplete: "
+            f"{missing_chaos_role_tokens}"
+        )
+
+    online_boutique_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "online_boutique"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    required_online_boutique_identity_tokens = {
+        "behavior: merge",
+        "| replace('agent-rca-dev', cluster_name)",
+    }
+    missing_online_boutique_identity_tokens = sorted(
+        token
+        for token in required_online_boutique_identity_tokens
+        if token not in online_boutique_role
+    )
+    if missing_online_boutique_identity_tokens:
+        raise ValidationFailure(
+            "Online Boutique target-cluster telemetry identity overlay is incomplete: "
+            f"{missing_online_boutique_identity_tokens}"
+        )
+
+    incident_platform_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "incident_platform_stack"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    required_incident_identity_tokens = {
+        "incident-worker-krca-config",
+        "namespace: {{ incident_platform_namespace }}",
+        "disableNameSuffixHash: true",
+        "agent-rca.io/krca-config-sha256",
+        "| replace('cluster_id: agent-rca-dev', 'cluster_id: ' + cluster_name)",
+        "INCIDENT_WORKER_CLUSTER_ID",
+        "STATEGRAPH_CLUSTER_ID",
+    }
+    missing_incident_identity_tokens = sorted(
+        token
+        for token in required_incident_identity_tokens
+        if token not in incident_platform_role
+    )
+    if missing_incident_identity_tokens:
+        raise ValidationFailure(
+            "Incident Platform target-cluster identity overlay is incomplete: "
+            f"{missing_incident_identity_tokens}"
+        )
 
     scope = load_yaml_documents(ROOT / "config" / "project-scope.yaml")[0]
     expected_scope_target = {
@@ -1743,7 +1926,7 @@ def validate_observability_values() -> None:
     alloy_config = alloy.get("alloy", {}).get("configMap", {}).get("content", "")
     if (
         'loki.source.kubernetes "pods"' not in alloy_config
-        or 'replacement  = "agent-rca-dev"' not in alloy_config
+        or 'replacement  = "[[ cluster_name' not in alloy_config
         or 'loki.source.journal "kernel"' not in alloy_config
         or 'matches    = "_TRANSPORT=kernel"' not in alloy_config
         or 'loki.process "kernel_oom"' not in alloy_config
@@ -2051,6 +2234,7 @@ def main() -> None:
     print("- cross-contract evidence references are valid")
     print("- namespace and read-only RBAC boundaries are valid")
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
+    print("- opt-in Kubernetes 1.35 Chaos Mesh evaluation boundaries are consistent")
     print("- private observability, Neo4j, PostgreSQL, reconciler, and live KRCA pins are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- the development-only checkout OOM scenario and restoration gates are valid")

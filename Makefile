@@ -15,6 +15,7 @@ EVIDENCE_GATE_POLICY ?= oom-signature-restart-v2
 	bootstrap-ansible ansible-syntax ansible-ping bootstrap-kubernetes \
 	verify-kubernetes render-observability deploy-observability \
 	verify-observability deploy-online-boutique verify-online-boutique \
+	render-chaos-mesh deploy-chaos-mesh verify-chaos-mesh \
 	render-stategraph deploy-stategraph verify-stategraph \
 	deploy-incident-platform verify-incident-platform evaluate-checkout-oom \
 	summarize-checkout-oom
@@ -91,6 +92,13 @@ render-observability:
 		--version 1.11.1 --namespace observability \
 		--values platform/observability/alloy-values.yaml >/dev/null
 
+render-chaos-mesh:
+	helm repo add chaos-mesh https://charts.chaos-mesh.org --force-update >/dev/null
+	helm repo update chaos-mesh >/dev/null
+	helm template chaos-mesh chaos-mesh/chaos-mesh \
+		--version 2.8.4 --namespace chaos-mesh \
+		--values platform/chaos-mesh/values.yaml >/dev/null
+
 terraform-fmt:
 	terraform fmt -check -recursive infra/terraform
 
@@ -115,6 +123,12 @@ ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/verify-observability.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/chaos-eval.example.yml --syntax-check \
+		automation/ansible/playbooks/deploy-chaos-mesh.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/chaos-eval.example.yml --syntax-check \
+		automation/ansible/playbooks/verify-chaos-mesh.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/deploy-online-boutique.yml
@@ -161,6 +175,16 @@ verify-observability:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-observability.yml
+
+deploy-chaos-mesh:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/deploy-chaos-mesh.yml
+
+verify-chaos-mesh:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_INVENTORY) \
+		automation/ansible/playbooks/verify-chaos-mesh.yml
 
 deploy-online-boutique:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \

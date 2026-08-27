@@ -29,7 +29,8 @@ dist/
 *.egg-info/
 automation/ansible/.collections/
 automation/ansible/.tmp/
-automation/ansible/inventories/dev.yml
+automation/ansible/inventories/*.yml
+!automation/ansible/inventories/*.example.yml
 .ansible/
 *.retry
 

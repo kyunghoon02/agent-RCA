@@ -353,6 +353,24 @@
   register: incident_platform_worker_deployment_result
   changed_when: false
 
+- name: Resolve the Incident worker KRCA runtime ConfigMap
+  ansible.builtin.set_fact:
+    incident_platform_worker_krca_configmap_name: >-
+      {{
+        (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.volumes
+        | selectattr('name', 'equalto', 'krca-config')
+        | map(attribute='configMap.name')
+        | first
+      }}
+
+- name: Read the Incident worker KRCA runtime ConfigMap
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap {{ incident_platform_worker_krca_configmap_name }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_platform_worker_krca_configmap_result
+  changed_when: false
+
 - name: Require the digest-pinned read-only Incident worker
   ansible.builtin.assert:
     that:
@@ -374,6 +392,22 @@
         | selectattr('name', 'equalto', 'NEO4J_PASSWORD')
         | map(attribute='valueFrom.secretKeyRef.name') | first)
         == incident_platform_stategraph_secret
+      - >-
+        ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'INCIDENT_WORKER_CLUSTER_ID')
+        | map(attribute='value') | first)
+        == cluster_name
+      - >-
+        ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].volumeMounts
+        | selectattr('name', 'equalto', 'krca-config')
+        | map(attribute='mountPath') | first)
+        == '/app/config/online-boutique-krca.yaml'
+      - >-
+        (((incident_platform_worker_krca_configmap_result.stdout | from_json).data['online-boutique-krca.yaml']
+        | from_yaml).cluster_id) == cluster_name
+      - >-
+        (((incident_platform_worker_krca_configmap_result.stdout | from_json).data['online-boutique-krca.yaml']
+        | from_yaml).namespace) == online_boutique_namespace
     fail_msg: The Incident worker image, readiness, identity, or resource boundary drifted.
 
 - name: Wait for the bounded Agent worker Deployment
@@ -844,6 +878,17 @@
                   AND evidence.document->>'source' = 'deployment'
                   AND evidence.document->'facts'->>'result_status' = 'NO_CHANGES'
               ),
+              'deployment_change_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ incident_platform_alert_verification_id }}'
+                )
+                  AND evidence.document->>'source' = 'deployment'
+                  AND evidence.document->'facts'->>'result_status'
+                    = 'CHANGE_DETECTED'
+              ),
               'krca_feature_evidence_count', (
                 SELECT count(*) FROM evidence_items evidence
                 WHERE evidence.incident_id IN (
@@ -1147,7 +1192,10 @@
           - incident_platform_alert_delivery.restart_metric_evidence_count | int >= 1
           - incident_platform_alert_delivery.restart_metric_matching_pod_count | int >= 1
           - incident_platform_alert_delivery.deployment_evidence_count | int == 1
-          - incident_platform_alert_delivery.deployment_no_change_count | int == 1
+          - >-
+            (incident_platform_alert_delivery.deployment_no_change_count | int)
+            + (incident_platform_alert_delivery.deployment_change_count | int)
+            == 1
           - incident_platform_alert_delivery.krca_feature_evidence_count | int == 9
           - >-
             (incident_platform_alert_delivery.krca_feature_has_data_count | int)
@@ -1168,7 +1216,9 @@
           - incident_platform_alert_delivery.context_workload_metric_evidence_count | int >= 1
           - incident_platform_alert_delivery.context_restart_metric_evidence_count | int >= 1
           - incident_platform_alert_delivery.context_deployment_evidence_count | int == 1
-          - incident_platform_alert_delivery.context_recent_deployment_evidence_count | int == 0
+          - >-
+            incident_platform_alert_delivery.context_recent_deployment_evidence_count | int
+            == incident_platform_alert_delivery.deployment_change_count | int
           - incident_platform_alert_delivery.context_krca_feature_evidence_count | int == 9
           - incident_platform_alert_delivery.context_recent_krca_feature_evidence_count | int == 0
           - incident_platform_alert_delivery.context_recent_metric_evidence_count | int == 0
@@ -1241,6 +1291,11 @@
       - >-
         (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.automountServiceAccountToken
         | bool
+      - >-
+        ((incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'STATEGRAPH_CLUSTER_ID')
+        | map(attribute='value') | first)
+        == cluster_name
     fail_msg: The StateGraph reconciler schedule or runtime boundary drifted.
 
 - name: Verify the reconciler can list target Pods

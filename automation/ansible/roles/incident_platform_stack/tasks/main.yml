@@ -377,15 +377,88 @@
           {% if incident_platform_agent_runtime_enabled | bool %}
             - ../incident-platform/agent-worker.yaml
           {% endif %}
+          configMapGenerator:
+            - name: incident-worker-krca-config
+              namespace: {{ incident_platform_namespace }}
+              files:
+                - online-boutique-krca.yaml=online-boutique-krca.yaml
+          generatorOptions:
+            disableNameSuffixHash: true
           images:
             - name: agent-rca-runtime
               newName: {{ execution_target.location }}-docker.pkg.dev/{{ incident_platform_gcp_project.content }}/{{ incident_platform.artifact_repository_id }}/agent-rca-runtime
               digest: {{ incident_platform.reconciler.image_digest }}
+          patches:
+            - target:
+                group: apps
+                version: v1
+                kind: Deployment
+                name: incident-worker
+              patch: |-
+                apiVersion: apps/v1
+                kind: Deployment
+                metadata:
+                  name: incident-worker
+                spec:
+                  template:
+                    metadata:
+                      annotations:
+                        agent-rca.io/krca-config-sha256: {{ (lookup('ansible.builtin.file', playbook_dir + '/../../../config/online-boutique-krca.yaml') | replace('cluster_id: agent-rca-dev', 'cluster_id: ' + cluster_name) | hash('sha256')) }}
+                    spec:
+                      containers:
+                        - name: worker
+                          env:
+                            - name: INCIDENT_WORKER_CLUSTER_ID
+                              value: {{ cluster_name }}
+                          volumeMounts:
+                            - name: krca-config
+                              mountPath: /app/config/online-boutique-krca.yaml
+                              subPath: online-boutique-krca.yaml
+                              readOnly: true
+                      volumes:
+                        - name: krca-config
+                          configMap:
+                            name: incident-worker-krca-config
+            - target:
+                group: batch
+                version: v1
+                kind: CronJob
+                name: stategraph-reconciler
+              patch: |-
+                apiVersion: batch/v1
+                kind: CronJob
+                metadata:
+                  name: stategraph-reconciler
+                spec:
+                  jobTemplate:
+                    spec:
+                      template:
+                        spec:
+                          containers:
+                            - name: reconciler
+                              env:
+                                - name: STATEGRAPH_CLUSTER_ID
+                                  value: {{ cluster_name }}
         dest: "{{ incident_platform_image_overlay.path }}/kustomization.yaml"
         mode: "0600"
       delegate_to: localhost
       become: false
       no_log: true
+
+    - name: Write the target-cluster KRCA runtime configuration
+      ansible.builtin.copy:
+        content: >-
+          {{
+            lookup(
+              'ansible.builtin.file',
+              playbook_dir + '/../../../config/online-boutique-krca.yaml'
+            )
+            | replace('cluster_id: agent-rca-dev', 'cluster_id: ' + cluster_name)
+          }}
+        dest: "{{ incident_platform_image_overlay.path }}/online-boutique-krca.yaml"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
 
     - name: Render the pinned Incident Platform manifests locally
       ansible.builtin.command:

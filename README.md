@@ -119,6 +119,7 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 | RCA Viewer | Partially live | private ClusterIP API와 local same-origin BFF 조회 확인. public ingress와 사용자 인증은 없음 |
 | Operational Knowledge | Implemented, runtime pending | lexical/vector/Hybrid retriever와 pilot benchmark는 있으나 live pgvector corpus 평가는 미완료 |
 | Fault evaluation | In progress | checkout OOM harness와 scorer 연결. 다른 fault scenario와 반복 평가는 미완료 |
+| Chaos evaluation runtime | Live, no fault executed | 기존 v1.36 runtime과 분리된 Compute Engine VM에서 Kubernetes v1.35.8, Cilium/Hubble와 namespace-scoped Chaos Mesh 2.8.4 검증 완료 |
 
 현재 live Agent 확인은 controlled OOM 한 건에서 LLM 2회, read-only tool 3회와 총
 15,928 tokens로 `conclusive` Report를 저장한 결과다. 이는 전체 정확도나 비용 절감을
@@ -136,6 +137,12 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 | Persistence | PostgreSQL 17.6, Neo4j Community와 local-path PVC |
 | Reference workload | [Google Online Boutique](platform/online-boutique/README.md) `v0.10.6` |
 | Provisioning | Terraform이 GCP foundation, Ansible이 host/cluster와 pinned workload 배포 담당 |
+
+Chaos evaluation은 기존 v1.36 runtime을 제자리에서 내리지 않는다. Terraform의 기본값이
+꺼진 병렬 VM을 명시적으로 생성해 Kubernetes v1.35.8을 부트스트랩했고, Chaos Mesh 2.8.4는
+`online-boutique`만 대상으로 하는 namespace-scoped mode로 설치했다. 현재 모든 Chaos Mesh
+구성 요소는 Ready이고 활성 fault는 0개다. fault 실행은 별도 scenario 검토와
+`CONFIRM_CONTROLLED_FAULT=yes` 승인을 요구한다.
 
 이 runtime은 application/Kubernetes/Cilium fault 실험용이다. production HA, cross-node
 networking, zone 장애와 managed control-plane 장애를 증명하지 않는다. PostgreSQL과
@@ -171,6 +178,7 @@ memory ratio는 보조 관측으로 남긴다. 목표 평가는 최소 15개 sce
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
 - OOM 외 fault matrix와 반복 평가가 완료되지 않았다.
+- Chaos Mesh runtime은 배포됐지만 Chaos CR 기반 fault scenario와 반복 평가는 아직 실행하지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start
@@ -188,6 +196,7 @@ manifest와 Ansible 정적 검증:
 make terraform-validate
 make ansible-syntax
 make render-observability
+make render-chaos-mesh
 make render-stategraph
 make render-incident-platform
 ```

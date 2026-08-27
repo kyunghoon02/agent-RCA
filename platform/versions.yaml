@@ -25,6 +25,21 @@ kubernetes_release:
   version: "v1.36.4"
   deb_version: "1.36.4-1.1"
 
+chaos_evaluation:
+  kubernetes_release:
+    minor: "v1.35"
+    version: "v1.35.8"
+    deb_version: "1.35.8-1.1"
+  chaos_mesh:
+    namespace: chaos-mesh
+    target_namespace: online-boutique
+    chart_ref: chaos-mesh/chaos-mesh
+    chart_repository: https://charts.chaos-mesh.org
+    chart_version: "2.8.4"
+    cluster_scoped: false
+    container_runtime: containerd
+    runtime_socket: /run/containerd/containerd.sock
+
 kubernetes:
   service: self-managed
   distribution: upstream

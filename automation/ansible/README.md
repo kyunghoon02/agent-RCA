@@ -38,6 +38,33 @@ make deploy-online-boutique
 make verify-online-boutique
 ```
 
+## Chaos evaluation inventory
+
+The parallel Chaos Mesh node uses a separate ignored inventory so its reviewed
+Kubernetes 1.35 pin cannot downgrade the existing v1.36 runtime:
+
+```bash
+cp automation/ansible/inventories/chaos-eval.example.yml \
+  automation/ansible/inventories/chaos-eval.yml
+export ANSIBLE_INVENTORY=automation/ansible/inventories/chaos-eval.yml
+make bootstrap-kubernetes
+make deploy-observability
+make deploy-online-boutique
+make deploy-stategraph
+make smoke-live-stategraph
+make deploy-incident-platform
+make deploy-chaos-mesh
+make verify-chaos-mesh
+```
+
+Populate the ignored inventory only after applying the reviewed opt-in
+Terraform plan. Chaos Mesh is namespace-scoped to `online-boutique`; its
+dashboard remains ClusterIP with security mode enabled, and installation
+verification refuses to pass while any PodChaos, NetworkChaos or StressChaos
+resource is active. The StateGraph smoke must run before Incident Platform
+delivery verification so the fresh Neo4j volume contains the current workload
+identities used for localization.
+
 The bootstrap is intentionally fail-fast on a host other than Ubuntu 24.04
 x86_64 with cgroup v2. Package and binary versions plus download checksums are
 pinned in `group_vars/all.yml` and mirrored in `platform/versions.yaml`.

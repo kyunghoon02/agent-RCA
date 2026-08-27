@@ -24,6 +24,22 @@ output "external_ip" {
   sensitive   = true
 }
 
+output "chaos_evaluation_instance_name" {
+  description = "Parallel Kubernetes 1.35 Chaos Mesh evaluation instance when enabled."
+  value       = try(google_compute_instance.chaos_evaluation[0].name, null)
+}
+
+output "chaos_evaluation_internal_ip" {
+  description = "Private IPv4 address of the Chaos Mesh evaluation node when enabled."
+  value       = try(google_compute_instance.chaos_evaluation[0].network_interface[0].network_ip, null)
+}
+
+output "chaos_evaluation_external_ip" {
+  description = "Static public IPv4 address of the Chaos Mesh evaluation node when enabled."
+  value       = try(google_compute_address.chaos_evaluation[0].address, null)
+  sensitive   = true
+}
+
 output "network_name" {
   description = "VPC network name."
   value       = google_compute_network.main.name

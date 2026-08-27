@@ -7,13 +7,15 @@
     group: root
     mode: "0755"
 
-- name: Copy pinned observability values to the node
-  ansible.builtin.copy:
+- name: Render pinned observability values for the target cluster
+  ansible.builtin.template:
     src: "{{ playbook_dir }}/../../../platform/observability/{{ item }}-values.yaml"
     dest: "{{ observability_remote_values_directory }}/{{ item }}-values.yaml"
     owner: root
     group: root
     mode: "0644"
+    variable_start_string: "[["
+    variable_end_string: "]]"
   loop:
     - local-path
     - kube-prometheus-stack

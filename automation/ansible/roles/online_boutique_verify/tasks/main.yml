@@ -88,6 +88,31 @@
         == online_boutique_otel_collector_image
     fail_msg: The OpenTelemetry Collector image is not pinned as expected.
 
+- name: Read the OpenTelemetry Collector ConfigMap reference
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment/opentelemetrycollector
+    --namespace {{ online_boutique_namespace }}
+    --output jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}'
+  register: online_boutique_otel_configmap_name
+  changed_when: false
+
+- name: Read the target-cluster OpenTelemetry Collector configuration
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap {{ online_boutique_otel_configmap_name.stdout }}
+    --namespace {{ online_boutique_namespace }} --output json
+  register: online_boutique_otel_configmap
+  changed_when: false
+
+- name: Require the target cluster identity in OpenTelemetry resources
+  ansible.builtin.assert:
+    that:
+      - >-
+        'value: ' ~ cluster_name in
+        (online_boutique_otel_configmap.stdout | from_json).data['collector.yaml']
+    fail_msg: The OpenTelemetry Collector cluster identity drifted.
+
 - name: Read direct instrumentation settings
   ansible.builtin.command:
     argv:

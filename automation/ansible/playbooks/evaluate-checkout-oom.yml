@@ -5,6 +5,7 @@
   gather_facts: true
   vars_files:
     - ../group_vars/all.yml
+    - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
     - ../../../platform/versions.yaml
   vars:
     checkout_oom_scenario: >-

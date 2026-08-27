@@ -48,6 +48,32 @@ variable "machine_type" {
   default     = "e2-standard-8"
 }
 
+variable "enable_chaos_evaluation_node" {
+  description = "Create a parallel Kubernetes 1.35 node for bounded Chaos Mesh evaluation."
+  type        = bool
+  default     = false
+}
+
+variable "chaos_evaluation_machine_type" {
+  description = "Compute Engine machine type for the parallel Chaos Mesh evaluation node."
+  type        = string
+  default     = "e2-standard-8"
+}
+
+variable "chaos_evaluation_boot_disk_size_gb" {
+  description = "Balanced persistent boot disk size in GiB for the Chaos Mesh evaluation node."
+  type        = number
+  default     = 100
+
+  validation {
+    condition = (
+      var.chaos_evaluation_boot_disk_size_gb >= 50
+      && var.chaos_evaluation_boot_disk_size_gb <= 500
+    )
+    error_message = "chaos_evaluation_boot_disk_size_gb must be between 50 and 500 GiB."
+  }
+}
+
 variable "boot_disk_size_gb" {
   description = "Balanced persistent boot disk size in GiB."
   type        = number

@@ -1,12 +1,13 @@
 ---
-- name: Verify the Neo4j StateGraph
+- name: Deploy and verify the bounded Chaos Mesh evaluation runtime
   hosts: control_plane
   become: true
   gather_facts: true
   vars_files:
     - ../group_vars/all.yml
     - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
-    - ../../../platform/versions.yaml
 
   roles:
-    - role: stategraph_verify
+    - role: cluster_verify
+    - role: chaos_mesh_stack
+    - role: chaos_mesh_verify
