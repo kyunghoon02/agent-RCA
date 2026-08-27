@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:rca-evaluation-observation-summary",
+  "title": "RCA Controlled Fault Observation Summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "evidence_gate_policy",
+    "generated_at",
+    "run_count",
+    "prediction_outcomes",
+    "oom_signature_sources",
+    "memory_working_set_ratio_peak",
+    "restart_count_delta_peak",
+    "mean_metrics"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "evidence_gate_policy": {
+      "enum": [
+        "oom-signature-restart-memory-0.95-v1",
+        "oom-signature-restart-v2"
+      ]
+    },
+    "generated_at": {"type": "string", "format": "date-time"},
+    "run_count": {"type": "integer", "minimum": 1},
+    "prediction_outcomes": {"$ref": "#/$defs/outcomeCounts"},
+    "oom_signature_sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kubernetes_oomkilled", "loki_kernel_memcg"],
+      "properties": {
+        "kubernetes_oomkilled": {"type": "integer", "minimum": 0},
+        "loki_kernel_memcg": {"type": "integer", "minimum": 0}
+      }
+    },
+    "memory_working_set_ratio_peak": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum", "median", "maximum", "reference_threshold",
+        "reference_threshold_met_count", "reference_threshold_met_rate"
+      ],
+      "properties": {
+        "minimum": {"type": "number", "minimum": 0},
+        "median": {"type": "number", "minimum": 0},
+        "maximum": {"type": "number", "minimum": 0},
+        "reference_threshold": {"type": "number", "minimum": 0},
+        "reference_threshold_met_count": {"type": "integer", "minimum": 0},
+        "reference_threshold_met_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "restart_count_delta_peak": {"$ref": "#/$defs/distribution"},
+    "mean_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_cause_top1_accuracy", "evidence_recall"],
+      "properties": {
+        "root_cause_top1_accuracy": {"$ref": "#/$defs/score"},
+        "evidence_recall": {"$ref": "#/$defs/score"}
+      }
+    }
+  },
+  "$defs": {
+    "score": {"type": "number", "minimum": 0, "maximum": 1},
+    "outcomeCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_cause", "abstain", "ambiguous"],
+      "properties": {
+        "root_cause": {"type": "integer", "minimum": 0},
+        "abstain": {"type": "integer", "minimum": 0},
+        "ambiguous": {"type": "integer", "minimum": 0}
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum", "median", "maximum"],
+      "properties": {
+        "minimum": {"type": "number", "minimum": 0},
+        "median": {"type": "number", "minimum": 0},
+        "maximum": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

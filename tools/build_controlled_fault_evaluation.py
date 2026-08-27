@@ -93,6 +93,7 @@ def main() -> int:
         "ground_truth": GROUND_TRUTH_ROOT / f"{evaluation_case_id}.json",
         "prediction": RUN_ROOT / f"{evaluation_case_id}.prediction.json",
         "result": RUN_ROOT / f"{evaluation_case_id}.result.json",
+        "observation": RUN_ROOT / f"{evaluation_case_id}.observation.json",
     }
     existing = [str(path) for path in paths.values() if path.exists()]
     if existing:
@@ -102,7 +103,7 @@ def main() -> int:
         )
     created: list[Path] = []
     try:
-        for name in ("ground_truth", "prediction", "result"):
+        for name in ("ground_truth", "prediction", "result", "observation"):
             _exclusive_write(paths[name], artifacts[name])
             created.append(paths[name])
     except BaseException:

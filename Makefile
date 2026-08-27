@@ -5,6 +5,7 @@ ANSIBLE_INVENTORY ?= automation/ansible/inventories/dev.yml
 ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
 RCA_GROUND_TRUTH ?=
 RCA_PREDICTION ?=
+EVIDENCE_GATE_POLICY ?= oom-signature-restart-v2
 
 .PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \
@@ -15,7 +16,8 @@ RCA_PREDICTION ?=
 	verify-kubernetes render-observability deploy-observability \
 	verify-observability deploy-online-boutique verify-online-boutique \
 	render-stategraph deploy-stategraph verify-stategraph \
-	deploy-incident-platform verify-incident-platform evaluate-checkout-oom
+	deploy-incident-platform verify-incident-platform evaluate-checkout-oom \
+	summarize-checkout-oom
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -198,3 +200,9 @@ evaluate-checkout-oom:
 		automation/ansible/playbooks/evaluate-checkout-oom.yml \
 		--extra-vars confirm_controlled_fault=yes \
 		--extra-vars controlled_fault_environment=development
+
+summarize-checkout-oom:
+	PYTHONPATH=src .venv/bin/python tools/summarize_controlled_fault_observations.py \
+		--scenario-id scenario-checkoutservice-oom-change-stress \
+		--evidence-gate-policy $(EVIDENCE_GATE_POLICY) \
+		--minimum-runs 5

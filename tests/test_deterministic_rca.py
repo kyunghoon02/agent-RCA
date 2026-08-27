@@ -76,7 +76,7 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
         self.assertTrue(decision.missing_requirements)
         self.assertIn("Prometheus", decision.missing_requirements[0])
 
-    def test_oom_memory_metric_from_a_different_pod_uid_cannot_prove_the_cause(self) -> None:
+    def test_oom_memory_metric_from_a_different_pod_uid_is_not_a_gate(self) -> None:
         _, evidence = load_fixture(
             FIXTURE_DIR / "oomkilled.json",
             lambda drafts: drafts[2]["subject"].update(
@@ -86,8 +86,9 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
 
         decision = DeterministicRCAEngine().evaluate(evidence)
 
-        self.assertEqual(decision.status, "ABSTAIN")
-        self.assertIn("Prometheus", decision.missing_requirements[0])
+        self.assertEqual(decision.status, "PROVEN")
+        self.assertEqual(len(decision.supporting_evidence_ids), 2)
+        self.assertNotIn(evidence[2]["evidence_id"], decision.supporting_evidence_ids)
 
     def test_oom_restart_metric_from_a_different_pod_uid_cannot_prove_the_cause(self) -> None:
         _, evidence = load_fixture(
@@ -143,7 +144,7 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
             decision.root_cause_id, "kubernetes.container-oomkilled"
         )
         self.assertIn("kernel recorded", decision.statement)
-        self.assertEqual(len(decision.supporting_evidence_ids), 3)
+        self.assertEqual(len(decision.supporting_evidence_ids), 2)
 
     def test_exit_137_without_independent_oom_signal_does_not_apply(self) -> None:
         def use_ambiguous_sigkill(drafts):

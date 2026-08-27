@@ -64,9 +64,11 @@ Report를 검토해 별도로 수행하고, 정상화 여부는 새로운 runtim
   analysis claim, read-only Agent tool과 Evidence Gate는 fixture와 contract test로 검증했다.
 - **Controlled fault evaluation:** 개발 환경 전용 checkout OOM harness가 external-controller
   traffic, resource fault, Alertmanager delivery, Frozen Context, private Ground Truth와
-  post-run scorer를 한 번 end-to-end 실행하고 원래 resource/Ready/restart-zero 상태로
-  자동 복구했다. 첫 완료 run은 실제 OOM Ground Truth에 대해 Evidence Gate가 `ABSTAIN`한
-  false negative를 그대로 기록했다.
+  post-run scorer를 end-to-end 실행하고 매회 원래 resource/Ready/restart-zero 상태로
+  자동 복구했다. 기존 memory-threshold gate의 고정 시나리오 5회가 모두 `ABSTAIN`한
+  false negative를 기록했고, 그 분포를 근거로 exact OOM signature와 same-UID restart를
+  요구하는 v2 gate를 만들었다. v2의 별도 live 확인 1회는 `ROOT_CAUSE`와 Top-1 `1.0`을
+  기록했다.
 - **아직 증명하지 않은 범위:** `ANALYZING` 이후 Agent Report까지의 cluster runtime,
   성공한 external LLM live run, 15개 scenario 반복 정확도와 production HA는 아직
   검증하지 않았다.
@@ -190,7 +192,7 @@ fault 실험 후보이며, 실제 runtime Evidence와 Ground Truth 비교가 끝
 
 | Scenario | Change × Workload | 수집할 핵심 Evidence | 검증할 원인 | 상태 |
 |---|---|---|---|---|
-| `checkoutservice` OOMKilled | memory limit 감소 × 고정 checkout traffic | kernel memcg OOM, memory metric, restart, resource limit와 rollout 시각 | 변경과 workload가 결합한 memory exhaustion | 자동 harness 1회 완료, Evidence Gate false negative 확인 |
+| `checkoutservice` OOMKilled | memory limit 감소 × 고정 checkout traffic | kernel memcg OOM, memory metric, restart, resource limit와 rollout 시각 | 변경과 workload가 결합한 memory exhaustion | legacy gate 5회 false negative 측정, v2 gate live 확인 1회 Top-1 `1.0` |
 | NetworkPolicy 차단 | policy 변경 × 정상 service traffic | Hubble drop flow, timeout, policy diff와 적용 시각 | 특정 service path를 차단한 policy regression | 계획 |
 | Deployment regression | image/config 변경 × path-weighted traffic | RED metric, trace, application log와 ReplicaSet revision | 새 revision에서 발생한 API path regression | 계획 |
 | Load-only saturation | 변경 없음 × 단계적 stress | latency/error, CPU·memory와 change 부재 Evidence | 배포 변경이 아닌 capacity/workload 문제 | 계획 |
@@ -253,7 +255,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 
 ## Implementation Status
 
-> 기준일: 2026-08-26. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
+> 기준일: 2026-08-27. 목표 아키텍처와 현재 executable/runtime evidence를 구분한다.
 
 | 영역 | 현재 상태 | Runtime 상태 |
 |---|---|---|
@@ -265,7 +267,7 @@ corpus/benchmark/model fingerprint가 있는 결과만 README의 portfolio 수�
 | Operational Knowledge와 Retriever | lexical baseline, pgvector chunk adapter, vector-only/Hybrid RRF, hash/scope gate, 12-query pilot harness와 Agent reference tool 구현 | live pgvector sync/embedding 평가와 claim-ready corpus 미검증 |
 | Agent RCA와 LLM tool-calling | OpenAI Agents SDK 단일 Agent, 구조화 draft, Evidence/Reference read-only tool 2개, Evidence Gate, Agent Run audit/Report 저장과 별도 Context-pinned Agent Worker 구현 | Worker fixture는 `ANALYZING→REPORTED`와 fail-closed 경로를 통과. Agent Deployment manifest는 준비됐지만 기본 Kustomize에서 제외됨. 2026-08-25 live API 재확인도 `credit_balance_exhausted` 429로 성공 runtime 미검증 |
 | Read-only RCA Viewer query | bounded list/filter/keyset cursor, artifact detail/timeline/work-state contract, 인증된 GET transport, Next.js UI와 same-origin server-side BFF, private API Deployment 및 전용 read-only DB role 구현 | cluster-local API Ready, DB role의 SELECT 허용·mutation 거부와 local BFF를 통한 live list/detail/work/Evidence 조회 검증. public ingress/domain, 사용자 session/role 인증, observability deep link runtime 설정과 production query plan은 미구현 |
-| Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider/change Projector, Ground Truth/Prediction/Result 계약, external-controller workload와 development-only OOM fault harness 구현 | exact baseline과 명시적 승인, cluster lock, controller/remote watchdog, `always` 복구를 강제한다. live OOM 1회가 Alertmanager→Incident→Frozen Context→private Ground Truth/Prediction/Result까지 완료되고 원상 복구됐다. 결과는 `ABSTAIN`, root-cause Top-1 `0.0`, Evidence precision `1.0`/recall `0.666667`로 false negative를 숨기지 않았다. Git/ArgoCD change source와 15-scenario 반복 dataset은 미구현 |
+| Change × Workload evaluation | preregistration과 matrix, bounded Kubernetes DeploymentHistoryProvider/change Projector, Ground Truth/Prediction/Result/Observation 계약, ID-free 분포 집계기, external-controller workload와 development-only OOM fault harness 구현 | exact baseline과 명시적 승인, cluster lock, controller/remote watchdog, `always` 복구를 강제한다. legacy gate의 고정 OOM 5회는 모두 exact kernel memcg OOM과 restart를 수집했지만 30초 memory peak가 0.399~0.506에 머물러 전부 `ABSTAIN`했다. v2 gate의 별도 live 확인 1회는 `ROOT_CAUSE`, Top-1/Top-3 `1.0`, Evidence precision `1.0`/recall `0.666667`로 완료되고 원상 복구됐다. v2 5회 반복, Git/ArgoCD change source와 15-scenario dataset은 미구현 |
 | GCP, Terraform, kubeadm, Cilium/Hubble | foundation apply와 재계획 검증, pinned Ansible kubeadm 및 Cilium/Hubble bootstrap 구현 | Compute Engine을 `e2-standard-8`(8 vCPU/32GB)로 확장하고 Kubernetes v1.36.4 single-node 재부팅 복구, Cilium/Hubble과 read-only flow 조회 및 controlled application OOM/복구를 검증; destroy와 VM failure runtime은 미검증 |
 | Observability stack | pinned Helm values, Tempo manifest와 Ansible deploy/verify 구현 | Prometheus/Alertmanager/Grafana, Loki/Alloy, Tempo 배포; PVC 5개 Bound, Cilium/Hubble target `up=1`, normalized Kubernetes log stream과 Tempo readiness 확인. Alloy DaemonSet이 host journal을 read-only로 읽어 kernel memcg OOM의 Pod UID를 Loki label로 정규화한다. KRCA API recording rule 4개와 UID-backed Pod memory ratio/restart delta rule 2개, frontend failure-rate opt-in alert rule 및 인증된 Alertmanager webhook live 적용 |
 | Online Boutique target | upstream `v0.10.6` commit·Redis/Collector image를 고정하고, 3개 source patch와 Cloud Build/Artifact Registry digest pin을 추가한 Kustomize overlay 및 Ansible deploy/verify 구현 | 12 Deployment와 12 internal Service Ready. 10개 application service 모두 server span, Collector target `up=1`, RED/service graph metric, Tempo trace와 23-edge KRCA live smoke 및 checkout OOM fault/복구 검증 완료. bounded external-controller checkout traffic은 OOM harness에 연결됐고, 지속 외부 load와 나머지 fault matrix는 미연결 |
@@ -355,9 +357,12 @@ summary만 `PrometheusMetricEvidenceProjector`가 logical Service의 time-bounde
 Pod workload metric은 exact Service root에서 파생된 Pod prefix와 trusted Pod UID를 모두
 강제한다. Kubernetes API의 누적 `restartCount`를 시간 delta로 해석하지 않고,
 kube-state-metrics counter의 30분 increase만 `restart_count_delta` Evidence로 만든다.
-deterministic OOM gate는 동일 UID의 Kubernetes `OOMKilled`, Prometheus restart delta 1 이상,
-memory working-set ratio 0.95 이상이 함께 있을 때만 `PROVEN`을 반환한다. containerd가
-OOM event를 잃어 Kubernetes가 `Error`와 exit code 137만 남기는 경우에는, Alloy/Loki의
+deterministic OOM gate는 동일 UID의 Kubernetes `OOMKilled` 또는 trusted Loki kernel
+memcg OOM 중 하나와 Prometheus restart delta 1 이상이 함께 있을 때만 `PROVEN`을
+반환한다. 30초 scrape의 memory working-set ratio는 순간 OOM peak를 놓칠 수
+있으므로 보조 관측으로 보존하지만 필수 gate나 supporting citation으로 사용하지 않는다.
+containerd가 OOM event를 잃어 Kubernetes가 `Error`와 exit code 137만 남기는 경우에는,
+Alloy/Loki의
 `CONSTRAINT_MEMCG` kernel line에서 추출한 UID와 Kubernetes의 scoped Pod UID가 일치하는
 Evidence를 Kubernetes `OOMKilled` 대신 사용할 수 있다. exit code 137 자체는 OOM
 signature로 인정하지 않는다.
@@ -367,27 +372,35 @@ UID에 대해 Loki kernel OOM match 3회, Prometheus restart delta peak 3,
 memory working-set ratio peak 0.9619를 수집했다. `LokiKernelOOMProvider`는 원본 PID와
 cgroup line을 저장하지 않고 Pod UID, constraint, match count와 시각만 `log-pattern`
 Evidence로 정규화했다. `LokiKernelOOMEvidenceProjector`가 그 Evidence를 Frozen Context에
-포함했고 deterministic Evidence Gate는 세 supporting Evidence ID로
+포함했고 당시 v1 Evidence Gate는 세 supporting Evidence ID로
 `kubernetes.container-oomkilled`를 `PROVEN`으로 판정했다. fault 뒤 checkoutservice는
 원래 64Mi request/128Mi limit, Ready 1개와 restart 0 상태로 복구했고 임시 load Pod와
 검증 alert는 제거했다. 삭제·rollout된 과거 Pod UID를 current Kubernetes inventory로
 소급 매핑하는 기능은 아직 없으므로 해당 경우에는 추측하지 않고 abstain한다.
 
-같은 날 추가한 자동 harness는 성공 Evidence가 나올 때까지 반복하는 방식이 아니다.
+자동 harness는 성공 Evidence가 나올 때까지 반복하는 방식이 아니다.
 고정 seed의 controller-side checkout traffic, 8Mi request/limit와 75초 관측 창을 먼저
 시나리오로 고정하고, 결과와 무관하게 Alert를 제출한다. Ground Truth는 주입 manifest와
 동일 Pod UID의 exact kernel OOM/restart를 기준으로 runtime 밖에서 만들며 memory 표본은
-관측값 그대로 관련 Evidence에 포함한다. 첫 자동 run에서는 30초 scrape가 순간 memory
-peak를 잡지 못해 deterministic gate의 0.95 조건이 충족되지 않았고 `ABSTAIN`했다.
-sanitized score는 root-cause Top-1 `0.0`, Evidence precision `1.0`, recall `0.666667`,
-abstention correctness `0.0`이었다. 이는 harness 실패가 아니라 현재 rule의 false negative
-측정값이며, threshold를 이 한 사례에 맞춰 낮추지 않는다. private Ground Truth와 Prediction,
-Result 파일은 Git에서 제외되고 Agent runtime에는 mount되지 않는다.
+관측값 그대로 관련 Evidence에 포함한다. legacy
+`oom-signature-restart-memory-0.95-v1` policy의 고정 시나리오 5회에서는 kernel memcg OOM이
+5/5, restart delta가 2~3으로 관측됐지만 memory peak는 0.399~0.506, reference threshold
+통과는 0/5였다. 결과는 모두 `ABSTAIN`, 평균 Top-1 `0.0`이었다. 이 분포를 근거로 threshold를
+낮추지 않고 순간 metric을 필수 gate에서 제거한 `oom-signature-restart-v2`를 만들었다.
+v2의 별도 live 확인 1회는 memory peak 0.537에도 exact kernel signal과 same-UID restart
+delta 4를 근거로 `ROOT_CAUSE`, Top-1/Top-3 `1.0`, Evidence precision `1.0`, recall
+`0.666667`을 기록했다. memory Evidence를 억지로 supporting citation에 넣지 않아 recall은
+2/3으로 남는다. private Ground Truth, Prediction, Result, Observation 파일은 Git에서
+제외되고 Agent runtime에는 mount되지 않는다. ID-free summary는 policy별로만 집계해 전후
+결과를 섞지 않는다.
 
 이 development-only 실험은 다음처럼 명시적으로 승인해야 실행된다.
 
 ```bash
 make evaluate-checkout-oom CONFIRM_CONTROLLED_FAULT=yes
+
+# v2가 preregistered 5회를 채운 뒤 policy별 ID-free summary 생성
+make summarize-checkout-oom EVIDENCE_GATE_POLICY=oom-signature-restart-v2
 ```
 
 `DeploymentHistoryProvider`는 exact Deployment와 그 UID를 owner로 가진 retained

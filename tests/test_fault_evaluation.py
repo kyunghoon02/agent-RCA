@@ -16,6 +16,9 @@ from incident_platform.evidence import (
 )
 from incident_platform.errors import ContractViolation
 from incident_platform.fault_evaluation import build_controlled_fault_evaluation
+from incident_platform.fault_evaluation import (
+    summarize_controlled_fault_observations,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +29,7 @@ def fixture_bundle(
     *,
     memory_ratio: float | None = None,
     memory_uid: str | None = None,
+    incident_id: str | None = None,
 ) -> tuple[dict, dict]:
     with (ROOT / "tests/fixtures/deterministic/oomkilled.json").open() as handle:
         fixture = json.load(handle)
@@ -33,6 +37,8 @@ def fixture_bundle(
         fixture["evidence_drafts"][2]["facts"]["peak_ratio"] = memory_ratio
     if memory_uid is not None:
         fixture["evidence_drafts"][2]["subject"]["uid"] = memory_uid
+    if incident_id is not None:
+        fixture["incident_id"] = incident_id
     request = CollectionRequest(
         request_id="req-controlled-oom-fixture",
         incident_id=fixture["incident_id"],
@@ -117,7 +123,7 @@ def fixture_bundle(
 
 
 class ControlledFaultEvaluationTests(unittest.TestCase):
-    def test_exact_oom_snapshot_builds_private_label_and_perfect_score(self) -> None:
+    def test_exact_oom_snapshot_builds_private_label_and_correct_root_cause(self) -> None:
         bundle, scenario = fixture_bundle()
 
         artifacts = build_controlled_fault_evaluation(
@@ -135,7 +141,23 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
         self.assertEqual(
             artifacts["result"]["metrics"]["root_cause_top1_accuracy"], 1.0
         )
-        self.assertEqual(artifacts["result"]["metrics"]["evidence_recall"], 1.0)
+        self.assertEqual(
+            artifacts["result"]["metrics"]["evidence_recall"], 0.666667
+        )
+        self.assertEqual(
+            artifacts["observation"]["memory_working_set_ratio_peak"], 0.99
+        )
+        self.assertTrue(
+            artifacts["observation"]["memory_reference_threshold_met"]
+        )
+        self.assertEqual(
+            artifacts["observation"]["evidence_gate_policy"],
+            "oom-signature-restart-v2",
+        )
+        self.assertEqual(
+            artifacts["observation"]["oom_signature_source"],
+            "kubernetes-oomkilled",
+        )
         serialized_result = json.dumps(artifacts["result"])
         self.assertNotIn("kubernetes.container-oomkilled", serialized_result)
         self.assertNotIn(
@@ -164,13 +186,54 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
             evaluated_at=NOW,
         )
 
-        self.assertEqual(artifacts["prediction"]["outcome"], "ABSTAIN")
+        self.assertEqual(artifacts["prediction"]["outcome"], "ROOT_CAUSE")
         self.assertEqual(
-            artifacts["result"]["metrics"]["root_cause_top1_accuracy"], 0.0
+            artifacts["result"]["metrics"]["root_cause_top1_accuracy"], 1.0
         )
         self.assertEqual(
-            artifacts["result"]["metrics"]["abstention_correctness"], 0.0
+            artifacts["result"]["metrics"]["abstention_correctness"], 1.0
         )
+        self.assertFalse(
+            artifacts["observation"]["memory_reference_threshold_met"]
+        )
+        self.assertNotIn(
+            "evidence_id", json.dumps(artifacts["observation"])
+        )
+
+    def test_observation_summary_reports_distribution_without_private_ids(self) -> None:
+        observations = []
+        for index, memory_ratio in enumerate((0.4, 0.8, 0.94, 0.95, 0.99)):
+            bundle, scenario = fixture_bundle(
+                memory_ratio=memory_ratio,
+                incident_id=f"inc-fixture-oom-000{index + 1}",
+            )
+            artifacts = build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="a" * 64,
+                evaluated_at=NOW,
+            )
+            observations.append(artifacts["observation"])
+
+        summary = summarize_controlled_fault_observations(
+            observations, generated_at=NOW
+        )
+
+        self.assertEqual(summary["run_count"], 5)
+        self.assertEqual(summary["prediction_outcomes"]["root_cause"], 5)
+        self.assertEqual(summary["prediction_outcomes"]["abstain"], 0)
+        self.assertEqual(
+            summary["memory_working_set_ratio_peak"]["median"], 0.94
+        )
+        self.assertEqual(
+            summary["memory_working_set_ratio_peak"][
+                "reference_threshold_met_rate"
+            ],
+            0.4,
+        )
+        serialized = json.dumps(summary)
+        self.assertNotIn("evaluation_case_id", serialized)
+        self.assertNotIn("incident_id", serialized)
 
 
 if __name__ == "__main__":

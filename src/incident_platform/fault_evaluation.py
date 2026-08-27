@@ -5,11 +5,16 @@ from __future__ import annotations
 import copy
 import hashlib
 import re
+import statistics
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 from .contracts import validate_contract
-from .deterministic import DeterministicRCAEngine
+from .deterministic import (
+    OOM_EVIDENCE_GATE_POLICY,
+    OOM_MEMORY_RATIO_REFERENCE_THRESHOLD,
+    DeterministicRCAEngine,
+)
 from .evidence import verify_evidence_content_hash
 from .errors import ContractViolation
 from .rca_evaluation import (
@@ -72,6 +77,14 @@ def select_controlled_oom_ground_truth_evidence(
     frozen Evidence snapshot and requires one exact Pod UID across all items.
     """
 
+    selected = _select_controlled_oom_ground_truth_items(evidence, scenario)
+    return tuple(str(item["evidence_id"]) for item in selected)
+
+
+def _select_controlled_oom_ground_truth_items(
+    evidence: Sequence[Mapping[str, Any]],
+    scenario: Mapping[str, Any],
+) -> Tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
     predicates = scenario["expected"]["evidence_predicates"]
     restart_minimum = float(predicates["restart_count_delta_minimum"])
     signatures = [
@@ -123,15 +136,161 @@ def select_controlled_oom_ground_truth_evidence(
             None,
         )
         if restart is not None and memory is not None:
-            return (
-                str(signature["evidence_id"]),
-                str(restart["evidence_id"]),
-                str(memory["evidence_id"]),
-            )
+            return signature, restart, memory
     raise ContractViolation(
         "controlled OOM Ground Truth requires an exact OOM signature, restart "
         "delta, and memory ratio for one Pod UID"
     )
+
+
+def _build_observation(
+    *,
+    evaluation_case_id: str,
+    scenario_id: str,
+    incident_id: str,
+    selected_items: Tuple[
+        Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]
+    ],
+    prediction: Mapping[str, Any],
+    result: Mapping[str, Any],
+    observed_at: str,
+) -> Dict[str, Any]:
+    signature, restart, memory = selected_items
+    signature_facts = _facts(signature)
+    if signature.get("source") == "kubernetes":
+        signature_source = "kubernetes-oomkilled"
+        signature_match_count = 1
+    else:
+        signature_source = "loki-kernel-memcg"
+        signature_match_count = int(signature_facts["match_count"])
+
+    memory_peak = float(_facts(memory)["peak_ratio"])
+    observation = {
+        "schema_version": "1.0.0",
+        "evaluation_case_id": evaluation_case_id,
+        "scenario_id": scenario_id,
+        "incident_id": incident_id,
+        "observed_at": observed_at,
+        "evidence_gate_policy": OOM_EVIDENCE_GATE_POLICY,
+        "same_pod_uid": True,
+        "oom_signature_source": signature_source,
+        "oom_signature_match_count": signature_match_count,
+        "restart_count_delta_peak": float(_facts(restart)["peak_delta"]),
+        "memory_working_set_ratio_peak": memory_peak,
+        "memory_working_set_ratio_reference_threshold": (
+            OOM_MEMORY_RATIO_REFERENCE_THRESHOLD
+        ),
+        "memory_reference_threshold_met": (
+            memory_peak >= OOM_MEMORY_RATIO_REFERENCE_THRESHOLD
+        ),
+        "prediction_outcome": prediction["outcome"],
+        "root_cause_top1_accuracy": result["metrics"][
+            "root_cause_top1_accuracy"
+        ],
+        "evidence_recall": result["metrics"]["evidence_recall"],
+    }
+    validate_contract("rca-evaluation-observation.schema.json", observation)
+    return observation
+
+
+def summarize_controlled_fault_observations(
+    observations: Sequence[Mapping[str, Any]],
+    *,
+    generated_at: datetime,
+) -> Dict[str, Any]:
+    """Build an ID-free distribution summary for one controlled scenario."""
+
+    if not observations:
+        raise ContractViolation("at least one controlled-fault observation is required")
+    copied = [copy.deepcopy(dict(item)) for item in observations]
+    for observation in copied:
+        validate_contract("rca-evaluation-observation.schema.json", observation)
+        reference_threshold_met = (
+            observation["memory_working_set_ratio_peak"]
+            >= observation["memory_working_set_ratio_reference_threshold"]
+        )
+        if observation["memory_reference_threshold_met"] != reference_threshold_met:
+            raise ContractViolation(
+                "controlled-fault observation reference threshold is inconsistent"
+            )
+    scenario_ids = {item["scenario_id"] for item in copied}
+    if len(scenario_ids) != 1:
+        raise ContractViolation(
+            "controlled-fault observations must belong to one scenario"
+        )
+    gate_policies = {item["evidence_gate_policy"] for item in copied}
+    if len(gate_policies) != 1:
+        raise ContractViolation(
+            "controlled-fault observations use different Evidence Gate policies"
+        )
+    for identity_field in ("evaluation_case_id", "incident_id"):
+        identities = [item[identity_field] for item in copied]
+        if len(set(identities)) != len(identities):
+            raise ContractViolation(
+                f"controlled-fault observations repeat {identity_field}"
+            )
+
+    memory_peaks = [item["memory_working_set_ratio_peak"] for item in copied]
+    restart_peaks = [item["restart_count_delta_peak"] for item in copied]
+    thresholds = {
+        item["memory_working_set_ratio_reference_threshold"] for item in copied
+    }
+    if len(thresholds) != 1:
+        raise ContractViolation(
+            "controlled-fault observations use different memory thresholds"
+        )
+    threshold = thresholds.pop()
+
+    def _count(field: str, value: str) -> int:
+        return sum(item[field] == value for item in copied)
+
+    def _mean_score(field: str) -> float:
+        return round(statistics.fmean(item[field] for item in copied), 6)
+
+    met_count = sum(item["memory_reference_threshold_met"] for item in copied)
+    summary = {
+        "schema_version": "1.0.0",
+        "scenario_id": next(iter(scenario_ids)),
+        "evidence_gate_policy": next(iter(gate_policies)),
+        "generated_at": _format_time(generated_at),
+        "run_count": len(copied),
+        "prediction_outcomes": {
+            "root_cause": _count("prediction_outcome", "ROOT_CAUSE"),
+            "abstain": _count("prediction_outcome", "ABSTAIN"),
+            "ambiguous": _count("prediction_outcome", "AMBIGUOUS"),
+        },
+        "oom_signature_sources": {
+            "kubernetes_oomkilled": _count(
+                "oom_signature_source", "kubernetes-oomkilled"
+            ),
+            "loki_kernel_memcg": _count(
+                "oom_signature_source", "loki-kernel-memcg"
+            ),
+        },
+        "memory_working_set_ratio_peak": {
+            "minimum": min(memory_peaks),
+            "median": statistics.median(memory_peaks),
+            "maximum": max(memory_peaks),
+            "reference_threshold": threshold,
+            "reference_threshold_met_count": met_count,
+            "reference_threshold_met_rate": round(met_count / len(copied), 6),
+        },
+        "restart_count_delta_peak": {
+            "minimum": min(restart_peaks),
+            "median": statistics.median(restart_peaks),
+            "maximum": max(restart_peaks),
+        },
+        "mean_metrics": {
+            "root_cause_top1_accuracy": _mean_score(
+                "root_cause_top1_accuracy"
+            ),
+            "evidence_recall": _mean_score("evidence_recall"),
+        },
+    }
+    validate_contract(
+        "rca-evaluation-observation-summary.schema.json", summary
+    )
+    return summary
 
 
 def build_controlled_fault_evaluation(
@@ -200,9 +359,10 @@ def build_controlled_fault_evaluation(
         )
     frozen_evidence = [by_id[item] for item in context["evidence_ids"]]
 
-    relevant_ids = select_controlled_oom_ground_truth_evidence(
+    selected_items = _select_controlled_oom_ground_truth_items(
         frozen_evidence, scenario
     )
+    relevant_ids = tuple(str(item["evidence_id"]) for item in selected_items)
     evaluation_digest = hashlib.sha256(
         f"{scenario['scenario_id']}:{incident_id}".encode("utf-8")
     ).hexdigest()
@@ -244,8 +404,18 @@ def build_controlled_fault_evaluation(
         prediction,
         evaluated_at=evaluated_at,
     )
+    observation = _build_observation(
+        evaluation_case_id=evaluation_case_id,
+        scenario_id=scenario["scenario_id"],
+        incident_id=incident_id,
+        selected_items=selected_items,
+        prediction=prediction,
+        result=result,
+        observed_at=timestamp,
+    )
     return {
         "ground_truth": ground_truth,
         "prediction": prediction,
         "result": result,
+        "observation": observation,
     }

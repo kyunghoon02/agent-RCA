@@ -75,8 +75,10 @@ bounded increase로 변환한다. 두 rule 모두 `kube_pod_info`의 Pod UID를 
 UID가 없는 series나 범위 밖 Pod를 거부하고, series가 없으면 가상의 Pod Evidence를 만들지
 않는다. Kubernetes API의 현재 `restartCount`를 시간 delta로 오인하지 않으며,
 `OOMKilledRule`은 동일 UID의 Kubernetes `OOMKilled` 또는 검증된 kernel memcg OOM
-Evidence 중 하나와 Prometheus restart delta, memory limit 근접 Evidence가 모두 있을
-때만 원인을 `PROVEN`으로 판정한다. `Error`와 exit code 137만으로는 OOM을 판정하지 않는다.
+Evidence 중 하나와 Prometheus restart delta가 함께 있을 때만 원인을 `PROVEN`으로
+판정한다. 30초 scrape의 memory working-set ratio는 순간 OOM peak를 놓칠 수 있으므로
+보조 관측으로 보존하지만 필수 gate나 supporting citation으로 사용하지 않는다. `Error`와
+exit code 137만으로는 OOM을 판정하지 않는다.
 `PrometheusWorkloadMetricEvidenceProjector`는 정규화된 summary를 동일 UID의 Kubernetes
 Pod Entity에만 투영한다.
 

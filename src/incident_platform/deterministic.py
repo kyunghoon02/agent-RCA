@@ -8,6 +8,11 @@ from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence, Tuple
 from .contracts import validate_contract
 
 
+OOM_RESTART_DELTA_MINIMUM = 1.0
+OOM_MEMORY_RATIO_REFERENCE_THRESHOLD = 0.95
+OOM_EVIDENCE_GATE_POLICY = "oom-signature-restart-v2"
+
+
 @dataclass(frozen=True)
 class RuleEvaluation:
     rule_id: str
@@ -107,28 +112,21 @@ class OOMKilledRule:
                 if item.get("source") == "prometheus"
                 and item.get("kind") == "metric-summary"
                 and _facts(item).get("metric") == "restart_count_delta"
-                and _at_least(_facts(item).get("peak_delta"), 1)
+                and _at_least(
+                    _facts(item).get("peak_delta"), OOM_RESTART_DELTA_MINIMUM
+                )
                 and _same_subject(signature, item)
             ]
-            metrics = [
-                item
-                for item in evidence
-                if item.get("source") == "prometheus"
-                and item.get("kind") == "metric-summary"
-                and _facts(item).get("metric") == "memory_working_set_ratio"
-                and _at_least(_facts(item).get("peak_ratio"), 0.95)
-                and _same_subject(signature, item)
-            ]
-            if restarts and metrics:
+            if restarts:
                 if signature.get("source") == "kubernetes":
                     statement = (
-                        "Container memory usage reached its limit and the container "
-                        "was terminated with OOMKilled."
+                        "The container was terminated with OOMKilled and the same "
+                        "Pod UID recorded a restart increase."
                     )
                 else:
                     statement = (
-                        "The kernel recorded a Pod cgroup OOM while memory usage "
-                        "reached its limit and the Pod restart count increased."
+                        "The kernel recorded a Pod cgroup OOM and the same Pod UID "
+                        "recorded a restart increase."
                     )
                 return RuleEvaluation(
                     rule_id=self.rule_id,
@@ -137,7 +135,6 @@ class OOMKilledRule:
                     supporting_evidence_ids=(
                         signature["evidence_id"],
                         restarts[0]["evidence_id"],
-                        metrics[0]["evidence_id"],
                     ),
                 )
         matching_restarts = [
@@ -147,17 +144,9 @@ class OOMKilledRule:
             if item.get("source") == "prometheus"
             and item.get("kind") == "metric-summary"
             and _facts(item).get("metric") == "restart_count_delta"
-            and _at_least(_facts(item).get("peak_delta"), 1)
-            and _same_subject(signature, item)
-        ]
-        matching_memory = [
-            item
-            for signature in signatures
-            for item in evidence
-            if item.get("source") == "prometheus"
-            and item.get("kind") == "metric-summary"
-            and _facts(item).get("metric") == "memory_working_set_ratio"
-            and _at_least(_facts(item).get("peak_ratio"), 0.95)
+            and _at_least(
+                _facts(item).get("peak_delta"), OOM_RESTART_DELTA_MINIMUM
+            )
             and _same_subject(signature, item)
         ]
         missing = []
@@ -165,21 +154,17 @@ class OOMKilledRule:
             missing.append(
                 "Prometheus restart_count_delta at or above 1 for the same workload"
             )
-        if not matching_memory:
-            missing.append(
-                "Prometheus memory_working_set_ratio peak at or above 0.95 for the same workload"
-            )
         return RuleEvaluation(
             rule_id=self.rule_id,
             status="INSUFFICIENT",
             statement=(
-                "An exact Pod OOM signal was observed but restart and memory-limit "
+                "An exact Pod OOM signal was observed but same-UID restart "
                 "corroboration is incomplete."
             ),
             supporting_evidence_ids=tuple(
                 dict.fromkeys(
                     item["evidence_id"]
-                    for item in (*signatures, *matching_restarts, *matching_memory)
+                    for item in (*signatures, *matching_restarts)
                 )
             ),
             missing_requirements=tuple(missing),

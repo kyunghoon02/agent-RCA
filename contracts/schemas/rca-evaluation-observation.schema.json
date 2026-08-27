@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:rca-evaluation-observation",
+  "title": "RCA Controlled Fault Observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluation_case_id",
+    "scenario_id",
+    "incident_id",
+    "observed_at",
+    "evidence_gate_policy",
+    "same_pod_uid",
+    "oom_signature_source",
+    "oom_signature_match_count",
+    "restart_count_delta_peak",
+    "memory_working_set_ratio_peak",
+    "memory_working_set_ratio_reference_threshold",
+    "memory_reference_threshold_met",
+    "prediction_outcome",
+    "root_cause_top1_accuracy",
+    "evidence_recall"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "evaluation_case_id": {
+      "type": "string",
+      "pattern": "^eval-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "observed_at": {"type": "string", "format": "date-time"},
+    "evidence_gate_policy": {
+      "enum": [
+        "oom-signature-restart-memory-0.95-v1",
+        "oom-signature-restart-v2"
+      ]
+    },
+    "same_pod_uid": {"const": true},
+    "oom_signature_source": {
+      "enum": ["kubernetes-oomkilled", "loki-kernel-memcg"]
+    },
+    "oom_signature_match_count": {"type": "integer", "minimum": 1},
+    "restart_count_delta_peak": {"type": "number", "minimum": 0},
+    "memory_working_set_ratio_peak": {"type": "number", "minimum": 0},
+    "memory_working_set_ratio_reference_threshold": {
+      "type": "number",
+      "minimum": 0
+    },
+    "memory_reference_threshold_met": {"type": "boolean"},
+    "prediction_outcome": {
+      "enum": ["ROOT_CAUSE", "ABSTAIN", "AMBIGUOUS"]
+    },
+    "root_cause_top1_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+    "evidence_recall": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}
