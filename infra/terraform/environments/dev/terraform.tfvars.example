@@ -11,6 +11,12 @@ enable_chaos_evaluation_node       = false
 chaos_evaluation_machine_type     = "e2-standard-8"
 chaos_evaluation_boot_disk_size_gb = 100
 
+# Opt in only after reviewing the third failure-domain cost and private
+# telemetry firewall rules in a saved plan.
+enable_observability_node       = false
+observability_machine_type      = "e2-standard-4"
+observability_boot_disk_size_gb = 150
+
 enable_external_ip = true
 
 # Replace with the operator's current public IPv4 /32. Never use 0.0.0.0/0.

@@ -52,6 +52,35 @@ kubernetes_certificate_minimum_residual_seconds: 2592000
 observability_namespace: observability
 observability_remote_values_directory: /etc/agent-rca/observability
 observability_wait_timeout: 15m
+observability_domain_mode: local
+observability_remote_node_address: >-
+  {{ observability_remote_node_address_inventory | default('') }}
+observability_prometheus_node_port: 30090
+observability_loki_node_port: 30100
+observability_tempo_query_node_port: 30320
+observability_tempo_otlp_grpc_node_port: 30317
+observability_tempo_otlp_http_node_port: 30318
+observability_prometheus_service_type: >-
+  {{ 'NodePort' if observability_domain_mode == 'receiver' else 'ClusterIP' }}
+observability_loki_service_type: >-
+  {{ 'NodePort' if observability_domain_mode == 'receiver' else 'ClusterIP' }}
+observability_prometheus_remote_write_enabled: >-
+  {{ observability_domain_mode == 'forwarder' }}
+observability_prometheus_remote_write_url: >-
+  http://{{ observability_remote_node_address }}:{{ observability_prometheus_node_port }}/api/v1/write
+observability_loki_write_url: >-
+  {{
+    'http://' + observability_remote_node_address + ':' + (observability_loki_node_port | string)
+    + '/loki/api/v1/push'
+    if observability_domain_mode == 'forwarder'
+    else 'http://loki-gateway.observability.svc.cluster.local/loki/api/v1/push'
+  }}
+online_boutique_tempo_endpoint: >-
+  {{
+    observability_remote_node_address + ':' + (observability_tempo_otlp_grpc_node_port | string)
+    if observability_domain_mode == 'forwarder'
+    else 'tempo.observability.svc.cluster.local:4317'
+  }}
 
 local_path_release_name: local-path-provisioner
 local_path_namespace: local-path-storage
@@ -134,6 +163,7 @@ incident_platform_reconciler_cronjob: stategraph-reconciler
 incident_platform_webhook_deployment: incident-webhook
 incident_platform_webhook_service: incident-webhook
 incident_platform_webhook_secret: incident-webhook-auth
+incident_platform_webhook_node_port: 30080
 incident_platform_worker_deployment: incident-worker
 incident_platform_viewer_deployment: incident-viewer
 incident_platform_viewer_service: incident-viewer
@@ -144,3 +174,16 @@ incident_platform_agent_worker_deployment: incident-agent-worker
 incident_platform_agent_secret: incident-agent-auth
 incident_platform_alertmanager_config: agent-rca-incidents
 incident_platform_wait_timeout: 10m
+incident_platform_domain_mode: local
+incident_platform_target_cluster_id: "{{ cluster_name }}"
+incident_platform_target_kubernetes_api_server: https://kubernetes.default.svc
+incident_platform_remote_kubernetes_secret: remote-target-kubernetes
+incident_platform_prometheus_base_url: >-
+  http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090
+incident_platform_loki_base_url: >-
+  http://loki-gateway.observability.svc.cluster.local
+incident_platform_webhook_service_type: >-
+  {{ 'NodePort' if incident_platform_domain_mode == 'control' else 'ClusterIP' }}
+incident_platform_remote_token_mount_path: /var/run/secrets/agent-rca-target/token
+incident_platform_remote_ca_mount_path: /var/run/secrets/agent-rca-target/ca.crt
+three_domain_target_access_token_secret: incident-platform-reader-token

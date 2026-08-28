@@ -74,6 +74,32 @@ variable "chaos_evaluation_boot_disk_size_gb" {
   }
 }
 
+variable "enable_observability_node" {
+  description = "Create a third failure domain for retained metrics, logs, traces, and alerts."
+  type        = bool
+  default     = false
+}
+
+variable "observability_machine_type" {
+  description = "Compute Engine machine type for the isolated observability node."
+  type        = string
+  default     = "e2-standard-4"
+}
+
+variable "observability_boot_disk_size_gb" {
+  description = "Balanced persistent boot disk size in GiB for the observability node."
+  type        = number
+  default     = 150
+
+  validation {
+    condition = (
+      var.observability_boot_disk_size_gb >= 100
+      && var.observability_boot_disk_size_gb <= 1000
+    )
+    error_message = "observability_boot_disk_size_gb must be between 100 and 1000 GiB."
+  }
+}
+
 variable "boot_disk_size_gb" {
   description = "Balanced persistent boot disk size in GiB."
   type        = number

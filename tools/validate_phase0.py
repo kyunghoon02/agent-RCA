@@ -491,6 +491,19 @@ def validate_versions_and_manifests() -> None:
         raise ValidationFailure(
             "Chaos evaluation inventory must load the reviewed evaluation profile"
         )
+    if chaos_inventory_host.get("observability_remote_node_address_inventory") != (
+        "OBSERVABILITY_PRIVATE_IP"
+    ):
+        raise ValidationFailure(
+            "Chaos evaluation inventory must declare the private telemetry receiver input"
+        )
+    if "agent_rca_chaos_eval_node" not in (
+        chaos_inventory.get("all", {})
+        .get("children", {})
+        .get("fault_target", {})
+        .get("hosts", {})
+    ):
+        raise ValidationFailure("Chaos evaluation inventory must declare fault_target")
     chaos_profile = load_yaml_documents(
         ROOT / "automation" / "ansible" / "group_vars" / "chaos-eval.yml"
     )[0]
@@ -499,9 +512,10 @@ def validate_versions_and_manifests() -> None:
         "kubernetes_minor": expected_chaos_evaluation["kubernetes_release"]["minor"],
         "kubernetes_version": expected_chaos_evaluation["kubernetes_release"]["version"],
         "kubernetes_deb_version": expected_chaos_evaluation["kubernetes_release"]["deb_version"],
+        "observability_domain_mode": "forwarder",
     }:
         raise ValidationFailure(
-            "Chaos evaluation profile must override only the reviewed Kubernetes 1.35 pin"
+            "Chaos evaluation profile must select Kubernetes 1.35 and telemetry forwarding"
         )
 
     chaos_values = load_yaml_documents(
@@ -534,10 +548,18 @@ def validate_versions_and_manifests() -> None:
     ).read_text(encoding="utf-8")
     required_terraform_tokens = {
         'variable "enable_chaos_evaluation_node"',
+        'variable "enable_observability_node"',
         'default     = false',
         'resource "google_compute_instance" "chaos_evaluation"',
+        'resource "google_compute_instance" "observability"',
         'count = var.enable_chaos_evaluation_node ? 1 : 0',
+        'count = var.enable_observability_node ? 1 : 0',
         'purpose            = "chaos-evaluation"',
+        'purpose = "observability"',
+        'resource "google_compute_firewall" "observability_ingest"',
+        'resource "google_compute_firewall" "observability_query"',
+        'resource "google_compute_firewall" "rca_control_webhook"',
+        'resource "google_compute_firewall" "fault_target_kubernetes_api"',
     }
     terraform_contract = terraform_variables + terraform_main
     missing_terraform_tokens = sorted(
@@ -611,9 +633,13 @@ def validate_versions_and_manifests() -> None:
         "namespace: {{ incident_platform_namespace }}",
         "disableNameSuffixHash: true",
         "agent-rca.io/krca-config-sha256",
-        "| replace('cluster_id: agent-rca-dev', 'cluster_id: ' + cluster_name)",
+        "incident_platform_target_cluster_id",
         "INCIDENT_WORKER_CLUSTER_ID",
         "STATEGRAPH_CLUSTER_ID",
+        "KUBERNETES_API_SERVER",
+        "PROMETHEUS_BASE_URL",
+        "LOKI_BASE_URL",
+        "remote-target-kubernetes",
     }
     missing_incident_identity_tokens = sorted(
         token
@@ -1975,6 +2001,149 @@ def validate_observability_values() -> None:
         raise ValidationFailure("Cilium/Hubble ServiceMonitor gate drifted")
 
 
+def validate_three_domain_runtime() -> None:
+    observability_directory = ROOT / "platform" / "observability"
+    scope = load_yaml_documents(ROOT / "config" / "project-scope.yaml")[0]
+    topology = scope.get("runtime_topology", {})
+    if (
+        topology.get("model") != "three-independent-failure-domains"
+        or set(topology.get("domains", {}))
+        != {"rca-control", "fault-target", "observability"}
+        or topology.get("transport") != "private-vpc-tag-scoped-firewall"
+    ):
+        raise ValidationFailure("project scope three-domain topology drifted")
+    forwarder_values = (
+        observability_directory / "kube-prometheus-stack-forwarder-values.yaml"
+    ).read_text(encoding="utf-8")
+    receiver_values = (
+        observability_directory / "kube-prometheus-stack-receiver-values.yaml"
+    ).read_text(encoding="utf-8")
+    loki_receiver_values = (
+        observability_directory / "loki-receiver-values.yaml"
+    ).read_text(encoding="utf-8")
+    tempo_receiver = load_yaml_documents(
+        observability_directory / "tempo-receiver" / "service-nodeport.yaml"
+    )[0]
+    tempo_ports = {
+        port["name"]: port.get("nodePort")
+        for port in tempo_receiver.get("spec", {}).get("ports", [])
+    }
+    if (
+        "remoteWrite:" not in forwarder_values
+        or "observability_prometheus_remote_write_url" not in forwarder_values
+        or "agent_rca_.+" not in forwarder_values
+        or "enableRemoteWriteReceiver: true" not in receiver_values
+        or "type: NodePort" not in receiver_values
+        or "default(30090)" not in receiver_values
+        or "type: NodePort" not in loki_receiver_values
+        or "default(30100)" not in loki_receiver_values
+        or tempo_receiver.get("spec", {}).get("type") != "NodePort"
+        or tempo_ports != {"http": 30320, "otlp-grpc": 30317, "otlp-http": 30318}
+    ):
+        raise ValidationFailure("three-domain telemetry transport boundary drifted")
+
+    observability_inventory = load_yaml_documents(
+        ROOT
+        / "automation"
+        / "ansible"
+        / "inventories"
+        / "observability.example.yml"
+    )[0]
+    observability_children = observability_inventory.get("all", {}).get(
+        "children", {}
+    )
+    observability_host = (
+        observability_children.get("kubernetes_nodes", {})
+        .get("hosts", {})
+        .get("agent_rca_observability_node", {})
+    )
+    observability_profile = load_yaml_documents(
+        ROOT / "automation" / "ansible" / "group_vars" / "observability.yml"
+    )[0]
+    if (
+        observability_host.get("deployment_profile_vars_file")
+        != "../group_vars/observability.yml"
+        or "agent_rca_observability_node"
+        not in observability_children.get("observability_domain", {}).get("hosts", {})
+        or observability_profile
+        != {
+            "cluster_name": "agent-rca-observability",
+            "observability_domain_mode": "receiver",
+        }
+    ):
+        raise ValidationFailure("observability receiver inventory boundary drifted")
+
+    playbook = (
+        ROOT / "automation" / "ansible" / "playbooks" / "deploy-three-domain.yml"
+    ).read_text(encoding="utf-8")
+    stack_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "incident_platform_stack"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    wiring_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "three_domain_observability_wiring"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    quiesce_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "three_domain_quiesce"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    required_tokens = {
+        "fault_target": playbook,
+        "rca_control": playbook,
+        "observability_domain": playbook,
+        "three_domain_target_access": playbook,
+        "three_domain_observability_wiring": playbook,
+        "three_domain_quiesce": playbook,
+        "remote-target-kubernetes": stack_role,
+        "externalTrafficPolicy: Local": stack_role,
+        "KUBERNETES_TOKEN_FILE": stack_role,
+        "rca_enabled": wiring_role,
+        "remote_metric_series": wiring_role,
+        "remote_log_streams": wiring_role,
+        "remote_traces": wiring_role,
+        "--replicas=0": quiesce_role,
+        "--ignore-not-found": quiesce_role,
+    }
+    missing_tokens = sorted(
+        token for token, source in required_tokens.items() if token not in source
+    )
+    if missing_tokens:
+        raise ValidationFailure(
+            f"three-domain orchestration boundary is incomplete: {missing_tokens}"
+        )
+
+    remote_route = (
+        observability_directory / "remote-alertmanager-routing.yaml"
+    ).read_text(encoding="utf-8")
+    remote_alert = (
+        observability_directory / "remote-online-boutique-alerts.yaml"
+    ).read_text(encoding="utf-8")
+    if (
+        "RCA_CONTROL_PRIVATE_ADDRESS:30080" not in remote_route
+        or "rca_enabled" not in remote_route
+        or "authorization:" not in remote_route
+        or 'cluster_id="FAULT_TARGET_CLUSTER_ID"' not in remote_alert
+        or 'rca_enabled: "true"' not in remote_alert
+    ):
+        raise ValidationFailure("remote alert identity or authentication drifted")
+
+
 def validate_policy_configs() -> None:
     routing = load_yaml_documents(ROOT / "config" / "rca-routing.yaml")[0]
     if routing["preconditions"]["ground_truth_access_allowed"]:
@@ -2225,6 +2394,7 @@ def main() -> None:
     validate_krca_runtime_config()
     validate_stategraph_manifest()
     validate_incident_platform_manifest()
+    validate_three_domain_runtime()
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
     validate_controlled_fault_scenarios()
@@ -2235,7 +2405,7 @@ def main() -> None:
     print("- namespace and read-only RBAC boundaries are valid")
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
     print("- opt-in Kubernetes 1.35 Chaos Mesh evaluation boundaries are consistent")
-    print("- private observability, Neo4j, PostgreSQL, reconciler, and live KRCA pins are consistent")
+    print("- private three-domain telemetry, RCA control, and fault-target boundaries are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- the development-only checkout OOM scenario and restoration gates are valid")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")

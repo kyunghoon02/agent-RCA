@@ -52,13 +52,98 @@
   register: cluster_services
   changed_when: false
 
-- name: Reject publicly exposed service types
+- name: Resolve non-ClusterIP observability services
+  ansible.builtin.set_fact:
+    observability_non_cluster_ip_services: >-
+      {{
+        (cluster_services.stdout | from_json)['items']
+        | rejectattr('spec.type', 'equalto', 'ClusterIP')
+        | list
+      }}
+
+- name: Enforce the reviewed service exposure boundary
   ansible.builtin.assert:
     that:
       - >-
-        (cluster_services.stdout | from_json)['items']
-        | rejectattr('spec.type', 'equalto', 'ClusterIP') | list | length == 0
-    fail_msg: A NodePort, LoadBalancer, or ExternalName service is present.
+        (
+          observability_non_cluster_ip_services
+          | map(attribute='metadata.name')
+          | sort
+        )
+        == (
+          ['loki-gateway', 'monitoring-kube-prometheus-prometheus', 'tempo']
+          if observability_domain_mode == 'receiver'
+          else []
+        )
+    fail_msg: An unreviewed NodePort, LoadBalancer, or ExternalName service is present.
+
+- name: Read receiver services
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ item }} --namespace {{ observability_namespace }} --output json
+  loop:
+    - monitoring-kube-prometheus-prometheus
+    - loki-gateway
+    - tempo
+  register: observability_receiver_services
+  changed_when: false
+  when: observability_domain_mode == 'receiver'
+
+- name: Require fixed private receiver NodePorts
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((observability_receiver_services.results[0].stdout | from_json).spec.ports
+        | selectattr('port', 'equalto', 9090)
+        | map(attribute='nodePort') | first)
+        == observability_prometheus_node_port
+      - >-
+        ((observability_receiver_services.results[1].stdout | from_json).spec.ports
+        | selectattr('port', 'equalto', 80)
+        | map(attribute='nodePort') | first)
+        == observability_loki_node_port
+      - >-
+        ((observability_receiver_services.results[2].stdout | from_json).spec.ports
+        | selectattr('port', 'equalto', 4317)
+        | map(attribute='nodePort') | first)
+        == observability_tempo_otlp_grpc_node_port
+    fail_msg: The observability receiver NodePort contract drifted.
+  when: observability_domain_mode == 'receiver'
+
+- name: Read the Prometheus runtime resource
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get prometheus monitoring-kube-prometheus-prometheus
+    --namespace {{ observability_namespace }} --output json
+  register: observability_prometheus_runtime
+  changed_when: false
+
+- name: Read the Alloy runtime configuration
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap alloy --namespace {{ observability_namespace }} --output json
+  register: observability_alloy_runtime
+  changed_when: false
+
+- name: Require the receiver or forwarder telemetry contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        observability_domain_mode != 'receiver'
+        or (observability_prometheus_runtime.stdout | from_json).spec.enableRemoteWriteReceiver
+        | bool
+      - >-
+        observability_domain_mode != 'forwarder'
+        or (observability_prometheus_runtime.stdout | from_json).spec.remoteWrite[0].url
+        == observability_prometheus_remote_write_url
+      - >-
+        observability_domain_mode != 'forwarder'
+        or observability_loki_write_url in
+        (observability_alloy_runtime.stdout | from_json).data['config.alloy']
+      - >-
+        (observability_prometheus_runtime.stdout | from_json).spec.externalLabels.cluster_id
+        == cluster_name
+    fail_msg: The observability receiver/forwarder runtime contract drifted.
 
 - name: Read all ingresses
   ansible.builtin.command: >-

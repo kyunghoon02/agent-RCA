@@ -1,0 +1,288 @@
+---
+- name: Prepare bounded read-only access on the fault target
+  hosts: fault_target
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/chaos-eval.yml
+  roles:
+    - role: three_domain_target_access
+
+- name: Discover the observability private endpoint
+  hosts: observability_domain
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  tasks:
+    - name: Publish the private observability address for later plays
+      ansible.builtin.set_fact:
+        three_domain_observability_private_address: >-
+          {{ ansible_facts.default_ipv4.address }}
+
+- name: Reconcile the RCA control plane against remote evidence sources
+  hosts: rca_control
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/default-profile.yml
+    - ../../../platform/versions.yaml
+  pre_tasks:
+    - name: Select the three-domain control-plane runtime contract
+      ansible.builtin.set_fact:
+        incident_platform_domain_mode: control
+        three_domain_target_source_host: "{{ groups['fault_target'][0] }}"
+        three_domain_observability_source_host: >-
+          {{ groups['observability_domain'][0] }}
+        three_domain_observability_private_address: >-
+          {{ hostvars[groups['observability_domain'][0]].three_domain_observability_private_address }}
+        incident_platform_target_cluster_id: >-
+          {{ hostvars[groups['fault_target'][0]].three_domain_target_cluster_id }}
+        incident_platform_target_kubernetes_api_server: >-
+          {{ hostvars[groups['fault_target'][0]].three_domain_target_kubernetes_api_server }}
+        incident_platform_prometheus_base_url: >-
+          http://{{ hostvars[groups['observability_domain'][0]].three_domain_observability_private_address
+          }}:{{ observability_prometheus_node_port }}
+        incident_platform_loki_base_url: >-
+          http://{{ hostvars[groups['observability_domain'][0]].three_domain_observability_private_address
+          }}:{{ observability_loki_node_port }}
+      no_log: true
+  roles:
+    - role: stategraph_verify
+    - role: incident_platform_stack
+    - role: incident_platform_verify
+
+- name: Reconcile central telemetry and Alertmanager routing
+  hosts: observability_domain
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  vars:
+    three_domain_control_source_host: "{{ groups['rca_control'][0] }}"
+    three_domain_target_source_host: "{{ groups['fault_target'][0] }}"
+    three_domain_control_private_address: >-
+      {{ hostvars[groups['rca_control'][0]].ansible_facts.default_ipv4.address }}
+    three_domain_target_cluster_id: >-
+      {{ hostvars[groups['fault_target'][0]].three_domain_target_cluster_id }}
+  roles:
+    - role: three_domain_observability_wiring
+
+- name: Submit a bounded cross-domain delivery probe
+  hosts: observability_domain
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  tasks:
+    - name: Define the cross-domain verification alert
+      ansible.builtin.set_fact:
+        three_domain_verification_id: >-
+          three-domain-runtime-{{ ansible_facts.date_time.epoch }}
+        three_domain_verification_started_at: "{{ ansible_facts.date_time.iso8601 }}"
+        three_domain_verification_labels:
+          alertname: AgentRCAThreeDomainVerification
+          cluster_id: >-
+            {{ hostvars[groups['fault_target'][0]].three_domain_target_cluster_id }}
+          namespace: "{{ online_boutique_namespace }}"
+          severity: warning
+          service: frontend
+          rca_enabled: "true"
+          krca_profile: browse-and-cart-read
+          verification_id: >-
+            three-domain-runtime-{{ ansible_facts.date_time.epoch }}
+
+    - name: Define a short automatic expiry for the verification alert
+      ansible.builtin.command: date --utc --date=+5minutes +%Y-%m-%dT%H:%M:%SZ
+      register: three_domain_verification_expiry_result
+      changed_when: false
+
+    - name: Read the central Alertmanager Service
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get service {{ alertmanager_service_name }}
+        --namespace {{ observability_namespace }} --output json
+      register: three_domain_alertmanager_service_result
+      changed_when: false
+
+    - name: Submit the firing verification alert to central Alertmanager
+      ansible.builtin.uri:
+        url: >-
+          http://{{ (three_domain_alertmanager_service_result.stdout | from_json).spec.clusterIP
+          }}:9093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': three_domain_verification_labels,
+            'annotations': {
+              'summary': 'Controlled three-domain Agent RCA verification'
+            },
+            'startsAt': three_domain_verification_started_at,
+            'endsAt': three_domain_verification_expiry_result.stdout | trim,
+            'generatorURL': 'https://prometheus.invalid/three-domain-verification'
+          }] }}
+        status_code: 200
+      changed_when: true
+
+- name: Verify durable cross-domain Incident and Evidence collection
+  hosts: rca_control
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Wait for the control workers to process the central alert
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT json_build_object(
+              'incident_count', count(*),
+              'analyzing_count', count(*) FILTER (WHERE status = 'ANALYZING'),
+              'failed_count', count(*) FILTER (WHERE status = 'FAILED'),
+              'evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
+                )
+              ),
+              'kubernetes_pod_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
+                ) AND evidence.document->>'source' = 'kubernetes'
+                  AND evidence.document->'subject'->>'kind' = 'Pod'
+              ),
+              'prometheus_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
+                ) AND evidence.document->>'source' = 'prometheus'
+              ),
+              'work_succeeded_count', (
+                SELECT count(*) FROM incident_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
+                ) AND work.state = 'SUCCEEDED'
+              ),
+              'localization_succeeded_count', (
+                SELECT count(*) FROM incident_localization_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
+                ) AND work.state = 'SUCCEEDED'
+              )
+            ) FROM incidents
+            WHERE document->'alert'->'labels'->>'verification_id'
+              = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'"
+      register: three_domain_delivery_result
+      changed_when: false
+      no_log: true
+      until: >-
+        ((three_domain_delivery_result.stdout | trim | from_json).incident_count | int == 1)
+        and ((three_domain_delivery_result.stdout | trim | from_json).analyzing_count | int == 1)
+        and ((three_domain_delivery_result.stdout | trim | from_json).failed_count | int == 0)
+        and ((three_domain_delivery_result.stdout | trim | from_json).evidence_count | int >= 20)
+        and ((three_domain_delivery_result.stdout | trim | from_json).kubernetes_pod_evidence_count | int >= 1)
+        and ((three_domain_delivery_result.stdout | trim | from_json).prometheus_evidence_count | int >= 5)
+        and ((three_domain_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
+        and ((three_domain_delivery_result.stdout | trim | from_json).localization_succeeded_count | int == 1)
+      retries: 60
+      delay: 2
+
+    - name: Publish sanitized cross-domain delivery proof
+      ansible.builtin.set_fact:
+        three_domain_delivery_proof: >-
+          {{ three_domain_delivery_result.stdout | trim | from_json }}
+      no_log: true
+
+    - name: Report the cross-domain delivery result
+      ansible.builtin.debug:
+        msg:
+          incident_count: "{{ three_domain_delivery_proof.incident_count }}"
+          analyzing_count: "{{ three_domain_delivery_proof.analyzing_count }}"
+          failed_count: "{{ three_domain_delivery_proof.failed_count }}"
+          evidence_count: "{{ three_domain_delivery_proof.evidence_count }}"
+          kubernetes_pod_evidence_count: >-
+            {{ three_domain_delivery_proof.kubernetes_pod_evidence_count }}
+          prometheus_evidence_count: >-
+            {{ three_domain_delivery_proof.prometheus_evidence_count }}
+
+- name: Resolve the bounded cross-domain delivery probe
+  hosts: observability_domain
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  tasks:
+    - name: Resolve the central verification alert
+      ansible.builtin.uri:
+        url: >-
+          http://{{ (three_domain_alertmanager_service_result.stdout | from_json).spec.clusterIP
+          }}:9093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': three_domain_verification_labels,
+            'annotations': {
+              'summary': 'Controlled three-domain Agent RCA verification resolved'
+            },
+            'startsAt': three_domain_verification_started_at,
+            'endsAt': three_domain_verification_started_at,
+            'generatorURL': 'https://prometheus.invalid/three-domain-verification'
+          }] }}
+        status_code: 200
+      changed_when: true
+
+- name: Quiesce the duplicate control-plane copy on the fault target
+  hosts: fault_target
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/chaos-eval.yml
+  vars:
+    three_domain_quiesce_scope: fault-target-control-copy
+  roles:
+    - role: three_domain_quiesce
+
+- name: Quiesce the duplicate target workload on the RCA control domain
+  hosts: rca_control
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/default-profile.yml
+  vars:
+    three_domain_quiesce_scope: control-workload-copy
+  roles:
+    - role: three_domain_quiesce

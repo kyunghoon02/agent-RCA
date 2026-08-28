@@ -1,0 +1,3 @@
+---
+cluster_name: agent-rca-observability
+observability_domain_mode: receiver

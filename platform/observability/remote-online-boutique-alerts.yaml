@@ -1,0 +1,47 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: remote-online-boutique-agent-rca
+  namespace: online-boutique
+  labels:
+    release: monitoring
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  groups:
+    - name: remote-online-boutique-agent-rca
+      interval: 15s
+      rules:
+        - alert: OnlineBoutiqueFrontendHighFailureRate
+          expr: |
+            (
+              max by (cluster_id, namespace, service_name) (
+                agent_rca_api_failure_rate{
+                  cluster_id="FAULT_TARGET_CLUSTER_ID",
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="GET"
+                }
+              ) > 0.05
+            )
+            and on (cluster_id, namespace, service_name)
+            (
+              sum by (cluster_id, namespace, service_name) (
+                agent_rca_api_request_rate{
+                  cluster_id="FAULT_TARGET_CLUSTER_ID",
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="GET"
+                }
+              ) > 0.1
+            )
+          for: 2m
+          labels:
+            namespace: online-boutique
+            service: frontend
+            severity: critical
+            rca_enabled: "true"
+            agent_rca_enabled: "true"
+            krca_profile: browse-and-cart-read
+          annotations:
+            summary: Online Boutique frontend failure rate is above 5 percent
+            description: The remote frontend has sustained failures with active traffic.

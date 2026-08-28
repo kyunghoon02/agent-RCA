@@ -1,4 +1,16 @@
 ---
+- name: Require a reviewed Incident Platform domain mode
+  ansible.builtin.assert:
+    that:
+      - incident_platform_domain_mode in ['local', 'control']
+      - >-
+        incident_platform_domain_mode != 'control'
+        or (three_domain_target_source_host | default('') | length > 0)
+      - >-
+        incident_platform_domain_mode != 'control'
+        or (three_domain_observability_private_address | default('') | length > 0)
+    fail_msg: The Incident Platform failure-domain inputs are incomplete.
+
 - name: Create the remote Incident Platform manifest directory
   ansible.builtin.file:
     path: "{{ incident_platform_remote_directory }}"
@@ -32,6 +44,41 @@
     --overwrite
   register: incident_platform_namespace_labels
   changed_when: "'not labeled' not in incident_platform_namespace_labels.stdout"
+
+- name: Require the bounded remote target credentials
+  ansible.builtin.assert:
+    that:
+      - hostvars[three_domain_target_source_host].three_domain_target_token_b64 | length > 0
+      - hostvars[three_domain_target_source_host].three_domain_target_ca_b64 | length > 0
+      - incident_platform_target_kubernetes_api_server is match('^https://[^/]+:6443$')
+    fail_msg: The remote target Kubernetes credential contract is incomplete.
+  no_log: true
+  when: incident_platform_domain_mode == 'control'
+
+- name: Reconcile the bounded remote target Kubernetes Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ incident_platform_remote_kubernetes_secret }}
+        namespace: {{ incident_platform_namespace }}
+      type: Opaque
+      data:
+        token: "{{ hostvars[three_domain_target_source_host].three_domain_target_token_b64 }}"
+        ca.crt: "{{ hostvars[three_domain_target_source_host].three_domain_target_ca_b64 }}"
+  register: incident_platform_remote_kubernetes_secret_apply
+  changed_when: >-
+    ' created' in incident_platform_remote_kubernetes_secret_apply.stdout
+    or ' configured' in incident_platform_remote_kubernetes_secret_apply.stdout
+  no_log: true
+  when: incident_platform_domain_mode == 'control'
 
 - name: Copy the Incident Platform read-only RBAC manifest
   ansible.builtin.copy:
@@ -257,6 +304,13 @@
   changed_when: false
   no_log: true
 
+- name: Publish the webhook credential for the observability domain
+  ansible.builtin.set_fact:
+    three_domain_webhook_token_b64: >-
+      {{ (incident_platform_webhook_secret_result.stdout | from_json).data.token }}
+  no_log: true
+  when: incident_platform_domain_mode == 'control'
+
 - name: Reconcile the Alertmanager namespace webhook Secret
   ansible.builtin.command:
     argv:
@@ -370,6 +424,7 @@
     - name: Write the digest-pinned Incident Platform image override
       ansible.builtin.copy:
         content: |
+          #jinja2: lstrip_blocks: True
           apiVersion: kustomize.config.k8s.io/v1beta1
           kind: Kustomization
           resources:
@@ -403,22 +458,46 @@
                   template:
                     metadata:
                       annotations:
-                        agent-rca.io/krca-config-sha256: {{ (lookup('ansible.builtin.file', playbook_dir + '/../../../config/online-boutique-krca.yaml') | replace('cluster_id: agent-rca-dev', 'cluster_id: ' + cluster_name) | hash('sha256')) }}
+                        agent-rca.io/krca-config-sha256: {{ (lookup('ansible.builtin.file', playbook_dir + '/../../../config/online-boutique-krca.yaml') | replace('cluster_id: agent-rca-dev', 'cluster_id: ' + incident_platform_target_cluster_id) | hash('sha256')) }}
                     spec:
+                      automountServiceAccountToken: {{ 'false' if incident_platform_domain_mode == 'control' else 'true' }}
                       containers:
                         - name: worker
                           env:
                             - name: INCIDENT_WORKER_CLUSTER_ID
-                              value: {{ cluster_name }}
+                              value: {{ incident_platform_target_cluster_id }}
+                            - name: PROMETHEUS_BASE_URL
+                              value: {{ incident_platform_prometheus_base_url }}
+                            - name: LOKI_BASE_URL
+                              value: {{ incident_platform_loki_base_url }}
+                            - name: KUBERNETES_API_SERVER
+                              value: {{ incident_platform_target_kubernetes_api_server }}
+                          {% if incident_platform_domain_mode == 'control' %}
+                            - name: KUBERNETES_TOKEN_FILE
+                              value: {{ incident_platform_remote_token_mount_path }}
+                            - name: KUBERNETES_CA_FILE
+                              value: {{ incident_platform_remote_ca_mount_path }}
+                          {% endif %}
                           volumeMounts:
                             - name: krca-config
                               mountPath: /app/config/online-boutique-krca.yaml
                               subPath: online-boutique-krca.yaml
                               readOnly: true
+                          {% if incident_platform_domain_mode == 'control' %}
+                            - name: remote-target-kubernetes
+                              mountPath: /var/run/secrets/agent-rca-target
+                              readOnly: true
+                          {% endif %}
                       volumes:
                         - name: krca-config
                           configMap:
                             name: incident-worker-krca-config
+                      {% if incident_platform_domain_mode == 'control' %}
+                        - name: remote-target-kubernetes
+                          secret:
+                            secretName: {{ incident_platform_remote_kubernetes_secret }}
+                            defaultMode: 256
+                      {% endif %}
             - target:
                 group: batch
                 version: v1
@@ -434,11 +513,70 @@
                     spec:
                       template:
                         spec:
+                          automountServiceAccountToken: {{ 'false' if incident_platform_domain_mode == 'control' else 'true' }}
                           containers:
                             - name: reconciler
                               env:
                                 - name: STATEGRAPH_CLUSTER_ID
-                                  value: {{ cluster_name }}
+                                  value: {{ incident_platform_target_cluster_id }}
+                                - name: KUBERNETES_API_SERVER
+                                  value: {{ incident_platform_target_kubernetes_api_server }}
+                              {% if incident_platform_domain_mode == 'control' %}
+                                - name: KUBERNETES_TOKEN_FILE
+                                  value: {{ incident_platform_remote_token_mount_path }}
+                                - name: KUBERNETES_CA_FILE
+                                  value: {{ incident_platform_remote_ca_mount_path }}
+                              volumeMounts:
+                                - name: remote-target-kubernetes
+                                  mountPath: /var/run/secrets/agent-rca-target
+                                  readOnly: true
+                          volumes:
+                            - name: remote-target-kubernetes
+                              secret:
+                                secretName: {{ incident_platform_remote_kubernetes_secret }}
+                                defaultMode: 256
+                              {% endif %}
+          {% if incident_platform_domain_mode == 'control' %}
+            - target:
+                group: ""
+                version: v1
+                kind: Service
+                name: incident-webhook
+              patch: |-
+                apiVersion: v1
+                kind: Service
+                metadata:
+                  name: incident-webhook
+                spec:
+                  type: NodePort
+                  externalTrafficPolicy: Local
+                  ports:
+                    - name: http
+                      port: 8080
+                      targetPort: http
+                      nodePort: {{ incident_platform_webhook_node_port }}
+            - target:
+                group: networking.k8s.io
+                version: v1
+                kind: NetworkPolicy
+                name: incident-webhook-ingress
+              patch: |-
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                metadata:
+                  name: incident-webhook-ingress
+                spec:
+                  ingress:
+                    - from:
+                        - namespaceSelector:
+                            matchLabels:
+                              kubernetes.io/metadata.name: observability
+                        - ipBlock:
+                            cidr: {{ three_domain_observability_private_address }}/32
+                      ports:
+                        - protocol: TCP
+                          port: 8080
+          {% endif %}
         dest: "{{ incident_platform_image_overlay.path }}/kustomization.yaml"
         mode: "0600"
       delegate_to: localhost
@@ -453,7 +591,10 @@
               'ansible.builtin.file',
               playbook_dir + '/../../../config/online-boutique-krca.yaml'
             )
-            | replace('cluster_id: agent-rca-dev', 'cluster_id: ' + cluster_name)
+            | replace(
+                'cluster_id: agent-rca-dev',
+                'cluster_id: ' + incident_platform_target_cluster_id
+              )
           }}
         dest: "{{ incident_platform_image_overlay.path }}/online-boutique-krca.yaml"
         mode: "0600"

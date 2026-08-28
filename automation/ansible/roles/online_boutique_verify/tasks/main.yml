@@ -111,6 +111,9 @@
       - >-
         'value: ' ~ cluster_name in
         (online_boutique_otel_configmap.stdout | from_json).data['collector.yaml']
+      - >-
+        'endpoint: ' ~ online_boutique_tempo_endpoint in
+        (online_boutique_otel_configmap.stdout | from_json).data['collector.yaml']
     fail_msg: The OpenTelemetry Collector cluster identity drifted.
 
 - name: Read direct instrumentation settings

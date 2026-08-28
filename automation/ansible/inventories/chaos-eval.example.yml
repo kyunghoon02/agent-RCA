@@ -10,6 +10,11 @@ all:
           # Loaded after group_vars/all.yml to prevent the evaluation node from
           # silently inheriting the primary cluster Kubernetes version.
           deployment_profile_vars_file: ../group_vars/chaos-eval.yml
+          # Private IPv4 from Terraform output; never use the public address.
+          observability_remote_node_address_inventory: OBSERVABILITY_PRIVATE_IP
     control_plane:
+      hosts:
+        agent_rca_chaos_eval_node:
+    fault_target:
       hosts:
         agent_rca_chaos_eval_node:

@@ -1,0 +1,115 @@
+---
+- name: Require the fault target deployment profile
+  ansible.builtin.assert:
+    that:
+      - cluster_name | length > 0
+      - online_boutique_namespace | length > 0
+      - ansible_facts.default_ipv4.address | length > 0
+    fail_msg: The fault target identity or private node address is missing.
+
+- name: Ensure the remote access namespace exists
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    create namespace {{ incident_platform_namespace }}
+  register: three_domain_access_namespace_create
+  changed_when: three_domain_access_namespace_create.rc == 0
+  failed_when:
+    - three_domain_access_namespace_create.rc != 0
+    - "'AlreadyExists' not in three_domain_access_namespace_create.stderr"
+
+- name: Ensure the Agent RCA configuration directory exists
+  ansible.builtin.file:
+    path: /etc/agent-rca
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy the bounded target reader RBAC manifest
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../platform/rbac/incident-platform-readonly.yaml"
+    dest: /etc/agent-rca/remote-evidence-reader.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply the bounded target reader RBAC
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    apply --filename /etc/agent-rca/remote-evidence-reader.yaml
+  register: three_domain_access_rbac_apply
+  changed_when: >-
+    ' created' in three_domain_access_rbac_apply.stdout
+    or ' configured' in three_domain_access_rbac_apply.stdout
+
+- name: Reconcile the remote target ServiceAccount token Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ three_domain_target_access_token_secret }}
+        namespace: {{ incident_platform_namespace }}
+        annotations:
+          kubernetes.io/service-account.name: incident-platform-reader
+      type: kubernetes.io/service-account-token
+  register: three_domain_access_token_apply
+  changed_when: >-
+    ' created' in three_domain_access_token_apply.stdout
+    or ' configured' in three_domain_access_token_apply.stdout
+  no_log: true
+
+- name: Wait for the Kubernetes token controller to populate the Secret
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get secret {{ three_domain_target_access_token_secret }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: three_domain_access_token_result
+  changed_when: false
+  no_log: true
+  until:
+    - (three_domain_access_token_result.stdout | from_json).data.token is defined
+    - ((three_domain_access_token_result.stdout | from_json).data.token | length) > 0
+  retries: 30
+  delay: 1
+
+- name: Read the target Kubernetes certificate authority
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/pki/ca.crt
+  register: three_domain_access_ca_result
+  no_log: true
+
+- name: Publish bounded target connection facts for later plays
+  ansible.builtin.set_fact:
+    three_domain_target_cluster_id: "{{ cluster_name }}"
+    three_domain_target_private_address: "{{ ansible_facts.default_ipv4.address }}"
+    three_domain_target_kubernetes_api_server: >-
+      https://{{ ansible_facts.default_ipv4.address }}:{{ kubernetes_api_bind_port }}
+    three_domain_target_token_b64: >-
+      {{ (three_domain_access_token_result.stdout | from_json).data.token }}
+    three_domain_target_ca_b64: "{{ three_domain_access_ca_result.content }}"
+  no_log: true
+
+- name: Verify the remote reader can list target Pods
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i list pods
+    --namespace {{ online_boutique_namespace }}
+    --as system:serviceaccount:{{ incident_platform_namespace }}:incident-platform-reader
+  register: three_domain_access_can_list_pods
+  changed_when: false
+  failed_when: three_domain_access_can_list_pods.stdout != 'yes'
+
+- name: Verify the remote reader cannot read target Secrets
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i get secrets
+    --namespace {{ online_boutique_namespace }}
+    --as system:serviceaccount:{{ incident_platform_namespace }}:incident-platform-reader
+  register: three_domain_access_can_read_secrets
+  changed_when: false
+  failed_when: three_domain_access_can_read_secrets.stdout != 'no'

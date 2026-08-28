@@ -204,13 +204,23 @@
   register: incident_platform_webhook_service_result
   changed_when: false
 
-- name: Require an internal-only Incident webhook Service
+- name: Require the reviewed Incident webhook exposure
   ansible.builtin.assert:
     that:
-      - (incident_platform_webhook_service_result.stdout | from_json).spec.type == 'ClusterIP'
+      - >-
+        (incident_platform_webhook_service_result.stdout | from_json).spec.type
+        == incident_platform_webhook_service_type
       - (incident_platform_webhook_service_result.stdout | from_json).spec.ports | length == 1
       - (incident_platform_webhook_service_result.stdout | from_json).spec.ports[0].port == 8080
-    fail_msg: The Incident webhook must remain an internal ClusterIP Service.
+      - >-
+        incident_platform_domain_mode != 'control'
+        or ((incident_platform_webhook_service_result.stdout | from_json).spec.ports[0].nodePort
+        == incident_platform_webhook_node_port)
+      - >-
+        incident_platform_domain_mode != 'control'
+        or ((incident_platform_webhook_service_result.stdout | from_json).spec.externalTrafficPolicy
+        == 'Local')
+    fail_msg: The Incident webhook exposure does not match the failure-domain contract.
 
 - name: Verify the Incident webhook health endpoint
   ansible.builtin.command: >-
@@ -382,8 +392,8 @@
         (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.serviceAccountName
         == 'incident-platform-reader'
       - >-
-        (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.automountServiceAccountToken
-        | bool
+        ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.automountServiceAccountToken
+        | bool) == (incident_platform_domain_mode == 'local')
       - >-
         (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].resources.requests.cpu
         == '100m'
@@ -396,7 +406,34 @@
         ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
         | selectattr('name', 'equalto', 'INCIDENT_WORKER_CLUSTER_ID')
         | map(attribute='value') | first)
-        == cluster_name
+        == incident_platform_target_cluster_id
+      - >-
+        ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'PROMETHEUS_BASE_URL')
+        | map(attribute='value') | first)
+        == incident_platform_prometheus_base_url
+      - >-
+        ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'LOKI_BASE_URL')
+        | map(attribute='value') | first)
+        == incident_platform_loki_base_url
+      - >-
+        ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'KUBERNETES_API_SERVER')
+        | map(attribute='value') | first)
+        == incident_platform_target_kubernetes_api_server
+      - >-
+        incident_platform_domain_mode != 'control'
+        or (((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.volumes
+        | selectattr('name', 'equalto', 'remote-target-kubernetes')
+        | map(attribute='secret.secretName') | first)
+        == incident_platform_remote_kubernetes_secret)
+      - >-
+        incident_platform_domain_mode != 'control'
+        or (((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'KUBERNETES_TOKEN_FILE')
+        | map(attribute='value') | first)
+        == incident_platform_remote_token_mount_path)
       - >-
         ((incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].volumeMounts
         | selectattr('name', 'equalto', 'krca-config')
@@ -404,7 +441,7 @@
         == '/app/config/online-boutique-krca.yaml'
       - >-
         (((incident_platform_worker_krca_configmap_result.stdout | from_json).data['online-boutique-krca.yaml']
-        | from_yaml).cluster_id) == cluster_name
+        | from_yaml).cluster_id) == incident_platform_target_cluster_id
       - >-
         (((incident_platform_worker_krca_configmap_result.stdout | from_json).data['online-boutique-krca.yaml']
         | from_yaml).namespace) == online_boutique_namespace
@@ -1289,13 +1326,24 @@
         (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.serviceAccountName
         == 'incident-platform-reader'
       - >-
-        (incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.automountServiceAccountToken
-        | bool
+        ((incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.automountServiceAccountToken
+        | bool) == (incident_platform_domain_mode == 'local')
       - >-
         ((incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.containers[0].env
         | selectattr('name', 'equalto', 'STATEGRAPH_CLUSTER_ID')
         | map(attribute='value') | first)
-        == cluster_name
+        == incident_platform_target_cluster_id
+      - >-
+        ((incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'KUBERNETES_API_SERVER')
+        | map(attribute='value') | first)
+        == incident_platform_target_kubernetes_api_server
+      - >-
+        incident_platform_domain_mode != 'control'
+        or (((incident_platform_reconciler_cronjob_result.stdout | from_json).spec.jobTemplate.spec.template.spec.volumes
+        | selectattr('name', 'equalto', 'remote-target-kubernetes')
+        | map(attribute='secret.secretName') | first)
+        == incident_platform_remote_kubernetes_secret)
     fail_msg: The StateGraph reconciler schedule or runtime boundary drifted.
 
 - name: Verify the reconciler can list target Pods

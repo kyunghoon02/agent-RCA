@@ -40,6 +40,22 @@ output "chaos_evaluation_external_ip" {
   sensitive   = true
 }
 
+output "observability_instance_name" {
+  description = "Isolated observability instance when enabled."
+  value       = try(google_compute_instance.observability[0].name, null)
+}
+
+output "observability_internal_ip" {
+  description = "Private IPv4 address of the isolated observability node when enabled."
+  value       = try(google_compute_instance.observability[0].network_interface[0].network_ip, null)
+}
+
+output "observability_external_ip" {
+  description = "Static public IPv4 address of the observability node when enabled."
+  value       = try(google_compute_address.observability[0].address, null)
+  sensitive   = true
+}
+
 output "network_name" {
   description = "VPC network name."
   value       = google_compute_network.main.name

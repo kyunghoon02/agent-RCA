@@ -4,10 +4,12 @@ This layer configures the already-provisioned Compute Engine VM. Terraform
 continues to own the GCP network, firewall, identity, VM, disk and address; this
 Ansible layer owns host prerequisites, containerd, pinned Kubernetes packages,
 single-node `kubeadm init`, Cilium/Hubble, the development observability stack
-and the Online Boutique target workload with runtime verification.
+and the Online Boutique target workload with runtime verification. It also
+reconciles the three-domain RCA wiring after Terraform creates the reviewed
+private firewall paths.
 
-It intentionally does not run `kubeadm reset`, distribute kubeconfig off the VM,
-open firewall rules, or deploy Agent RCA workloads.
+It intentionally does not run `kubeadm reset`, distribute an admin kubeconfig
+off a VM, or create public application ingress.
 
 ## Local controller setup
 
@@ -36,6 +38,7 @@ make verify-observability
 make render-online-boutique
 make deploy-online-boutique
 make verify-online-boutique
+make deploy-three-domain
 ```
 
 ## Chaos evaluation inventory
@@ -50,9 +53,6 @@ export ANSIBLE_INVENTORY=automation/ansible/inventories/chaos-eval.yml
 make bootstrap-kubernetes
 make deploy-observability
 make deploy-online-boutique
-make deploy-stategraph
-make smoke-live-stategraph
-make deploy-incident-platform
 make deploy-chaos-mesh
 make verify-chaos-mesh
 ```
@@ -61,9 +61,22 @@ Populate the ignored inventory only after applying the reviewed opt-in
 Terraform plan. Chaos Mesh is namespace-scoped to `online-boutique`; its
 dashboard remains ClusterIP with security mode enabled, and installation
 verification refuses to pass while any PodChaos, NetworkChaos or StressChaos
-resource is active. The StateGraph smoke must run before Incident Platform
-delivery verification so the fresh Neo4j volume contains the current workload
-identities used for localization.
+resource is active. StateGraph and Incident Platform run in the RCA control
+domain, not on this fault target.
+
+## Three-domain deployment
+
+Copy all three example inventories to their ignored counterparts and populate
+only SSH/runtime inputs. Then `make deploy-three-domain` prepares a namespace-
+bounded read-only ServiceAccount on the fault target, points the RCA control
+workers at the remote Kubernetes API and central Prometheus/Loki, configures the
+central authenticated Alertmanager webhook, and runs one non-fault delivery
+probe. After successful verification, legacy copies are scaled to zero rather
+than deleted; their PVCs remain Bound.
+
+The target credential is a lab-scoped, long-lived ServiceAccount token stored
+only in Kubernetes Secrets. Its RBAC denies Secret reads, but it still requires
+explicit rotation and is not a production workload-identity design.
 
 The bootstrap is intentionally fail-fast on a host other than Ubuntu 24.04
 x86_64 with cgroup v2. Package and binary versions plus download checksums are
@@ -83,8 +96,8 @@ if unattended upgrades are active, let them finish and rerun the playbook.
 The observability playbook installs pinned Helm releases for local-path storage,
 kube-prometheus-stack, Loki in monolithic mode and Alloy, then applies the
 digest-pinned monolithic Tempo manifest. It also reconciles Cilium/Hubble
-ServiceMonitors. Verification requires five Bound PVCs, only ClusterIP services,
-no Ingress, healthy Prometheus/Alertmanager/Grafana/Loki/Tempo endpoints,
+ServiceMonitors. Verification requires Bound PVCs, profile-specific private
+Services, no Ingress, healthy Prometheus/Alertmanager/Grafana/Loki/Tempo endpoints,
 Cilium/Hubble `up=1` targets and one normalized Kubernetes log stream from Loki.
 A normal rerun does not create new Helm revisions.
 
@@ -92,14 +105,12 @@ The Online Boutique playbook renders the SHA-pinned Kustomize overlay on the
 local controller and copies the rendered result to the VM before applying it.
 The upstream external frontend and in-cluster load generator are removed, all
 11 target services remain ClusterIP, and Redis is pinned by OCI digest. The
-overlay also deploys an internal OpenTelemetry Collector and enables the pinned
-upstream direct tracing code on seven services. Verification requires the exact
+overlay also deploys an internal OpenTelemetry Collector and enables tracing
+for all ten application services. Verification requires the exact
 12-Deployment/service set, completed rollouts, the approved instrumentation
 environment, a stable restart count without OOM termination, a working
 frontend, no target PVC, a normalized Loki log, a healthy Prometheus telemetry
-target, non-zero span-derived RED metrics and at least one Tempo trace. The
-three remaining services retain the server-side tracing gap documented in
-`platform/online-boutique/README.md`.
+target, non-zero span-derived RED metrics and at least one Tempo trace.
 
 This is a single-node development storage boundary. `Retain` protects a PV from
 automatic deletion with its claim or release, but the data still resides on the

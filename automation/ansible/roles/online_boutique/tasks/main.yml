@@ -53,6 +53,10 @@
               + '/../../../platform/online-boutique/otel-collector-config.yaml'
             )
             | replace('agent-rca-dev', cluster_name)
+            | replace(
+                'tempo.observability.svc.cluster.local:4317',
+                online_boutique_tempo_endpoint
+              )
           }}
         dest: "{{ online_boutique_image_overlay.path }}/otel-collector-config.yaml"
         mode: "0600"

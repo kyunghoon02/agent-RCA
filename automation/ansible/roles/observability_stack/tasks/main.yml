@@ -1,4 +1,33 @@
 ---
+- name: Require a reviewed observability domain mode
+  ansible.builtin.assert:
+    that:
+      - observability_domain_mode in ['local', 'forwarder', 'receiver']
+      - >-
+        observability_domain_mode != 'forwarder'
+        or observability_remote_node_address | length > 0
+      - >-
+        observability_domain_mode != 'forwarder'
+        or observability_remote_node_address != ansible_facts['default_ipv4']['address']
+    fail_msg: The observability domain mode or remote receiver address is invalid.
+
+- name: Select observability values for this failure-domain role
+  ansible.builtin.set_fact:
+    observability_values_profiles: >-
+      {{
+        ['local-path', 'kube-prometheus-stack', 'loki', 'alloy']
+        + (
+          ['kube-prometheus-stack-forwarder']
+          if observability_domain_mode == 'forwarder'
+          else []
+        )
+        + (
+          ['kube-prometheus-stack-receiver', 'loki-receiver']
+          if observability_domain_mode == 'receiver'
+          else []
+        )
+      }}
+
 - name: Create the remote observability values directory
   ansible.builtin.file:
     path: "{{ observability_remote_values_directory }}"
@@ -16,11 +45,7 @@
     mode: "0644"
     variable_start_string: "[["
     variable_end_string: "]]"
-  loop:
-    - local-path
-    - kube-prometheus-stack
-    - loki
-    - alloy
+  loop: "{{ observability_values_profiles }}"
   register: observability_values
 
 - name: Check whether the observability namespace exists
@@ -101,7 +126,12 @@
     argv:
       - kubectl
       - kustomize
-      - "{{ playbook_dir }}/../../../platform/observability/tempo"
+      - >-
+        {{
+          playbook_dir + '/../../../platform/observability/tempo-receiver'
+          if observability_domain_mode == 'receiver'
+          else playbook_dir + '/../../../platform/observability/tempo'
+        }}
   delegate_to: localhost
   become: false
   register: tempo_rendered_manifest
@@ -139,13 +169,12 @@
     --version {{ kube_prometheus_chart_version }}
     --namespace {{ observability_namespace }}
     --values {{ observability_remote_values_directory }}/kube-prometheus-stack-values.yaml
+    {{ '--values ' + observability_remote_values_directory + '/kube-prometheus-stack-' + observability_domain_mode + '-values.yaml' if observability_domain_mode in ['forwarder', 'receiver'] else '' }}
     --atomic --wait --timeout {{ observability_wait_timeout }}
   when: >-
     (kube_prometheus_release.stdout | from_json | length == 0)
     or (kube_prometheus_chart_version not in kube_prometheus_release.stdout)
-    or (observability_values.results
-        | selectattr('item', 'equalto', 'kube-prometheus-stack')
-        | map(attribute='changed') | first)
+    or observability_values.changed
   changed_when: true
 
 - name: Inspect the Loki release
@@ -163,13 +192,12 @@
     --version {{ loki_chart_version }}
     --namespace {{ observability_namespace }}
     --values {{ observability_remote_values_directory }}/loki-values.yaml
+    {{ '--values ' + observability_remote_values_directory + '/loki-receiver-values.yaml' if observability_domain_mode == 'receiver' else '' }}
     --atomic --wait --timeout {{ observability_wait_timeout }}
   when: >-
     (loki_release.stdout | from_json | length == 0)
     or (loki_chart_version not in loki_release.stdout)
-    or (observability_values.results
-        | selectattr('item', 'equalto', 'loki')
-        | map(attribute='changed') | first)
+    or observability_values.changed
   changed_when: true
 
 - name: Add the Grafana Helm repository
@@ -202,7 +230,5 @@
   when: >-
     (alloy_release.stdout | from_json | length == 0)
     or (alloy_chart_version not in alloy_release.stdout)
-    or (observability_values.results
-        | selectattr('item', 'equalto', 'alloy')
-        | map(attribute='changed') | first)
+    or observability_values.changed
   changed_when: true

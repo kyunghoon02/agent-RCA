@@ -175,6 +175,18 @@ resource "google_compute_address" "chaos_evaluation" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_compute_address" "observability" {
+  count = var.enable_observability_node && var.enable_external_ip ? 1 : 0
+
+  name         = "${local.name_prefix}-observability-ipv4"
+  project      = var.project_id
+  region       = var.region
+  address_type = "EXTERNAL"
+  network_tier = "PREMIUM"
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_compute_firewall" "ssh" {
   count = length(var.ssh_source_ranges) > 0 ? 1 : 0
 
@@ -223,6 +235,102 @@ resource "google_compute_firewall" "kubernetes_api" {
   }
 }
 
+resource "google_compute_firewall" "observability_ingest" {
+  count = var.enable_observability_node ? 1 : 0
+
+  name        = "${local.name_prefix}-allow-observability-ingest"
+  project     = var.project_id
+  network     = google_compute_network.main.name
+  direction   = "INGRESS"
+  priority    = 1000
+  source_tags = ["${local.name_prefix}-chaos-target"]
+  target_tags = ["${local.name_prefix}-observability"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["30090", "30100", "30317"]
+  }
+
+  dynamic "log_config" {
+    for_each = var.enable_firewall_logging ? [1] : []
+    content {
+      metadata = "EXCLUDE_ALL_METADATA"
+    }
+  }
+}
+
+resource "google_compute_firewall" "observability_query" {
+  count = var.enable_observability_node ? 1 : 0
+
+  name        = "${local.name_prefix}-allow-observability-query"
+  project     = var.project_id
+  network     = google_compute_network.main.name
+  direction   = "INGRESS"
+  priority    = 1000
+  source_tags = ["${local.name_prefix}-rca-control"]
+  target_tags = ["${local.name_prefix}-observability"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["30090", "30100"]
+  }
+
+  dynamic "log_config" {
+    for_each = var.enable_firewall_logging ? [1] : []
+    content {
+      metadata = "EXCLUDE_ALL_METADATA"
+    }
+  }
+}
+
+resource "google_compute_firewall" "rca_control_webhook" {
+  count = var.enable_observability_node ? 1 : 0
+
+  name        = "${local.name_prefix}-allow-rca-webhook"
+  project     = var.project_id
+  network     = google_compute_network.main.name
+  direction   = "INGRESS"
+  priority    = 1000
+  source_tags = ["${local.name_prefix}-observability"]
+  target_tags = ["${local.name_prefix}-rca-control"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["30080"]
+  }
+
+  dynamic "log_config" {
+    for_each = var.enable_firewall_logging ? [1] : []
+    content {
+      metadata = "EXCLUDE_ALL_METADATA"
+    }
+  }
+}
+
+resource "google_compute_firewall" "fault_target_kubernetes_api" {
+  count = var.enable_observability_node ? 1 : 0
+
+  name        = "${local.name_prefix}-allow-target-api-from-rca"
+  project     = var.project_id
+  network     = google_compute_network.main.name
+  direction   = "INGRESS"
+  priority    = 1000
+  source_tags = ["${local.name_prefix}-rca-control"]
+  target_tags = ["${local.name_prefix}-chaos-target"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["6443"]
+  }
+
+  dynamic "log_config" {
+    for_each = var.enable_firewall_logging ? [1] : []
+    content {
+      metadata = "EXCLUDE_ALL_METADATA"
+    }
+  }
+}
+
 resource "google_compute_instance" "node" {
   name         = "${local.name_prefix}-node-01"
   project      = var.project_id
@@ -233,7 +341,10 @@ resource "google_compute_instance" "node" {
   can_ip_forward            = false
   deletion_protection       = var.deletion_protection
   labels                    = local.labels
-  tags                      = ["${local.name_prefix}-node"]
+  tags = [
+    "${local.name_prefix}-node",
+    "${local.name_prefix}-rca-control",
+  ]
 
   boot_disk {
     auto_delete = true
@@ -309,7 +420,10 @@ resource "google_compute_instance" "chaos_evaluation" {
     purpose            = "chaos-evaluation"
     kubernetes_version = "1-35"
   })
-  tags = ["${local.name_prefix}-node"]
+  tags = [
+    "${local.name_prefix}-node",
+    "${local.name_prefix}-chaos-target",
+  ]
 
   boot_disk {
     auto_delete = true
@@ -332,6 +446,82 @@ resource "google_compute_instance" "chaos_evaluation" {
       for_each = var.enable_external_ip ? [1] : []
       content {
         nat_ip       = google_compute_address.chaos_evaluation[0].address
+        network_tier = "PREMIUM"
+      }
+    }
+  }
+
+  metadata = {
+    block-project-ssh-keys = "TRUE"
+    enable-oslogin         = "TRUE"
+    serial-port-enable     = "FALSE"
+  }
+
+  service_account {
+    email  = google_service_account.vm.email
+    scopes = ["cloud-platform"]
+  }
+
+  scheduling {
+    automatic_restart   = true
+    on_host_maintenance = "MIGRATE"
+    provisioning_model  = "STANDARD"
+  }
+
+  shielded_instance_config {
+    enable_integrity_monitoring = true
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_external_ip || length(var.ssh_source_ranges) > 0
+      error_message = "At least one trusted SSH source CIDR is required when external IP is enabled."
+    }
+  }
+}
+
+resource "google_compute_instance" "observability" {
+  count = var.enable_observability_node ? 1 : 0
+
+  name         = "${local.name_prefix}-observability-01"
+  project      = var.project_id
+  zone         = var.zone
+  machine_type = var.observability_machine_type
+
+  allow_stopping_for_update = true
+  can_ip_forward            = false
+  deletion_protection       = var.deletion_protection
+  labels = merge(local.labels, {
+    purpose = "observability"
+  })
+  tags = [
+    "${local.name_prefix}-node",
+    "${local.name_prefix}-observability",
+  ]
+
+  boot_disk {
+    auto_delete = true
+
+    initialize_params {
+      image = var.source_image
+      size  = var.observability_boot_disk_size_gb
+      type  = "pd-balanced"
+      labels = merge(local.labels, {
+        purpose = "observability"
+      })
+    }
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.main.id
+    stack_type = "IPV4_ONLY"
+
+    dynamic "access_config" {
+      for_each = var.enable_external_ip ? [1] : []
+      content {
+        nat_ip       = google_compute_address.observability[0].address
         network_tier = "PREMIUM"
       }
     }

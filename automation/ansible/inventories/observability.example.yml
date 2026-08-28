@@ -2,14 +2,15 @@ all:
   children:
     kubernetes_nodes:
       hosts:
-        agent_rca_dev_node:
+        agent_rca_observability_node:
           ansible_host: VM_IP
           ansible_user: replace_with_vm_whoami
           ansible_ssh_private_key_file: ~/.ssh/google_compute_engine
           ansible_python_interpreter: /usr/bin/python3
+          deployment_profile_vars_file: ../group_vars/observability.yml
     control_plane:
       hosts:
-        agent_rca_dev_node:
-    rca_control:
+        agent_rca_observability_node:
+    observability_domain:
       hosts:
-        agent_rca_dev_node:
+        agent_rca_observability_node:

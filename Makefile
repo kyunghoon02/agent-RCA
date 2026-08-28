@@ -3,6 +3,9 @@ GCLOUD_BIN ?= gcloud
 ANSIBLE_CONFIG_PATH ?= automation/ansible/ansible.cfg
 ANSIBLE_INVENTORY ?= automation/ansible/inventories/dev.yml
 ANSIBLE_EXAMPLE_INVENTORY ?= automation/ansible/inventories/dev.example.yml
+ANSIBLE_CONTROL_INVENTORY ?= automation/ansible/inventories/dev.yml
+ANSIBLE_TARGET_INVENTORY ?= automation/ansible/inventories/chaos-eval.yml
+ANSIBLE_OBSERVABILITY_INVENTORY ?= automation/ansible/inventories/observability.yml
 RCA_GROUND_TRUTH ?=
 RCA_PREDICTION ?=
 EVIDENCE_GATE_POLICY ?= oom-signature-restart-v2
@@ -18,7 +21,7 @@ EVIDENCE_GATE_POLICY ?= oom-signature-restart-v2
 	render-chaos-mesh deploy-chaos-mesh verify-chaos-mesh \
 	render-stategraph deploy-stategraph verify-stategraph \
 	deploy-incident-platform verify-incident-platform evaluate-checkout-oom \
-	summarize-checkout-oom
+	deploy-three-domain summarize-checkout-oom
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -88,6 +91,7 @@ render-observability:
 	helm repo add grafana https://grafana.github.io/helm-charts --force-update >/dev/null
 	helm repo update grafana >/dev/null
 	kubectl kustomize platform/observability/tempo >/dev/null
+	kubectl kustomize platform/observability/tempo-receiver >/dev/null
 	helm template alloy grafana/alloy \
 		--version 1.11.1 --namespace observability \
 		--values platform/observability/alloy-values.yaml >/dev/null
@@ -153,6 +157,11 @@ ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/evaluate-checkout-oom.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/dev.example.yml \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/deploy-three-domain.yml
 
 ansible-ping:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible \
@@ -215,6 +224,13 @@ verify-incident-platform:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-incident-platform.yml
+
+deploy-three-domain:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/deploy-three-domain.yml
 
 evaluate-checkout-oom:
 	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \

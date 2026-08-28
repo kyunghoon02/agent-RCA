@@ -1,13 +1,13 @@
 # GCP Terraform Boundary
 
-Status: **dev root applied; separate Ansible kubeadm/Cilium baseline verified**
+Status: **dev root applied; three independent Ansible kubeadm/Cilium domains verified**
 
 Terraform will own two explicit state boundaries:
 
 1. `bootstrap`: a pre-existing GCS state bucket with Object Versioning,
    Uniform bucket-level access and Public Access Prevention;
 2. `environments/dev`: APIs, VPC/subnet, firewall, dedicated VM service
-   account, Compute Engine VM, disk, optional external IP, and cost-relevant
+account, three opt-in Compute Engine roles, disks, optional external IPs, and cost-relevant
    lifecycle outputs.
 
 Kubernetes application, observability, and Agent RCA workloads remain outside
@@ -17,9 +17,11 @@ account key, token, project secret, or state file belongs in this repository.
 The Google provider and Compute Engine root are implemented under
 `environments/dev`. Host prerequisites, containerd, kubeadm, Cilium/Hubble and
 Kubernetes workloads remain separate bootstrap/deployment responsibilities.
-The first dev apply was verified on 2026-08-22. A separate Ansible layer has
-since bootstrapped and verified the kubeadm/Cilium baseline; Terraform does not
-own or execute that layer. Runtime inputs and remaining operational gaps are recorded in
+The first dev apply was verified on 2026-08-22. The current root can provision
+RCA control, fault-target, and observability VMs plus tag-scoped private
+telemetry, webhook, and Kubernetes API firewall paths. A separate Ansible layer
+bootstraps each kubeadm/Cilium cluster; Terraform does not own or execute that
+layer. Runtime inputs and remaining operational gaps are recorded in
 [`../../config/gcp-readiness.yaml`](../../config/gcp-readiness.yaml).
 
 The GCS bucket must exist before backend initialization. Do not put credentials

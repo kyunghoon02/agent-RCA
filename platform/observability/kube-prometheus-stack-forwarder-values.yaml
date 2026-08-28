@@ -1,0 +1,14 @@
+prometheus:
+  prometheusSpec:
+    remoteWrite:
+      - url: [[ observability_prometheus_remote_write_url ]]
+        remoteTimeout: 30s
+        queueConfig:
+          capacity: 5000
+          maxSamplesPerSend: 1000
+          minShards: 1
+          maxShards: 4
+        writeRelabelConfigs:
+          - sourceLabels: [__name__]
+            regex: "agent_rca_.+|hubble_.+|up|container_memory_working_set_bytes|kube_pod_.+|kube_deployment_.+|kube_replicaset_.+"
+            action: keep

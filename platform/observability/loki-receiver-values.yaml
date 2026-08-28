@@ -1,0 +1,4 @@
+gateway:
+  service:
+    type: NodePort
+    nodePort: [[ observability_loki_node_port | default(30100) ]]

@@ -1,0 +1,6 @@
+prometheus:
+  service:
+    type: NodePort
+    nodePort: [[ observability_prometheus_node_port | default(30090) ]]
+  prometheusSpec:
+    enableRemoteWriteReceiver: true

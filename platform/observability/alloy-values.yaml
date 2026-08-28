@@ -72,7 +72,7 @@ alloy:
 
       loki.write "local" {
         endpoint {
-          url = "http://loki-gateway.observability.svc.cluster.local/loki/api/v1/push"
+          url = "[[ observability_loki_write_url | default('http://loki-gateway.observability.svc.cluster.local/loki/api/v1/push') ]]"
         }
       }
   resources:

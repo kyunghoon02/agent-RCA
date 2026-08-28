@@ -20,6 +20,31 @@ execution_target:
   network_observability: hubble
   cloud_identity: dedicated-vm-service-account
 
+runtime_topology:
+  model: three-independent-failure-domains
+  domains:
+    rca-control:
+      kubernetes_version: v1.36.4
+      responsibilities:
+        - incident-and-work-queue
+        - evidence-and-agent-workers
+        - stategraph
+        - readonly-viewer
+    fault-target:
+      kubernetes_version: v1.35.8
+      responsibilities:
+        - online-boutique
+        - chaos-mesh
+        - kubernetes-and-cilium-evidence
+        - telemetry-forwarding
+    observability:
+      kubernetes_version: v1.36.4
+      responsibilities:
+        - prometheus-and-alertmanager
+        - loki-and-tempo
+        - grafana
+  transport: private-vpc-tag-scoped-firewall
+
 platform_namespaces:
   - incident-platform
   - observability
@@ -66,5 +91,5 @@ excluded_from_mvp:
   - multi-zone-ha
   - gpu-node
   - service-mesh
-  - multi-cluster
+  - general-multi-cluster-fleet-management
   - multi-tenancy

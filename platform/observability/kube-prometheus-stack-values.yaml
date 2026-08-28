@@ -111,6 +111,8 @@ prometheus:
     type: ClusterIP
   prometheusSpec:
     replicas: 1
+    externalLabels:
+      cluster_id: "[[ cluster_name | default('agent-rca-dev') ]]"
     retention: 7d
     retentionSize: 12GiB
     scrapeInterval: 30s

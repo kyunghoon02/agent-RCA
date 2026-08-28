@@ -17,31 +17,43 @@ bounded read-only Agent가 그 범위 안에서 Evidence를 검사한다. 모든
 
 ## Architecture
 
-![Agent RCA cloud-neutral logical architecture with a Kubernetes reference runtime](assets/agent-rca-target-architecture.svg)
-
 > 논리 아키텍처는 cloud-neutral이며, 현재 reference runtime은 GCP Compute Engine의
-> single-node kubeadm Kubernetes다.
+> 독립된 single-node kubeadm Kubernetes 세 개다.
 
 ```mermaid
 flowchart LR
-    AM[Alertmanager] -->|rca_enabled=true| RX[Authenticated Receiver]
-    RX --> Q[(PostgreSQL Incident and Work Queue)]
-    Q --> CW[Collection Worker]
+    subgraph T[Fault target domain]
+        APP[Online Boutique and Chaos Mesh]
+        K[Kubernetes API and Events]
+        FW[Prometheus, Alloy and OTel forwarders]
+        APP --> FW
+    end
 
-    P[Prometheus] --> CW
-    L[Loki] --> CW
-    K[Kubernetes API and Events] --> CW
-    D[Deployment History] --> CW
+    subgraph O[Observability domain]
+        P[Prometheus]
+        L[Loki]
+        TP[Tempo]
+        AM[Alertmanager]
+    end
 
-    CW --> EB[EvidenceBuilder]
-    EB --> E[(Normalized Evidence)]
-    E --> PJ[Domain Projectors]
-    PJ --> SG[(Temporal StateGraph)]
-    SG --> FC[Frozen Context]
-    FC -->|agent_rca_enabled=true| AO[Agent RCA Orchestrator]
-    AO --> EG{Evidence Gate}
-    EG -->|sufficient and consistent| R[RCA Report]
-    EG -->|missing or contradictory| A[ABSTAIN]
+    subgraph C[RCA control domain]
+        RX[Authenticated Receiver]
+        Q[(PostgreSQL Incident and Work Queue)]
+        CW[Collection Worker]
+        EB[EvidenceBuilder]
+        SG[(Temporal StateGraph)]
+        AO[Agent RCA and Evidence Gate]
+        R[RCA Report or ABSTAIN]
+    end
+
+    FW -->|remote write| P
+    FW -->|logs| L
+    FW -->|OTLP traces| TP
+    AM -->|private authenticated webhook| RX
+    RX --> Q --> CW --> EB --> SG --> AO --> R
+    P --> CW
+    L --> CW
+    K --> CW
 ```
 
 Alert 수신과 LLM 실행은 분리돼 있다. `rca_enabled=true`는 Alertmanager가 RCA 대상
@@ -107,19 +119,19 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 
 ## Current Status
 
-> 기준일: 2026-08-27. 구현 여부와 실제 reference runtime 검증을 구분한다.
+> 기준일: 2026-08-28. 구현 여부와 실제 reference runtime 검증을 구분한다.
 
 | Area | Status | Runtime evidence |
 |---|---|---|
-| GCP and Kubernetes | Live | Compute Engine `e2-standard-8`, kubeadm Kubernetes v1.36.4, containerd와 Cilium/Hubble 구성 및 재부팅 복구 확인 |
-| Observability | Live | Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo와 OpenTelemetry Collector 배포. Agent Worker·eligible queue metric과 `Agent RCA Operations` dashboard 연결 |
-| Incident pipeline | Live | authenticated webhook부터 PostgreSQL work claim, Evidence 수집, localization과 `ANALYZING`까지 연결 |
+| GCP and Kubernetes | Live | 서로 독립된 Compute Engine 3대. RCA control·observability는 Kubernetes v1.36.4, fault target은 Chaos Mesh 호환 v1.35.8이며 모두 kubeadm, containerd와 Cilium/Hubble 사용 |
+| Observability | Live, central target telemetry | fault target의 metric·log·trace가 사설 VPC를 통해 별도 observability domain의 Prometheus·Loki·Tempo에 도착하고 target `cluster_id`로 조회됨 |
+| Incident pipeline | Live, cross-domain | central Alertmanager의 인증 webhook부터 RCA control PostgreSQL claim, fault-target Kubernetes와 central telemetry Evidence 수집, localization과 `ANALYZING`까지 검증 |
 | Temporal StateGraph | Live | PostgreSQL observation journal, Neo4j projection, exact resolver와 Frozen Context 저장 확인 |
 | Continuous Agent Worker | Live, single replica | opt-in Incident 1건을 자동 claim해 bounded tool investigation, Evidence Gate와 `REPORTED` 저장 확인 |
 | RCA Viewer | Partially live | private ClusterIP API와 local same-origin BFF 조회 확인. public ingress와 사용자 인증은 없음 |
 | Operational Knowledge | Implemented, runtime pending | lexical/vector/Hybrid retriever와 pilot benchmark는 있으나 live pgvector corpus 평가는 미완료 |
 | Fault evaluation | In progress | checkout OOM harness와 scorer 연결. 다른 fault scenario와 반복 평가는 미완료 |
-| Chaos evaluation runtime | Live, no fault executed | 기존 v1.36 runtime과 분리된 Compute Engine VM에서 Kubernetes v1.35.8, Cilium/Hubble와 namespace-scoped Chaos Mesh 2.8.4 검증 완료 |
+| Chaos evaluation runtime | Live, no fault executed | fault target domain에서 Kubernetes v1.35.8, Cilium/Hubble와 namespace-scoped Chaos Mesh 2.8.4 검증 완료 |
 
 현재 live Agent 확인은 controlled OOM 한 건에서 LLM 2회, read-only tool 3회와 총
 15,928 tokens로 `conclusive` Report를 저장한 결과다. 이는 전체 정확도나 비용 절감을
@@ -131,12 +143,25 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 | Layer | Implementation |
 |---|---|
 | Cloud | Google Cloud Compute Engine |
-| Kubernetes | upstream Kubernetes, kubeadm single-node bootstrap |
+| Kubernetes | upstream Kubernetes, failure domain별 kubeadm single-node bootstrap |
 | Container and network | containerd, Cilium CNI와 Hubble |
 | Observability | Prometheus, Alertmanager, Grafana, Loki/Alloy, Tempo와 OTel Collector |
 | Persistence | PostgreSQL 17.6, Neo4j Community와 local-path PVC |
 | Reference workload | [Google Online Boutique](platform/online-boutique/README.md) `v0.10.6` |
 | Provisioning | Terraform이 GCP foundation, Ansible이 host/cluster와 pinned workload 배포 담당 |
+
+실제 reference runtime은 독립된 single-node Kubernetes 세 개로 나뉜다.
+
+| Failure domain | Active responsibility |
+|---|---|
+| RCA control | Receiver, PostgreSQL queue, Evidence/Agent workers, Neo4j StateGraph, Viewer |
+| Fault target | Online Boutique, Chaos Mesh, Kubernetes/Cilium Evidence source, telemetry forwarders |
+| Observability | authoritative Prometheus, Alertmanager, Grafana, Loki와 Tempo |
+
+도메인 간 endpoint는 public ingress가 아니라 GCP VPC의 tag 기반 firewall과 고정 private
+NodePort만 사용한다. RCA worker의 Kubernetes credential은 fault target에서 발급한 read-only
+ServiceAccount이며 Secret 읽기는 거부된다. 전환 전에 존재하던 fault-target control plane과
+control-domain Online Boutique는 삭제하지 않고 `0 replicas`로 내렸고 PVC는 보존했다.
 
 Chaos evaluation은 기존 v1.36 runtime을 제자리에서 내리지 않는다. Terraform의 기본값이
 꺼진 병렬 VM을 명시적으로 생성해 Kubernetes v1.35.8을 부트스트랩했고, Chaos Mesh 2.8.4는
@@ -144,9 +169,9 @@ Chaos evaluation은 기존 v1.36 runtime을 제자리에서 내리지 않는다.
 구성 요소는 Ready이고 활성 fault는 0개다. fault 실행은 별도 scenario 검토와
 `CONFIRM_CONTROLLED_FAULT=yes` 승인을 요구한다.
 
-이 runtime은 application/Kubernetes/Cilium fault 실험용이다. production HA, cross-node
-networking, zone 장애와 managed control-plane 장애를 증명하지 않는다. PostgreSQL과
-Neo4j PVC는 단일 VM disk에 묶여 있으며 `Retain` reclaim policy는 backup이 아니다.
+이 runtime은 application/Kubernetes/Cilium fault 실험용이다. 각 failure domain이 여전히
+single-node이므로 production HA, zone 장애와 managed control-plane 장애를 증명하지 않는다.
+PostgreSQL, Neo4j와 telemetry PVC는 각 VM disk에 묶여 있으며 `Retain`은 backup이 아니다.
 
 ## Evaluation
 
@@ -171,9 +196,12 @@ memory ratio는 보조 관측으로 남긴다. 목표 평가는 최소 15개 sce
 
 ## Known Limitations
 
-- single-node runtime이라 monitored workload, observability와 Agent control plane이 같은
-  failure domain에 있다.
+- 세 failure domain은 분리됐지만 각 도메인은 single-node이며 observability domain 자체는 HA가 아니다.
+- VM1의 기존 observability stack은 control-plane queue/dashboard 관측용 shadow로 남아 있다.
+  control telemetry까지 VM3로 통합한 뒤 제거 여부를 별도로 결정해야 한다.
 - PostgreSQL, Neo4j와 local PV의 backup/restore 및 HA가 구현되지 않았다.
+- fault-target 원격 조회 credential은 제한된 RBAC의 장기 ServiceAccount token이며,
+  production workload identity와 자동 rotation은 아직 구현되지 않았다.
 - Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
@@ -207,6 +235,7 @@ make render-incident-platform
 make deploy-stategraph
 make deploy-incident-platform
 make verify-incident-platform
+make deploy-three-domain
 ```
 
 Controlled fault는 development 환경에서만 명시적으로 승인해 실행한다.
