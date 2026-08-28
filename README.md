@@ -117,27 +117,6 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 - 일부 Provider가 실패해도 성공한 Evidence를 보존하고 불완전성을 Report에 표시한다.
 - root cause는 runtime Evidence 인용 없이는 확정할 수 없다.
 
-## Current Status
-
-> 기준일: 2026-08-28. 구현 여부와 실제 reference runtime 검증을 구분한다.
-
-| Area | Status | Runtime evidence |
-|---|---|---|
-| GCP and Kubernetes | Live | 서로 독립된 Compute Engine 3대. RCA control·observability는 Kubernetes v1.36.4, fault target은 Chaos Mesh 호환 v1.35.8이며 모두 kubeadm, containerd와 Cilium/Hubble 사용 |
-| Observability | Live, central target telemetry | fault target의 metric·log·trace가 사설 VPC를 통해 별도 observability domain의 Prometheus·Loki·Tempo에 도착하고 target `cluster_id`로 조회됨 |
-| Incident pipeline | Live, cross-domain | central Alertmanager의 인증 webhook부터 RCA control PostgreSQL claim, fault-target Kubernetes와 central telemetry Evidence 수집, localization과 `ANALYZING`까지 검증 |
-| Temporal StateGraph | Live | PostgreSQL observation journal, Neo4j projection, exact resolver와 Frozen Context 저장 확인 |
-| Continuous Agent Worker | Live, single replica | opt-in Incident 1건을 자동 claim해 bounded tool investigation, Evidence Gate와 `REPORTED` 저장 확인 |
-| RCA Viewer | Partially live | private ClusterIP API와 local same-origin BFF 조회 확인. public ingress와 사용자 인증은 없음 |
-| Operational Knowledge | Implemented, runtime pending | lexical/vector/Hybrid retriever와 pilot benchmark는 있으나 live pgvector corpus 평가는 미완료 |
-| Fault evaluation | In progress | checkout OOM harness와 scorer 연결. 다른 fault scenario와 반복 평가는 미완료 |
-| Chaos evaluation runtime | Live, no fault executed | fault target domain에서 Kubernetes v1.35.8, Cilium/Hubble와 namespace-scoped Chaos Mesh 2.8.4 검증 완료 |
-
-현재 live Agent 확인은 controlled OOM 한 건에서 LLM 2회, read-only tool 3회와 총
-15,928 tokens로 `conclusive` Report를 저장한 결과다. 이는 전체 정확도나 비용 절감을
-일반화하는 성과값이 아니라, 연속 Agent runtime이 실제 Incident를 끝까지 처리했다는
-연결성 증거다.
-
 ## Reference Runtime
 
 | Layer | Implementation |
