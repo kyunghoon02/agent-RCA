@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "report_id": {
       "type": "string",
@@ -62,12 +62,16 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "cause_id",
             "summary",
             "entity",
             "supporting_evidence_ids",
             "reference_document_ids"
           ],
           "properties": {
+            "cause_id": {
+              "$ref": "#/$defs/rootCauseId"
+            },
             "summary": {
               "type": "string",
               "minLength": 1
@@ -103,6 +107,7 @@
         "additionalProperties": false,
         "required": [
           "rank",
+          "cause_id",
           "summary",
           "entity",
           "confidence",
@@ -116,6 +121,16 @@
           "rank": {
             "type": "integer",
             "minimum": 1
+          },
+          "cause_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rootCauseId"
+              }
+            ]
           },
           "summary": {
             "type": "string",
@@ -235,6 +250,15 @@
       "items": {
         "type": "string"
       }
+    }
+  },
+  "$defs": {
+    "rootCauseId": {
+      "enum": [
+        "kubernetes.container-oomkilled",
+        "kubernetes.image-pull-failure",
+        "kubernetes.missing-configmap"
+      ]
     }
   }
 }

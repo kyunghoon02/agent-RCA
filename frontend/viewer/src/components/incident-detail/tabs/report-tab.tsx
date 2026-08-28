@@ -110,6 +110,11 @@ export function ReportTab({
                 Root cause
               </h3>
               <p className="mt-1 text-sm leading-relaxed">{report.root_cause.summary}</p>
+              {report.root_cause.cause_id && (
+                <p className="mt-1 font-mono text-[11px] text-status-success">
+                  {report.root_cause.cause_id}
+                </p>
+              )}
               <div className="mt-1.5">
                 <EntityRefLabel entity={report.root_cause.entity} />
               </div>
@@ -220,6 +225,11 @@ function HypothesisCard({
       <div className="flex flex-wrap items-center gap-2">
         <span className="tabular text-xs font-semibold">#{hypothesis.rank}</span>
         <Badge tone={HYPOTHESIS_TONE[hypothesis.status]}>{hypothesis.status}</Badge>
+        {hypothesis.cause_id && (
+          <span className="font-mono text-[10px] text-muted-foreground">
+            {hypothesis.cause_id}
+          </span>
+        )}
         <span className="tabular text-[11px] text-muted-foreground">
           confidence {formatRatio(hypothesis.confidence)}
         </span>

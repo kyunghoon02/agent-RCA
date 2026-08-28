@@ -12,6 +12,8 @@ from incident_platform.deterministic import (
 from incident_platform.errors import ContractViolation
 from incident_platform.rca_evaluation import (
     evaluate_rca_case,
+    prediction_from_agent_report,
+    prediction_from_failed_agent_run,
     prediction_from_deterministic_decision,
 )
 
@@ -73,7 +75,199 @@ def prediction(**overrides):
     return value
 
 
+def agent_report(**overrides):
+    entity = {
+        "api_version": "v1",
+        "kind": "Pod",
+        "namespace": "online-boutique",
+        "name": "checkoutservice-abc",
+        "uid": "uid-checkoutservice-abc",
+        "exists": True,
+    }
+    value = {
+        "schema_version": "1.1.0",
+        "report_id": "rpt-checkout-oom-agent-0001",
+        "incident_id": "inc-checkout-oom-0001",
+        "context_id": "ctx-checkout-oom-agent-0001",
+        "path": "deep",
+        "status": "conclusive",
+        "generated_at": "2026-08-26T08:44:00Z",
+        "root_cause": {
+            "cause_id": "kubernetes.container-oomkilled",
+            "summary": "The checkout container was OOM-killed.",
+            "entity": entity,
+            "supporting_evidence_ids": [
+                "ev-kernel-oom-0001",
+                "ev-restart-delta-0001",
+            ],
+            "reference_document_ids": [],
+        },
+        "hypotheses": [
+            {
+                "rank": 1,
+                "cause_id": "kubernetes.container-oomkilled",
+                "summary": "The checkout container was OOM-killed.",
+                "entity": entity,
+                "confidence": 0.95,
+                "status": "supported",
+                "supporting_evidence_ids": [
+                    "ev-kernel-oom-0001",
+                    "ev-restart-delta-0001",
+                ],
+                "contradicting_evidence_ids": [],
+                "reference_document_ids": [],
+                "missing_evidence": [],
+            }
+        ],
+        "remediation": {
+            "suggestions": ["Review the memory limit."],
+            "verification_conditions": ["The Pod remains Ready."],
+        },
+        "budget": {
+            "applicable": True,
+            "llm_calls": 2,
+            "tool_calls": 3,
+            "tree_depth": 2,
+            "wall_time_ms": 12000,
+            "exhausted": False,
+        },
+        "read_only": True,
+        "limitations": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def failed_agent_run(**overrides):
+    value = {
+        "schema_version": "1.0.0",
+        "agent_run_id": "arun-checkout-oom-agent-0001",
+        "incident_id": "inc-checkout-oom-0001",
+        "context_id": "ctx-checkout-oom-agent-0001",
+        "knowledge_audit_id": "kaud-checkout-oom-agent-0001",
+        "knowledge_status": "SUCCEEDED",
+        "model": "fixture-agent",
+        "status": "GATE_REJECTED",
+        "reason_code": "EVIDENCE_GATE_REJECTED",
+        "started_at": "2026-08-26T08:43:00Z",
+        "completed_at": "2026-08-26T08:44:00Z",
+        "budget": {
+            "max_turns": 6,
+            "max_llm_calls": 6,
+            "max_tool_calls": 12,
+            "max_evidence_candidates": 8,
+            "max_output_tokens": 2000,
+            "max_wall_time_ms": 60000,
+        },
+        "usage": {
+            "llm_calls": 2,
+            "tool_calls": 3,
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "total_tokens": 1200,
+            "wall_time_ms": 12000,
+        },
+        "tool_events": [],
+        "retrieved_reference_ids": [],
+        "inspected_evidence_ids": ["ev-kernel-oom-0001"],
+        "inspected_reference_document_ids": [],
+        "cited_evidence_ids": ["ev-kernel-oom-0001"],
+        "cited_reference_document_ids": [],
+    }
+    value.update(overrides)
+    return value
+
+
 class RCAEvaluationTests(unittest.TestCase):
+    def test_failed_agent_run_is_not_misreported_as_abstention(self) -> None:
+        actual = prediction_from_failed_agent_run(
+            evaluation_case_id="eval-checkout-oom-0001",
+            scenario_id="scenario-checkout-oom-change-stress",
+            incident_id="inc-checkout-oom-0001",
+            agent_run=failed_agent_run(),
+            available_evidence_ids=prediction()["available_evidence_ids"],
+            completed_at=EVALUATED_AT,
+        )
+
+        self.assertEqual(actual["variant_id"], "C")
+        self.assertEqual(actual["outcome"], "FAILED")
+        self.assertEqual(actual["predicted_root_cause_ids"], [])
+        result = evaluate_rca_case(
+            ground_truth(), actual, evaluated_at=EVALUATED_AT
+        )
+        self.assertEqual(result["metrics"]["root_cause_top1_accuracy"], 0.0)
+        self.assertEqual(result["metrics"]["abstention_correctness"], 0.0)
+
+    def test_failed_agent_does_not_receive_correct_abstention_credit(self) -> None:
+        actual = prediction_from_failed_agent_run(
+            evaluation_case_id="eval-checkout-oom-0001",
+            scenario_id="scenario-checkout-oom-change-stress",
+            incident_id="inc-checkout-oom-0001",
+            agent_run=failed_agent_run(),
+            available_evidence_ids=prediction()["available_evidence_ids"],
+            completed_at=EVALUATED_AT,
+        )
+
+        result = evaluate_rca_case(
+            ground_truth(
+                expected_outcome="ABSTAIN",
+                expected_root_cause_ids=[],
+                relevant_evidence_ids=[],
+            ),
+            actual,
+            evaluated_at=EVALUATED_AT,
+        )
+
+        self.assertEqual(result["metrics"]["abstention_correctness"], 0.0)
+
+    def test_agent_report_becomes_variant_c_prediction_without_text_inference(self) -> None:
+        report = agent_report()
+        report["root_cause"]["summary"] = "Free text is not used as the label."
+
+        actual = prediction_from_agent_report(
+            evaluation_case_id="eval-checkout-oom-0001",
+            scenario_id="scenario-checkout-oom-change-stress",
+            incident_id="inc-checkout-oom-0001",
+            report=report,
+            available_evidence_ids=prediction()["available_evidence_ids"],
+            completed_at=EVALUATED_AT,
+        )
+
+        self.assertEqual(actual["variant_id"], "C")
+        self.assertEqual(actual["path"], "deep")
+        self.assertEqual(actual["outcome"], "ROOT_CAUSE")
+        self.assertEqual(
+            actual["predicted_root_cause_ids"],
+            ["kubernetes.container-oomkilled"],
+        )
+        self.assertEqual(
+            actual["cited_evidence_ids"],
+            ["ev-kernel-oom-0001", "ev-restart-delta-0001"],
+        )
+
+    def test_rootless_agent_report_maps_to_abstain(self) -> None:
+        report = agent_report(
+            status="inconclusive",
+            root_cause=None,
+            remediation={
+                "suggestions": [],
+                "verification_conditions": ["Collect another runtime signal."],
+            },
+        )
+        report["hypotheses"][0]["status"] = "unresolved"
+
+        actual = prediction_from_agent_report(
+            evaluation_case_id="eval-checkout-oom-0001",
+            scenario_id="scenario-checkout-oom-change-stress",
+            incident_id="inc-checkout-oom-0001",
+            report=report,
+            available_evidence_ids=prediction()["available_evidence_ids"],
+            completed_at=EVALUATED_AT,
+        )
+
+        self.assertEqual(actual["outcome"], "ABSTAIN")
+        self.assertEqual(actual["predicted_root_cause_ids"], [])
+
     def test_fast_path_decision_becomes_a_variant_a_prediction(self) -> None:
         decision = DeterministicDecision(
             status="PROVEN",

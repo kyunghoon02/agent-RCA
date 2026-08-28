@@ -67,6 +67,7 @@
         "resources",
         "chaos_mesh",
         "observation_seconds",
+        "pre_injection_metric_settle_seconds",
         "maximum_active_seconds"
       ],
       "properties": {
@@ -123,6 +124,11 @@
           "type": "integer",
           "minimum": 30,
           "maximum": 180
+        },
+        "pre_injection_metric_settle_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 120
         },
         "maximum_active_seconds": {
           "type": "integer",

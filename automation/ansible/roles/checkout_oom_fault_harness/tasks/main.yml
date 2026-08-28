@@ -375,6 +375,11 @@
           - checkout_fault_injected_pod.status.containerStatuses[0].restartCount | int == 0
         fail_msg: Resource-policy rollout did not produce one fresh Ready Pod.
 
+    - name: Freeze two central Prometheus scrapes before StressChaos injection
+      ansible.builtin.pause:
+        seconds: >-
+          {{ checkout_oom_scenario.fault.pre_injection_metric_settle_seconds }}
+
     - name: Create the bounded checkoutservice StressChaos
       ansible.builtin.command:
         argv:
@@ -620,7 +625,8 @@
               'model', run.document->>'model',
               'usage', run.document->'usage',
               'report_status', report.document->>'status',
-              'report_path', report.document->>'path'
+              'report_path', report.document->>'path',
+              'report_root_cause_id', report.document->'root_cause'->>'cause_id'
             ) FROM target
             LEFT JOIN incident_analysis_work_items work
               ON work.incident_id = target.incident_id
@@ -667,6 +673,8 @@
             {{ checkout_fault_agent_summary.report_status | default(none) }}
           report_path: >-
             {{ checkout_fault_agent_summary.report_path | default(none) }}
+          report_root_cause_id: >-
+            {{ checkout_fault_agent_summary.report_root_cause_id | default(none) }}
 
     - name: Export the completed Incident Evidence snapshot
       ansible.builtin.command:
@@ -697,6 +705,16 @@
                   ORDER BY evidence.observed_at, evidence.evidence_id), '[]'::json)
                 FROM evidence_items evidence
                 WHERE evidence.incident_id = incident.incident_id
+              ),
+              'report', (
+                SELECT report.document FROM rca_reports report
+                WHERE report.incident_id = incident.incident_id
+                ORDER BY report.generated_at DESC LIMIT 1
+              ),
+              'agent_run', (
+                SELECT run.document FROM agent_runs run
+                WHERE run.incident_id = incident.incident_id
+                ORDER BY run.started_at DESC LIMIT 1
               )
             ) FROM incidents incident
             WHERE incident.document->'alert'->'labels'->>'verification_id'
@@ -707,13 +725,14 @@
       changed_when: false
       no_log: true
 
-    - name: Build local-only Ground Truth and RCA evaluation artifacts
+    - name: Build local-only Ground Truth, Agent, and baseline evaluation artifacts
       ansible.builtin.command:
         argv:
           - .venv/bin/python
           - tools/build_controlled_fault_evaluation.py
           - --scenario
           - evaluation/scenarios/checkoutservice-oom.yaml
+          - --require-agent-outcome
         chdir: "{{ checkout_fault_repo_root }}"
         stdin: "{{ checkout_fault_bundle_result.stdout | trim }}"
       environment:
@@ -730,27 +749,45 @@
           {{ checkout_fault_evaluation_result.stdout | from_json }}
       no_log: true
 
-    - name: Report the sanitized controlled-fault score
+    - name: Report the sanitized controlled-fault scores
       ansible.builtin.debug:
         msg:
-          scorer: deterministic-variant-a-evidence-gate-baseline
           evaluation_case_id: >-
             {{ checkout_fault_evaluation_summary.evaluation_case_id }}
-          prediction_outcome: >-
-            {{ checkout_fault_evaluation_summary.prediction_outcome }}
-          metrics: "{{ checkout_fault_evaluation_summary.metrics }}"
+          agent:
+            scorer: ground-truth-agent-report
+            variant_id: >-
+              {{ checkout_fault_evaluation_summary.agent.variant_id }}
+            prediction_outcome: >-
+              {{ checkout_fault_evaluation_summary.agent.prediction_outcome }}
+            metrics: "{{ checkout_fault_evaluation_summary.agent.metrics }}"
+          deterministic_baseline:
+            scorer: deterministic-variant-a-evidence-gate-baseline
+            variant_id: >-
+              {{ checkout_fault_evaluation_summary.deterministic_baseline.variant_id }}
+            prediction_outcome: >-
+              {{ checkout_fault_evaluation_summary.deterministic_baseline.prediction_outcome }}
+            metrics: >-
+              {{ checkout_fault_evaluation_summary.deterministic_baseline.metrics }}
 
-    - name: Require the continuous Agent to persist an accepted report
+    - name: Require the completed Agent outcome to be represented honestly
       ansible.builtin.assert:
         that:
-          - checkout_fault_agent_summary.work_state == 'SUCCEEDED'
-          - checkout_fault_agent_summary.incident_status == 'REPORTED'
-          - checkout_fault_agent_summary.agent_status == 'SUCCEEDED'
-          - checkout_fault_agent_summary.agent_reason_code == 'REPORT_ACCEPTED'
-          - checkout_fault_agent_summary.report_status in ['conclusive', 'inconclusive', 'partial']
+          - checkout_fault_agent_summary.work_state in ['SUCCEEDED', 'FAILED']
+          - checkout_fault_agent_summary.agent_status in ['SUCCEEDED', 'GATE_REJECTED', 'MODEL_FAILED', 'BUDGET_EXHAUSTED']
+          - >-
+            checkout_fault_agent_summary.agent_status != 'SUCCEEDED'
+            or (
+              checkout_fault_agent_summary.incident_status == 'REPORTED'
+              and checkout_fault_agent_summary.agent_reason_code == 'REPORT_ACCEPTED'
+              and checkout_fault_agent_summary.report_status in ['conclusive', 'inconclusive', 'partial']
+            )
+          - >-
+            checkout_fault_agent_summary.agent_status == 'SUCCEEDED'
+            or checkout_fault_agent_summary.incident_status == 'FAILED'
         fail_msg: >-
-          The deterministic baseline was scored, but the continuous Agent did
-          not persist an Evidence-Gate-accepted RCA Report.
+          The continuous Agent terminal state was not represented by the
+          persisted audit and evaluation outcome.
 
   always:
     - name: Stop the external-controller workload

@@ -74,6 +74,13 @@ def _parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--scenario", type=Path, required=True)
+    parser.add_argument(
+        "--require-agent-outcome",
+        "--require-agent-report",
+        dest="require_agent_outcome",
+        action="store_true",
+        help="fail unless the bundle contains a completed Agent outcome",
+    )
     return parser
 
 
@@ -86,6 +93,8 @@ def main() -> int:
         scenario_sha256=scenario_sha256,
         evaluated_at=datetime.now(timezone.utc),
     )
+    if arguments.require_agent_outcome and "agent_result" not in artifacts:
+        raise SystemExit("fault evaluation bundle has no completed Agent outcome")
     evaluation_case_id = artifacts["result"]["evaluation_case_id"]
     GROUND_TRUTH_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     RUN_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -95,6 +104,14 @@ def main() -> int:
         "result": RUN_ROOT / f"{evaluation_case_id}.result.json",
         "observation": RUN_ROOT / f"{evaluation_case_id}.observation.json",
     }
+    if "agent_result" in artifacts:
+        paths.update(
+            {
+                "agent_prediction": RUN_ROOT
+                / f"{evaluation_case_id}.agent.prediction.json",
+                "agent_result": RUN_ROOT / f"{evaluation_case_id}.agent.result.json",
+            }
+        )
     existing = [str(path) for path in paths.values() if path.exists()]
     if existing:
         raise SystemExit(
@@ -103,7 +120,7 @@ def main() -> int:
         )
     created: list[Path] = []
     try:
-        for name in ("ground_truth", "prediction", "result", "observation"):
+        for name in paths:
             _exclusive_write(paths[name], artifacts[name])
             created.append(paths[name])
     except BaseException:
@@ -119,6 +136,17 @@ def main() -> int:
         "artifacts": {
             name: str(path.relative_to(ROOT)) for name, path in paths.items()
         },
+    }
+    if "agent_result" in artifacts:
+        summary["agent"] = {
+            "variant_id": artifacts["agent_prediction"]["variant_id"],
+            "prediction_outcome": artifacts["agent_prediction"]["outcome"],
+            "metrics": artifacts["agent_result"]["metrics"],
+        }
+    summary["deterministic_baseline"] = {
+        "variant_id": artifacts["prediction"]["variant_id"],
+        "prediction_outcome": artifacts["prediction"]["outcome"],
+        "metrics": artifacts["result"]["metrics"],
     }
     print(json.dumps(summary, sort_keys=True))
     return 0

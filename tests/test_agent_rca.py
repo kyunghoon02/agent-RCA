@@ -107,11 +107,12 @@ class SuccessfulFakeRunner:
             else [evidence_ids[0], cited_second]
         )
         draft = {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "incident_id": invocation.context["incident_id"],
             "context_id": invocation.context["context_id"],
             "decision": "CONCLUSIVE",
             "root_cause": {
+                "cause_id": "kubernetes.container-oomkilled",
                 "summary": "The workload failure is supported by runtime state and metrics.",
                 "entity_id": ENTITY_ID,
                 "supporting_evidence_ids": supporting_ids,
@@ -121,6 +122,7 @@ class SuccessfulFakeRunner:
             "hypotheses": [
                 {
                     "rank": 1,
+                    "cause_id": "kubernetes.container-oomkilled",
                     "summary": "Runtime state and metrics identify the same failure.",
                     "entity_id": ENTITY_ID,
                     "confidence": 0.9,
@@ -164,6 +166,20 @@ class UnsupportedRemediationFakeRunner(SuccessfulFakeRunner):
         draft = dict(model_run.draft)
         draft["decision"] = "INCONCLUSIVE"
         draft["root_cause"] = None
+        return AgentModelRun(
+            draft,
+            model_run.llm_calls,
+            model_run.input_tokens,
+            model_run.output_tokens,
+            model_run.total_tokens,
+        )
+
+
+class MismatchedTaxonomyFakeRunner(SuccessfulFakeRunner):
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        draft["hypotheses"][0]["cause_id"] = "kubernetes.image-pull-failure"
         return AgentModelRun(
             draft,
             model_run.llm_calls,
@@ -399,6 +415,16 @@ class AgentRCAServiceTests(unittest.TestCase):
 
         self.assertEqual(repository.get(incident_id)["status"], "FAILED")
 
+    def test_evidence_gate_requires_root_and_leading_taxonomy_alignment(self) -> None:
+        repository, incident_id, context_id = prepared_repository()
+
+        with self.assertRaisesRegex(ContractViolation, "leading hypothesis"):
+            service(repository, MismatchedTaxonomyFakeRunner()).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+
+        self.assertEqual(repository.get(incident_id)["status"], "FAILED")
+
     def test_evidence_gate_requires_tool_inspection_before_citation(self) -> None:
         repository, incident_id, context_id = prepared_repository()
 
@@ -581,6 +607,7 @@ class AgentRCAServiceTests(unittest.TestCase):
         )
         serialized = json.dumps(view.package, sort_keys=True)
         model_input = _agent_input(invocation)
+        decoded_input = json.loads(model_input)
         legacy = json.dumps(
             {"frozen_context": context, "evidence_catalog": evidence},
             sort_keys=True,
@@ -590,6 +617,25 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertEqual(view.included_state_paths, 1)
         self.assertLess(view.serialized_bytes, len(legacy.encode("utf-8")) // 2)
         self.assertIn('"investigation_view":', model_input)
+        self.assertEqual(
+            decoded_input["hard_rules"]["allowed_root_cause_ids"],
+            [
+                "kubernetes.container-oomkilled",
+                "kubernetes.image-pull-failure",
+                "kubernetes.missing-configmap",
+            ],
+        )
+        self.assertTrue(
+            decoded_input["hard_rules"][
+                "root_cause_matches_rank_one_hypothesis"
+            ]
+        )
+        self.assertEqual(
+            decoded_input["hard_rules"][
+                "conclusive_minimum_distinct_evidence_sources"
+            ],
+            2,
+        )
         self.assertNotIn('"frozen_context":', model_input)
         self.assertNotIn('"facts"', serialized)
         self.assertNotIn('"provenance"', serialized)

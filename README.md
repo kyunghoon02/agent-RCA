@@ -160,17 +160,20 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 
 | Representative scenario | Evidence focus | Status |
 |---|---|---|
-| `checkoutservice` OOMKilled | kernel memcg OOM, same-UID restart, resource limit | Chaos Mesh 3-domain 실행 1회: Agent `conclusive`, 결정론적 Variant A Top-1 `1.0` |
+| `checkoutservice` OOMKilled | kernel memcg OOM, same-UID restart, resource limit | taxonomy scorer live: 최신 Agent Variant C Top-1 `1.0`, Evidence precision/recall `0.0`; Variant A Top-1 `1.0`, Evidence recall `0.666667` |
 | NetworkPolicy regression | Hubble drop, policy verdict와 change time | 계획 |
 | Deployment regression | RED metric, trace, log와 ReplicaSet revision | 계획 |
 | Load-only saturation | latency/error, CPU·memory와 change 부재 | 계획 |
 
 이전 OOM 결과는 순간 memory metric을 필수 조건으로 사용하면 실제 kernel OOM을 놓칠 수
 있음을 보여줬다. 현재 규칙은 exact kernel signature와 same-UID restart를 필수 Evidence로
-사용하며, memory ratio는 보조 관측으로 남긴다. 이번 Agent 결과는 실제 Report 저장과
-의미상 OOM 진단을 확인했지만, 공개한 Ground Truth metric은 아직 결정론적 Variant A를
-평가한다. 목표는 최소 15개 scenario를 각각 5회 반복하는 것이며, 한 번의 성공은 그 목표를
-달성한 결과가 아니다.
+사용하며, memory ratio는 보조 관측으로 남긴다. Agent Report schema `1.1.0`은 등록된
+`cause_id`를 보존하며, 사후 evaluator는 Report 자유 텍스트를 해석하지 않고 이 ID를
+Ground Truth와 결합한다. 실제 Agent Variant C score와 결정론적 Variant A baseline은 서로
+다른 artifact로 저장된다. restart delta의 pre-fault 기준점은 30초 central scrape 두 번을
+포함하는 65초 settle 구간 뒤에 fault를 주어 고정한다. 목표는 최소 15개 scenario를 각각
+5회 반복하는 것이며, 한 번의 성공은 그 목표를 달성한 결과가 아니다. Gate rejection 한
+건도 `ABSTAIN`으로 바꾸지 않고 Agent `FAILED`, Top-1 `0.0` artifact로 별도 보존했다.
 
 상세 규칙은 [Evaluation Preregistration](evaluation/preregistration.yaml)과
 [KRCA Drilldown Contract](contracts/krca-drilldown.md)에 기록한다.
@@ -190,7 +193,8 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
 - OOM 외 fault matrix, no-fault control과 반복 평가가 완료되지 않았다.
-- Agent Report에는 아직 평가 taxonomy ID가 없어 Ground Truth scorer와 자동 결합되지 않는다.
+- 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
+- 최신 OOM Agent는 원인 ID는 맞췄지만 사전등록 핵심 Evidence를 인용하지 않아 citation quality 개선이 필요하다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start

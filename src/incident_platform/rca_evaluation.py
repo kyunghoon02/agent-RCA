@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Literal, Mapping, Optional, Sequence
 
 from .contracts import validate_contract
 from .deterministic import DeterministicDecision
@@ -89,6 +89,114 @@ def prediction_from_deterministic_decision(
     return prediction
 
 
+def prediction_from_agent_report(
+    *,
+    evaluation_case_id: str,
+    scenario_id: str,
+    incident_id: str,
+    report: Mapping[str, Any],
+    available_evidence_ids: Sequence[str],
+    completed_at: datetime,
+    variant_id: Literal["B", "C", "D"] = "C",
+) -> Dict[str, Any]:
+    """Create an evaluation Prediction from an Evidence-Gate-accepted Report.
+
+    Variant C is the current runtime mapping: StateGraph-localized Context and
+    one bounded Agent run without tree search. The evaluator consumes only
+    registered taxonomy IDs; it never infers a label from free-text summaries.
+    """
+
+    candidate = copy.deepcopy(dict(report))
+    validate_contract("rca-report.schema.json", candidate)
+    if candidate["incident_id"] != incident_id:
+        raise ContractViolation(
+            "Agent Report incident_id does not match evaluation Incident"
+        )
+
+    root_cause = candidate["root_cause"]
+    ranked_cause_ids: list[str] = []
+    if root_cause is not None:
+        ranked_cause_ids.append(root_cause["cause_id"])
+    for hypothesis in candidate["hypotheses"]:
+        cause_id = hypothesis["cause_id"]
+        if (
+            cause_id is not None
+            and hypothesis["status"] in {"supported", "competing"}
+            and cause_id not in ranked_cause_ids
+        ):
+            ranked_cause_ids.append(cause_id)
+
+    cited_evidence_ids: list[str] = []
+    if root_cause is not None:
+        cited_evidence_ids.extend(root_cause["supporting_evidence_ids"])
+    for hypothesis in candidate["hypotheses"]:
+        cited_evidence_ids.extend(hypothesis["supporting_evidence_ids"])
+        cited_evidence_ids.extend(hypothesis["contradicting_evidence_ids"])
+    cited_evidence_ids = list(dict.fromkeys(cited_evidence_ids))
+
+    if root_cause is not None:
+        outcome = "ROOT_CAUSE"
+    elif len(ranked_cause_ids) >= 2:
+        outcome = "AMBIGUOUS"
+    else:
+        outcome = "ABSTAIN"
+        ranked_cause_ids = []
+
+    prediction = {
+        "schema_version": "1.0.0",
+        "evaluation_case_id": evaluation_case_id,
+        "scenario_id": scenario_id,
+        "incident_id": incident_id,
+        "variant_id": variant_id,
+        "path": candidate["path"],
+        "outcome": outcome,
+        "predicted_root_cause_ids": ranked_cause_ids[:5],
+        "cited_evidence_ids": cited_evidence_ids,
+        "available_evidence_ids": list(dict.fromkeys(available_evidence_ids)),
+        "completed_at": _format_time(completed_at),
+    }
+    validate_contract("rca-evaluation-prediction.schema.json", prediction)
+    return prediction
+
+
+def prediction_from_failed_agent_run(
+    *,
+    evaluation_case_id: str,
+    scenario_id: str,
+    incident_id: str,
+    agent_run: Mapping[str, Any],
+    available_evidence_ids: Sequence[str],
+    completed_at: datetime,
+    variant_id: Literal["B", "C", "D"] = "C",
+) -> Dict[str, Any]:
+    """Preserve a failed Agent attempt as a scored outcome, not an abstention."""
+
+    candidate = copy.deepcopy(dict(agent_run))
+    validate_contract("agent-run-audit.schema.json", candidate)
+    if candidate["incident_id"] != incident_id:
+        raise ContractViolation(
+            "Agent run incident_id does not match evaluation Incident"
+        )
+    if candidate["status"] == "SUCCEEDED":
+        raise ContractViolation("successful Agent run requires an accepted Report")
+
+    prediction = {
+        "schema_version": "1.0.0",
+        "evaluation_case_id": evaluation_case_id,
+        "scenario_id": scenario_id,
+        "incident_id": incident_id,
+        "variant_id": variant_id,
+        "path": "deep",
+        "outcome": "FAILED",
+        "predicted_root_cause_ids": [],
+        "cited_evidence_ids": list(candidate["cited_evidence_ids"]),
+        "available_evidence_ids": list(dict.fromkeys(available_evidence_ids)),
+        "completed_at": _format_time(completed_at),
+    }
+    validate_contract("rca-evaluation-prediction.schema.json", prediction)
+    return prediction
+
+
 def evaluate_rca_case(
     ground_truth: Mapping[str, Any],
     prediction: Mapping[str, Any],
@@ -132,6 +240,7 @@ def evaluate_rca_case(
 
     expected_abstain = truth["expected_outcome"] == "ABSTAIN"
     predicted_abstain = candidate["outcome"] == "ABSTAIN"
+    prediction_failed = candidate["outcome"] == "FAILED"
     expected_set = set(expected_causes)
     predicted_set = set(predicted_causes)
     matched_evidence = relevant_evidence & cited_evidence
@@ -197,7 +306,7 @@ def evaluate_rca_case(
                 _ratio(len(unsupported_citations), len(cited_evidence)) or 0.0
             ),
             "abstention_correctness": float(
-                expected_abstain == predicted_abstain
+                not prediction_failed and expected_abstain == predicted_abstain
             ),
         },
     }

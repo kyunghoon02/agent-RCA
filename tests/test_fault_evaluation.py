@@ -123,7 +123,167 @@ def fixture_bundle(
     return {"incident": incident, "context": context, "evidence": evidence}, scenario
 
 
+def with_agent_report(bundle: dict, *, cause_id: str) -> dict:
+    copied = dict(bundle)
+    context = copied["context"]
+    evidence = copied["evidence"]
+    subject = evidence[0]["subject"]
+    supporting_ids = [evidence[0]["evidence_id"], evidence[1]["evidence_id"]]
+    copied["report"] = {
+        "schema_version": "1.1.0",
+        "report_id": "rpt-controlled-oom-agent-0001",
+        "incident_id": copied["incident"]["incident_id"],
+        "context_id": context["context_id"],
+        "path": "deep",
+        "status": "conclusive",
+        "generated_at": "2026-08-26T08:59:00Z",
+        "root_cause": {
+            "cause_id": cause_id,
+            "summary": "The Agent selected a registered cause.",
+            "entity": subject,
+            "supporting_evidence_ids": supporting_ids,
+            "reference_document_ids": [],
+        },
+        "hypotheses": [
+            {
+                "rank": 1,
+                "cause_id": cause_id,
+                "summary": "The Agent selected a registered cause.",
+                "entity": subject,
+                "confidence": 0.95,
+                "status": "supported",
+                "supporting_evidence_ids": supporting_ids,
+                "contradicting_evidence_ids": [],
+                "reference_document_ids": [],
+                "missing_evidence": [],
+            }
+        ],
+        "remediation": {
+            "suggestions": ["Review the memory policy."],
+            "verification_conditions": ["The Pod remains Ready."],
+        },
+        "budget": {
+            "applicable": True,
+            "llm_calls": 2,
+            "tool_calls": 3,
+            "tree_depth": 2,
+            "wall_time_ms": 12000,
+            "exhausted": False,
+        },
+        "read_only": True,
+        "limitations": [],
+    }
+    return copied
+
+
+def with_failed_agent_run(bundle: dict) -> dict:
+    copied = dict(bundle)
+    evidence_id = copied["evidence"][0]["evidence_id"]
+    copied["incident"] = dict(copied["incident"], status="FAILED")
+    copied["agent_run"] = {
+        "schema_version": "1.0.0",
+        "agent_run_id": "arun-controlled-oom-agent-0001",
+        "incident_id": copied["incident"]["incident_id"],
+        "context_id": copied["context"]["context_id"],
+        "knowledge_audit_id": "kaud-controlled-oom-agent-0001",
+        "knowledge_status": "SUCCEEDED",
+        "model": "fixture-agent",
+        "status": "GATE_REJECTED",
+        "reason_code": "EVIDENCE_GATE_REJECTED",
+        "started_at": "2026-08-26T08:58:00Z",
+        "completed_at": "2026-08-26T08:59:00Z",
+        "budget": {
+            "max_turns": 6,
+            "max_llm_calls": 6,
+            "max_tool_calls": 12,
+            "max_evidence_candidates": 8,
+            "max_output_tokens": 2000,
+            "max_wall_time_ms": 60000,
+        },
+        "usage": {
+            "llm_calls": 2,
+            "tool_calls": 3,
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "total_tokens": 1200,
+            "wall_time_ms": 12000,
+        },
+        "tool_events": [],
+        "retrieved_reference_ids": [],
+        "inspected_evidence_ids": [evidence_id],
+        "inspected_reference_document_ids": [],
+        "cited_evidence_ids": [evidence_id],
+        "cited_reference_document_ids": [],
+    }
+    return copied
+
+
 class ControlledFaultEvaluationTests(unittest.TestCase):
+    def test_gate_rejected_agent_is_scored_as_failed_not_abstained(self) -> None:
+        bundle, scenario = fixture_bundle()
+        bundle = with_failed_agent_run(bundle)
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="a" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(artifacts["prediction"]["outcome"], "ROOT_CAUSE")
+        self.assertEqual(artifacts["agent_prediction"]["outcome"], "FAILED")
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["root_cause_top1_accuracy"],
+            0.0,
+        )
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["abstention_correctness"],
+            0.0,
+        )
+
+    def test_agent_report_is_scored_separately_from_variant_a_baseline(self) -> None:
+        bundle, scenario = fixture_bundle()
+        bundle = with_agent_report(
+            bundle, cause_id="kubernetes.container-oomkilled"
+        )
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="a" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(artifacts["prediction"]["variant_id"], "A")
+        self.assertEqual(artifacts["agent_prediction"]["variant_id"], "C")
+        self.assertEqual(
+            artifacts["agent_prediction"]["predicted_root_cause_ids"],
+            ["kubernetes.container-oomkilled"],
+        )
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["root_cause_top1_accuracy"],
+            1.0,
+        )
+
+    def test_agent_score_uses_taxonomy_id_instead_of_summary(self) -> None:
+        bundle, scenario = fixture_bundle()
+        bundle = with_agent_report(
+            bundle, cause_id="kubernetes.image-pull-failure"
+        )
+        bundle["report"]["root_cause"]["summary"] = "This text says OOMKilled."
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="a" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["root_cause_top1_accuracy"],
+            0.0,
+        )
+
     def test_exact_oom_snapshot_builds_private_label_and_correct_root_cause(self) -> None:
         bundle, scenario = fixture_bundle()
 

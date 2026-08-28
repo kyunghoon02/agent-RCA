@@ -1247,16 +1247,16 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-5370ce094cb0",
+            "image_tag": "runtime-7cb30bf7b09b",
             "image_digest": (
-                "sha256:c397235eb1d0b9d2d7176cde4c9ee96e8c863087c70b160789a7c05617b36164"
+                "sha256:50bb50e2bbe309ea25cd8da311d4e93f14b966137412df880a0edfc9e7ba91a9"
             ),
         },
         "viewer_frontend": {
             "node_version": "22.17.1",
-            "image_tag": "viewer-76d128d73ac7",
+            "image_tag": "viewer-abc5599bc22d",
             "image_digest": (
-                "sha256:70ce94733eff4fd7bec8c4edcdcd0ca86b0a02b5bb73cd1f267054be93ca8276"
+                "sha256:74f17740679e5a88250cd8a1f8d5b9e33a26f7a062dac501a9f4406af13054db"
             ),
             "service_type": "ClusterIP",
             "port": 3100,

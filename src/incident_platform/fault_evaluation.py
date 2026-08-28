@@ -19,6 +19,8 @@ from .evidence import verify_evidence_content_hash
 from .errors import ContractViolation
 from .rca_evaluation import (
     evaluate_rca_case,
+    prediction_from_agent_report,
+    prediction_from_failed_agent_run,
     prediction_from_deterministic_decision,
 )
 
@@ -300,7 +302,7 @@ def build_controlled_fault_evaluation(
     scenario_sha256: str,
     evaluated_at: datetime,
 ) -> Dict[str, Dict[str, Any]]:
-    """Build private Ground Truth, a frozen Prediction, and sanitized Result."""
+    """Build Ground Truth plus separate baseline and Agent score artifacts."""
 
     validate_contract("controlled-fault-scenario.schema.json", scenario)
     if not isinstance(scenario_sha256, str) or re.fullmatch(
@@ -341,7 +343,7 @@ def build_controlled_fault_evaluation(
         raise ContractViolation(
             "fault evaluation Incident, Context, and Evidence identities disagree"
         )
-    if incident["status"] not in {"ANALYZING", "REPORTED", "PARTIAL"}:
+    if incident["status"] not in {"ANALYZING", "REPORTED", "PARTIAL", "FAILED"}:
         raise ContractViolation(
             "fault evaluation requires a completed frozen Context snapshot"
         )
@@ -413,9 +415,65 @@ def build_controlled_fault_evaluation(
         result=result,
         observed_at=timestamp,
     )
-    return {
+    artifacts = {
         "ground_truth": ground_truth,
         "prediction": prediction,
         "result": result,
         "observation": observation,
     }
+    raw_report = bundle.get("report")
+    raw_agent_run = bundle.get("agent_run")
+    agent_run = None
+    if raw_agent_run is not None:
+        if not isinstance(raw_agent_run, Mapping):
+            raise ContractViolation("fault evaluation Agent run must be an object")
+        agent_run = copy.deepcopy(dict(raw_agent_run))
+        validate_contract("agent-run-audit.schema.json", agent_run)
+        if agent_run["incident_id"] != incident_id:
+            raise ContractViolation(
+                "fault evaluation Agent run belongs to another Incident"
+            )
+    if raw_report is not None:
+        if not isinstance(raw_report, Mapping):
+            raise ContractViolation("fault evaluation Agent Report must be an object")
+        report = copy.deepcopy(dict(raw_report))
+        if agent_run is not None and (
+            agent_run["status"] != "SUCCEEDED"
+            or agent_run["context_id"] != report["context_id"]
+        ):
+            raise ContractViolation(
+                "accepted Agent Report does not match the completed Agent run"
+            )
+        agent_prediction = prediction_from_agent_report(
+            evaluation_case_id=evaluation_case_id,
+            scenario_id=scenario["scenario_id"],
+            incident_id=incident_id,
+            report=report,
+            available_evidence_ids=context["evidence_ids"],
+            completed_at=evaluated_at,
+            variant_id="C",
+        )
+        agent_result = evaluate_rca_case(
+            ground_truth,
+            agent_prediction,
+            evaluated_at=evaluated_at,
+        )
+        artifacts["agent_prediction"] = agent_prediction
+        artifacts["agent_result"] = agent_result
+    elif agent_run is not None:
+        agent_prediction = prediction_from_failed_agent_run(
+            evaluation_case_id=evaluation_case_id,
+            scenario_id=scenario["scenario_id"],
+            incident_id=incident_id,
+            agent_run=agent_run,
+            available_evidence_ids=context["evidence_ids"],
+            completed_at=evaluated_at,
+            variant_id="C",
+        )
+        artifacts["agent_prediction"] = agent_prediction
+        artifacts["agent_result"] = evaluate_rca_case(
+            ground_truth,
+            agent_prediction,
+            evaluated_at=evaluated_at,
+        )
+    return artifacts

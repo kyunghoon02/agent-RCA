@@ -9,7 +9,7 @@
     "root_cause", "hypotheses", "remediation", "limitations", "read_only"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "1.1.0"},
     "incident_id": {"type": "string", "pattern": "^inc-[a-z0-9][a-z0-9-]{7,63}$"},
     "context_id": {"type": "string", "pattern": "^ctx-[a-z0-9][a-z0-9-]{7,63}$"},
     "decision": {"enum": ["CONCLUSIVE", "INCONCLUSIVE", "PARTIAL"]},
@@ -39,13 +39,21 @@
       "type": "array", "uniqueItems": true, "maxItems": 20,
       "items": {"type": "string", "pattern": "^ref-[a-z0-9][a-z0-9-]{7,63}$"}
     },
+    "rootCauseId": {
+      "enum": [
+        "kubernetes.container-oomkilled",
+        "kubernetes.image-pull-failure",
+        "kubernetes.missing-configmap"
+      ]
+    },
     "rootCause": {
       "type": "object", "additionalProperties": false,
       "required": [
-        "summary", "entity_id", "supporting_evidence_ids",
+        "cause_id", "summary", "entity_id", "supporting_evidence_ids",
         "contradicting_evidence_ids", "reference_document_ids"
       ],
       "properties": {
+        "cause_id": {"$ref": "#/$defs/rootCauseId"},
         "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
         "entity_id": {"type": "string", "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"},
         "supporting_evidence_ids": {"$ref": "#/$defs/evidenceIds"},
@@ -56,12 +64,18 @@
     "hypothesis": {
       "type": "object", "additionalProperties": false,
       "required": [
-        "rank", "summary", "entity_id", "confidence", "status",
+        "rank", "cause_id", "summary", "entity_id", "confidence", "status",
         "supporting_evidence_ids", "contradicting_evidence_ids",
         "reference_document_ids", "missing_evidence"
       ],
       "properties": {
         "rank": {"type": "integer", "minimum": 1, "maximum": 5},
+        "cause_id": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/rootCauseId"}
+          ]
+        },
         "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
         "entity_id": {"type": "string", "pattern": "^ent-[a-z0-9][a-z0-9-]{7,127}$"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},

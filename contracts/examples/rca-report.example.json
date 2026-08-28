@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "report_id": "rpt-checkout-0001",
   "incident_id": "inc-checkout-0001",
   "context_id": "ctx-checkout-0001",
@@ -7,6 +7,7 @@
   "status": "conclusive",
   "generated_at": "2026-07-27T01:05:05Z",
   "root_cause": {
+    "cause_id": "kubernetes.missing-configmap",
     "summary": "The checkoutservice Pod references the required ConfigMap checkout-settings, but that ConfigMap does not exist.",
     "entity": {
       "api_version": "v1",
@@ -24,6 +25,7 @@
   "hypotheses": [
     {
       "rank": 1,
+      "cause_id": "kubernetes.missing-configmap",
       "summary": "Missing required ConfigMap prevents checkoutservice from becoming Ready.",
       "entity": {
         "api_version": "v1",

@@ -152,6 +152,11 @@ export function DiagnosisPanel({
                 <p className="mt-1 text-sm leading-relaxed">
                   {bundle.report.root_cause.summary}
                 </p>
+                {bundle.report.root_cause.cause_id && (
+                  <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                    {bundle.report.root_cause.cause_id}
+                  </p>
+                )}
                 <div className="mt-1.5">
                   <EntityRefLabel entity={bundle.report.root_cause.entity} />
                 </div>

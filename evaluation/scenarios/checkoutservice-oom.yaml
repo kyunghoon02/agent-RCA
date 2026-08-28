@@ -38,6 +38,7 @@ fault:
       size: 128MiB
       oom_score_adj: -1000
   observation_seconds: 75
+  pre_injection_metric_settle_seconds: 65
   maximum_active_seconds: 300
 
 workload:

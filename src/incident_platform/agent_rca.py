@@ -40,12 +40,16 @@ from .evidence import format_time
 from .knowledge import BoundedKnowledgeRetriever, KnowledgeRetrievalRun
 from .reporting import render_markdown
 from .repository import IncidentRepository, context_evidence_ids
+from .root_cause_taxonomy import ROOT_CAUSE_IDS, RootCauseId
 from .stategraph import stable_graph_id
 
 
 class DraftRootCause(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    cause_id: RootCauseId = Field(
+        description="Registered root-cause taxonomy ID supported by runtime Evidence."
+    )
     summary: str = Field(min_length=1, max_length=2000)
     entity_id: str
     supporting_evidence_ids: List[str]
@@ -57,6 +61,12 @@ class DraftHypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rank: int = Field(ge=1, le=5)
+    cause_id: Optional[RootCauseId] = Field(
+        description=(
+            "Registered taxonomy ID for this hypothesis, or null when the "
+            "hypothesis is outside the current bounded taxonomy."
+        )
+    )
     summary: str = Field(min_length=1, max_length=2000)
     entity_id: str
     confidence: float = Field(ge=0, le=1)
@@ -91,7 +101,7 @@ class AgentRCADraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0.0"]
+    schema_version: Literal["1.1.0"]
     incident_id: str
     context_id: str
     decision: Literal["CONCLUSIVE", "INCONCLUSIVE", "PARTIAL"] = Field(
@@ -675,10 +685,12 @@ Evidence or Operational Reference ID that you cite, but do not inspect every
 catalog entry. Select the smallest relevant cross-source set and stop inspecting
 once it is sufficient to support a conclusion or explain why proof is
 incomplete. Call inspect_evidence with one to four relevant IDs at a time.
-Operational References can guide interpretation but never prove
-current runtime facts. A CONCLUSIVE root cause must cite runtime Evidence. Do
-not invent IDs, entities, facts, or tool results. Only provide remediation
-suggestions when root_cause is non-null.
+Operational References can guide interpretation but never prove current
+runtime facts. A CONCLUSIVE root cause must cite supporting runtime Evidence
+from at least two distinct Evidence sources and must contain no contradicting
+Evidence IDs. When root_cause is non-null, its cause_id must exactly match the
+rank-one hypothesis cause_id. Do not invent IDs, entities, facts, or tool
+results. Only provide remediation suggestions when root_cause is non-null.
 When root_cause is null, remediation.suggestions must be an empty array and
 verification_conditions must name the observable Evidence needed to confirm or
 reject the leading hypotheses. Keep accepted remediation advisory. If proof is
@@ -707,6 +719,13 @@ def _agent_input(invocation: AgentInvocation) -> str:
             "inspect_before_citation": True,
             "references_are_not_evidence": True,
             "read_only": True,
+            "allowed_root_cause_ids": list(ROOT_CAUSE_IDS),
+            "unknown_hypothesis_cause_id": None,
+            "root_cause_matches_rank_one_hypothesis": True,
+            "conclusive_minimum_distinct_evidence_sources": (
+                invocation.policy.minimum_conclusive_evidence_sources
+            ),
+            "conclusive_contradicting_evidence_ids": [],
         },
     }
     return _canonical_json(package)
@@ -784,6 +803,12 @@ class EvidenceGate:
             raise ContractViolation("Agent hypothesis ranks must be contiguous")
 
         root_cause = candidate["root_cause"]
+        if root_cause is not None:
+            leading_cause_id = candidate["hypotheses"][0]["cause_id"]
+            if leading_cause_id != root_cause["cause_id"]:
+                raise ContractViolation(
+                    "Agent root cause taxonomy ID must match the leading hypothesis"
+                )
         if candidate["decision"] == "CONCLUSIVE":
             assert root_cause is not None
             supporting = set(root_cause["supporting_evidence_ids"])
@@ -1152,6 +1177,7 @@ class AgentRCAService:
         root_cause = None
         if root is not None:
             root_cause = {
+                "cause_id": root["cause_id"],
                 "summary": root["summary"],
                 "entity": entities[root["entity_id"]],
                 "supporting_evidence_ids": list(root["supporting_evidence_ids"]),
@@ -1160,6 +1186,7 @@ class AgentRCAService:
         hypotheses = [
             {
                 "rank": item["rank"],
+                "cause_id": item["cause_id"],
                 "summary": item["summary"],
                 "entity": entities[item["entity_id"]],
                 "confidence": item["confidence"],
@@ -1189,7 +1216,7 @@ class AgentRCAService:
             "cited_evidence_ids": audit["cited_evidence_ids"],
         }
         report = {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "report_id": stable_graph_id("rpt", identity),
             "incident_id": context["incident_id"],
             "context_id": context["context_id"],

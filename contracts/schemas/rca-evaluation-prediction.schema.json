@@ -52,7 +52,8 @@
       "enum": [
         "ROOT_CAUSE",
         "ABSTAIN",
-        "AMBIGUOUS"
+        "AMBIGUOUS",
+        "FAILED"
       ]
     },
     "predicted_root_cause_ids": {
@@ -105,6 +106,22 @@
           },
           "cited_evidence_ids": {
             "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "FAILED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "predicted_root_cause_ids": {
+            "maxItems": 0
           }
         }
       }

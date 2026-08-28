@@ -90,6 +90,10 @@ from .krca_runtime import (
     load_krca_runtime_config,
 )
 from .reporting import FastPathArtifacts, FastPathReportBuilder, render_markdown
+from .rca_evaluation import (
+    prediction_from_agent_report,
+    prediction_from_failed_agent_run,
+)
 from .reconciliation import (
     KUBERNETES_RECONCILED_ENTITY_TYPES,
     KUBERNETES_RECONCILED_RELATION_TYPES,
@@ -214,6 +218,8 @@ __all__ = [
     "FastPathArtifacts",
     "FastPathReportBuilder",
     "FastPathRun",
+    "prediction_from_agent_report",
+    "prediction_from_failed_agent_run",
     "GraphLocalizer",
     "GraphProjection",
     "InMemoryStateGraphRepository",

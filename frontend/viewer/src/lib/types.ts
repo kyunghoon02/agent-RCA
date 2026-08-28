@@ -240,9 +240,15 @@ export interface ContextPackage {
 
 export type ReportStatus = "conclusive" | "inconclusive" | "partial";
 export type HypothesisStatus = "supported" | "competing" | "rejected" | "unresolved";
+export type RootCauseId =
+  | "kubernetes.container-oomkilled"
+  | "kubernetes.image-pull-failure"
+  | "kubernetes.missing-configmap";
 
 export interface RcaHypothesis {
   rank: number;
+  /** Absent only on reports persisted before RCA Report schema 1.1.0. */
+  cause_id?: RootCauseId | null;
   summary: string;
   entity: EntityRef;
   confidence: number;
@@ -255,7 +261,7 @@ export interface RcaHypothesis {
 
 /** contracts/schemas/rca-report.schema.json */
 export interface RcaReport {
-  schema_version: "1.0.0";
+  schema_version: "1.0.0" | "1.1.0";
   report_id: string;
   incident_id: string;
   context_id: string;
@@ -263,6 +269,8 @@ export interface RcaReport {
   status: ReportStatus;
   generated_at: string;
   root_cause: {
+    /** Absent only on reports persisted before RCA Report schema 1.1.0. */
+    cause_id?: RootCauseId;
     summary: string;
     entity: EntityRef;
     supporting_evidence_ids: string[];

@@ -297,7 +297,9 @@ class FastPathReportBuilder:
         root_cause = None
         if decision.status == "PROVEN":
             assert decision.statement is not None
+            assert decision.root_cause_id is not None
             root_cause = {
+                "cause_id": decision.root_cause_id,
                 "summary": decision.statement,
                 "entity": _entity_for_ids(
                     evidence_by_id,
@@ -345,7 +347,7 @@ class FastPathReportBuilder:
             "evidence_ids": context["evidence_ids"],
         }
         report = {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "report_id": _stable_id("rpt", report_identity),
             "incident_id": incident["incident_id"],
             "context_id": context["context_id"],
@@ -380,6 +382,7 @@ class FastPathReportBuilder:
             return [
                 {
                     "rank": 1,
+                    "cause_id": decision.root_cause_id,
                     "summary": decision.statement,
                     "entity": _entity_for_ids(
                         evidence_by_id,
@@ -406,6 +409,7 @@ class FastPathReportBuilder:
             return [
                 {
                     "rank": rank,
+                    "cause_id": evaluation.rule_id,
                     "summary": evaluation.statement,
                     "entity": _entity_for_ids(
                         evidence_by_id,
@@ -433,6 +437,7 @@ class FastPathReportBuilder:
             return [
                 {
                     "rank": rank,
+                    "cause_id": evaluation.rule_id,
                     "summary": evaluation.statement,
                     "entity": _entity_for_ids(
                         evidence_by_id,
@@ -454,6 +459,7 @@ class FastPathReportBuilder:
         return [
             {
                 "rank": 1,
+                "cause_id": None,
                 "summary": "No deterministic failure signature matched the available Evidence.",
                 "entity": copy.deepcopy(dict(incident["source_entity"])),
                 "confidence": 0.0,
@@ -558,6 +564,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             [
                 _markdown_text(root["summary"]),
                 "",
+                f"Taxonomy ID: `{_markdown_text(root['cause_id'])}`",
+                "",
                 f"Affected entity: `{_markdown_entity(entity)}`",
                 "",
                 "Supporting Evidence:",
@@ -575,6 +583,12 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 f"### {hypothesis['rank']}. {_markdown_text(hypothesis['summary'])}",
                 "",
                 f"- Status: `{_markdown_text(hypothesis['status'])}`",
+                "- Taxonomy ID: "
+                + (
+                    f"`{_markdown_text(hypothesis['cause_id'])}`"
+                    if hypothesis["cause_id"] is not None
+                    else "Unregistered"
+                ),
                 f"- Confidence encoding: `{hypothesis['confidence']}`",
                 "- Supporting Evidence: "
                 + (
