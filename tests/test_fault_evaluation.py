@@ -303,7 +303,14 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
             artifacts["result"]["metrics"]["root_cause_top1_accuracy"], 1.0
         )
         self.assertEqual(
-            artifacts["result"]["metrics"]["evidence_recall"], 0.666667
+            artifacts["result"]["metrics"]["evidence_recall"], 1.0
+        )
+        self.assertEqual(
+            artifacts["ground_truth"]["relevant_evidence_ids"],
+            [
+                bundle["evidence"][0]["evidence_id"],
+                bundle["evidence"][1]["evidence_id"],
+            ],
         )
         self.assertEqual(
             artifacts["observation"]["memory_working_set_ratio_peak"], 0.99
@@ -313,7 +320,7 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(
             artifacts["observation"]["evidence_gate_policy"],
-            "oom-signature-restart-v2",
+            "oom-signature-union-restart-v3",
         )
         self.assertEqual(
             artifacts["observation"]["oom_signature_source"],
@@ -324,6 +331,77 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
         self.assertNotIn(
             artifacts["ground_truth"]["relevant_evidence_ids"][0],
             serialized_result,
+        )
+
+    def test_ground_truth_includes_all_exact_signatures_but_not_auxiliary_memory(
+        self,
+    ) -> None:
+        bundle, scenario = fixture_bundle()
+        subject = bundle["evidence"][0]["subject"]
+        request = CollectionRequest(
+            request_id="req-controlled-oom-loki-fixture",
+            incident_id=bundle["incident"]["incident_id"],
+            window=EvidenceWindow(
+                start="2026-08-12T00:30:00Z",
+                end="2026-08-12T05:00:00Z",
+            ),
+            scope=ResourceScope(
+                namespace="online-boutique",
+                resource_names=(subject["name"],),
+            ),
+            timeout_seconds=1,
+        )
+        loki_signature = EvidenceBuilder().build(
+            EvidenceDraft(
+                source="loki",
+                kind="log-pattern",
+                observed_at="2026-08-12T01:04:58Z",
+                subject=subject,
+                summary="Kernel memcg OOM matched the same checkout Pod UID.",
+                facts={
+                    "pattern_id": "kernel-cgroup-oom",
+                    "kernel_constraint": "CONSTRAINT_MEMCG",
+                    "match_count": 1,
+                    "pod_uid": subject["uid"],
+                },
+                provider="loki-kernel-oom-provider",
+                query="bounded kernel OOM query",
+                locator="loki://kernel-oom/checkoutservice-abc",
+            ),
+            request,
+            collected_at=NOW,
+        )
+        bundle["evidence"].append(loki_signature)
+        bundle["context"]["evidence_ids"].append(loki_signature["evidence_id"])
+        bundle = with_agent_report(
+            bundle, cause_id="kubernetes.container-oomkilled"
+        )
+        bundle["report"]["root_cause"]["supporting_evidence_ids"].append(
+            loki_signature["evidence_id"]
+        )
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="a" * 64,
+            evaluated_at=NOW,
+        )
+
+        relevant_ids = set(artifacts["ground_truth"]["relevant_evidence_ids"])
+        self.assertEqual(
+            relevant_ids,
+            {
+                bundle["evidence"][0]["evidence_id"],
+                bundle["evidence"][1]["evidence_id"],
+                loki_signature["evidence_id"],
+            },
+        )
+        self.assertNotIn(bundle["evidence"][2]["evidence_id"], relevant_ids)
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["evidence_precision"], 1.0
+        )
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["evidence_recall"], 1.0
         )
 
     def test_ground_truth_rejects_cross_uid_metric_corroboration(self) -> None:

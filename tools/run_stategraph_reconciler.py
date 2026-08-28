@@ -32,6 +32,7 @@ from incident_platform.providers.kubernetes import (
     KubernetesInventoryProvider,
 )
 from incident_platform.reconciliation import KubernetesStateGraphReconciler
+from incident_platform.stategraph import stable_graph_id
 
 
 UTC = timezone.utc
@@ -153,10 +154,16 @@ def build_collection_request(
     observed_at: datetime,
 ) -> CollectionRequest:
     observed_text = format_time(observed_at)
-    cycle_key = observed_at.strftime("%Y%m%dt%H%M%Sz").lower()
+    request_identity = {
+        "purpose": "stategraph-inventory",
+        "cluster_id": config.cluster_id,
+        "namespace": config.target_namespace,
+        "application_services": config.application_services,
+        "observed_at": observed_text,
+    }
     return CollectionRequest(
-        request_id=f"req-stategraph-inventory-{cycle_key}",
-        incident_id=f"inc-stategraph-inventory-{cycle_key}",
+        request_id=stable_graph_id("req", request_identity),
+        incident_id=stable_graph_id("inc", request_identity),
         window=EvidenceWindow(
             start=format_time(observed_at - timedelta(minutes=5)),
             end=observed_text,

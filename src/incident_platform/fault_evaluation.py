@@ -71,28 +71,23 @@ def _at_least(value: object, threshold: float) -> bool:
 def select_controlled_oom_ground_truth_evidence(
     evidence: Sequence[Mapping[str, Any]],
     scenario: Mapping[str, Any],
-) -> Tuple[str, str, str]:
+) -> Tuple[str, ...]:
     """Select independently observed OOM labels for the injected fault.
 
     The selection is intentionally stricter than simply copying the Evidence
     Gate citations: it evaluates the preregistered predicates against the
     frozen Evidence snapshot and requires one exact Pod UID across all items.
+    All equivalent exact OOM signatures are relevant; the sampled memory ratio
+    remains an auxiliary observation and is not causal citation Ground Truth.
     """
 
     selected = _select_controlled_oom_ground_truth_items(evidence, scenario)
-    return tuple(str(item["evidence_id"]) for item in selected)
+    return _controlled_oom_relevant_evidence_ids(evidence, scenario, selected)
 
 
-def _select_controlled_oom_ground_truth_items(
-    evidence: Sequence[Mapping[str, Any]],
-    scenario: Mapping[str, Any],
-) -> Tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
-    predicates = scenario["expected"]["evidence_predicates"]
-    restart_minimum = float(predicates["restart_count_delta_minimum"])
-    signatures = [
-        item
-        for item in evidence
-        if (
+def _is_exact_oom_signature(item: Mapping[str, Any]) -> bool:
+    return bool(
+        (
             item.get("source") == "kubernetes"
             and item.get("kind") == "resource-state"
             and _facts(item).get("last_termination_reason") == "OOMKilled"
@@ -111,7 +106,80 @@ def _select_controlled_oom_ground_truth_items(
             and bool(item.get("subject", {}).get("uid"))
             and _facts(item).get("pod_uid") == item.get("subject", {}).get("uid")
         )
+    )
+
+
+def _controlled_oom_relevant_evidence_ids(
+    evidence: Sequence[Mapping[str, Any]],
+    scenario: Mapping[str, Any],
+    selected_items: Tuple[
+        Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]
+    ],
+) -> Tuple[str, ...]:
+    groups = _controlled_oom_relevant_evidence_groups(
+        evidence, scenario, selected_items
+    )
+    return tuple(
+        dict.fromkeys(
+            evidence_id
+            for group in groups
+            for evidence_id in group["acceptable_evidence_ids"]
+        )
+    )
+
+
+def _controlled_oom_relevant_evidence_groups(
+    evidence: Sequence[Mapping[str, Any]],
+    scenario: Mapping[str, Any],
+    selected_items: Tuple[
+        Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]
+    ],
+) -> Tuple[Dict[str, Any], ...]:
+    signature, _, _ = selected_items
+    restart_minimum = float(
+        scenario["expected"]["evidence_predicates"][
+            "restart_count_delta_minimum"
+        ]
+    )
+    signatures = [
+        item
+        for item in evidence
+        if _is_exact_oom_signature(item) and _same_pod_uid(signature, item)
     ]
+    restarts = [
+        item
+        for item in evidence
+        if item.get("source") == "prometheus"
+        and item.get("kind") == "metric-summary"
+        and _facts(item).get("metric") == "restart_count_delta"
+        and _at_least(_facts(item).get("peak_delta"), restart_minimum)
+        and _same_pod_uid(signature, item)
+    ]
+    return (
+        {
+            "role": "exact-oom-signature",
+            "acceptable_evidence_ids": list(
+                dict.fromkeys(str(item["evidence_id"]) for item in signatures)
+            ),
+            "minimum_matches": 1,
+        },
+        {
+            "role": "same-pod-restart-delta",
+            "acceptable_evidence_ids": list(
+                dict.fromkeys(str(item["evidence_id"]) for item in restarts)
+            ),
+            "minimum_matches": 1,
+        },
+    )
+
+
+def _select_controlled_oom_ground_truth_items(
+    evidence: Sequence[Mapping[str, Any]],
+    scenario: Mapping[str, Any],
+) -> Tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
+    predicates = scenario["expected"]["evidence_predicates"]
+    restart_minimum = float(predicates["restart_count_delta_minimum"])
+    signatures = [item for item in evidence if _is_exact_oom_signature(item)]
     for signature in signatures:
         restart = next(
             (
@@ -364,14 +432,23 @@ def build_controlled_fault_evaluation(
     selected_items = _select_controlled_oom_ground_truth_items(
         frozen_evidence, scenario
     )
-    relevant_ids = tuple(str(item["evidence_id"]) for item in selected_items)
+    relevant_groups = _controlled_oom_relevant_evidence_groups(
+        frozen_evidence, scenario, selected_items
+    )
+    relevant_ids = tuple(
+        dict.fromkeys(
+            evidence_id
+            for group in relevant_groups
+            for evidence_id in group["acceptable_evidence_ids"]
+        )
+    )
     evaluation_digest = hashlib.sha256(
         f"{scenario['scenario_id']}:{incident_id}".encode("utf-8")
     ).hexdigest()
     evaluation_case_id = f"eval-{evaluation_digest[:24]}"
     timestamp = _format_time(evaluated_at)
     ground_truth = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "evaluation_case_id": evaluation_case_id,
         "scenario_id": scenario["scenario_id"],
         "incident_id": incident_id,
@@ -380,6 +457,9 @@ def build_controlled_fault_evaluation(
             scenario["expected"]["root_cause_ids"]
         ),
         "relevant_evidence_ids": list(relevant_ids),
+        "relevant_evidence_groups": [
+            copy.deepcopy(group) for group in relevant_groups
+        ],
         "labeled_at": timestamp,
         "labeler": "controlled-fault-manifest",
         "provenance": {

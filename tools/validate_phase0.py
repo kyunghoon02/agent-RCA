@@ -1247,9 +1247,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-7cb30bf7b09b",
+            "image_tag": "runtime-9c99ff896aad",
             "image_digest": (
-                "sha256:50bb50e2bbe309ea25cd8da311d4e93f14b966137412df880a0edfc9e7ba91a9"
+                "sha256:f5c0f72dc5500d4872b6933ef82e81f7bb813d3694a52dca507c684183ba4631"
             ),
         },
         "viewer_frontend": {
@@ -2487,6 +2487,29 @@ def validate_policy_configs() -> None:
     }
     if set(change_evidence["required_fields"]) != required_change_fields:
         raise ValidationFailure("Change Evidence required fields changed")
+    evidence_ground_truth = preregistration["evidence_ground_truth"]
+    if evidence_ground_truth["schema_version"] != "1.1.0":
+        raise ValidationFailure("role-based Evidence Ground Truth is not registered")
+    if evidence_ground_truth["scoring_unit"] != "causal-role":
+        raise ValidationFailure("Evidence recall must be scored by causal role")
+    if not evidence_ground_truth["alternative_proofs_allowed"]:
+        raise ValidationFailure("equivalent causal Evidence alternatives were disabled")
+    if evidence_ground_truth["auxiliary_observations_are_causal_labels"]:
+        raise ValidationFailure("auxiliary observations may not become causal labels")
+    controlled_oom_roles = {
+        role["role"]: role
+        for role in evidence_ground_truth["controlled_oom_roles"]
+    }
+    if set(controlled_oom_roles) != {
+        "exact-oom-signature",
+        "same-pod-restart-delta",
+    }:
+        raise ValidationFailure("controlled OOM causal Evidence roles changed")
+    if any(
+        int(role["minimum_matches"]) != 1
+        for role in controlled_oom_roles.values()
+    ):
+        raise ValidationFailure("controlled OOM roles require one acceptable proof")
     reporting = preregistration["reporting"]
     required_records = (
         "record_platform_and_application_versions",

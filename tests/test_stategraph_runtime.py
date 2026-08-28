@@ -54,15 +54,23 @@ class StateGraphRuntimeTests(unittest.TestCase):
         observed_at = datetime(2026, 8, 24, 11, 5, tzinfo=UTC)
 
         request = build_collection_request(config, observed_at)
+        repeated = build_collection_request(config, observed_at)
+        other_cluster = build_collection_request(
+            RuntimeConfig(
+                **{
+                    **config.__dict__,
+                    "cluster_id": "agent-rca-other-cluster",
+                }
+            ),
+            observed_at,
+        )
 
-        self.assertEqual(
-            request.request_id,
-            "req-stategraph-inventory-20260824t110500z",
-        )
-        self.assertEqual(
-            request.incident_id,
-            "inc-stategraph-inventory-20260824t110500z",
-        )
+        self.assertEqual(request.request_id, repeated.request_id)
+        self.assertEqual(request.incident_id, repeated.incident_id)
+        self.assertRegex(request.request_id, r"^req-[a-f0-9]{24}$")
+        self.assertRegex(request.incident_id, r"^inc-[a-f0-9]{24}$")
+        self.assertNotEqual(request.request_id, other_cluster.request_id)
+        self.assertNotEqual(request.incident_id, other_cluster.incident_id)
         self.assertEqual(
             request.scope.resource_names,
             ("checkoutservice", "frontend"),

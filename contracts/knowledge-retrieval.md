@@ -165,9 +165,10 @@ RetrievedReference는 `evidence_id`를 가지지 않으며 현재 Incident에 �
 만들지 않는다. Agent는 이 retrieval run에 포함된 문서 ID만
 `inspect_reference(reference_document_id)`로 열 수 있다. Evidence Gate는 실제로 검사한
 Reference만 별도 `reference_document_ids`로 인용하게 하고, Reference를 runtime Evidence
-수나 distinct Evidence source 수에 포함하지 않는다. Agent message/tool loop와 Gate의
-fixture contract는 구현했지만 API credit 부족으로 live model 성공은 아직 검증하지
-못했다. pgvector live sync와 embedding benchmark도 아직 실행하지 않았으며 초기
+수나 distinct Evidence channel 수에 포함하지 않는다. 여기서 channel은 정규화된
+`source + kind` 조합이다. Agent message/tool loop와 Gate는 controlled OOM에서 live
+model 호출과 Report 저장까지 검증했다. pgvector live sync와 embedding benchmark는
+아직 실행하지 않았으며 초기
 2문서 pilot 결과는 portfolio claim으로 간주하지 않는다. Factual/Experiential Memory와
 runtime evaluation도 아직 보류한다.
 

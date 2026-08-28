@@ -179,6 +179,49 @@ def failed_agent_run(**overrides):
 
 
 class RCAEvaluationTests(unittest.TestCase):
+    def test_evidence_recall_scores_required_roles_with_alternative_signatures(
+        self,
+    ) -> None:
+        truth = ground_truth(
+            schema_version="1.1.0",
+            relevant_evidence_ids=[
+                "ev-kubernetes-oom-0001",
+                "ev-kernel-oom-0001",
+                "ev-restart-delta-0001",
+            ],
+            relevant_evidence_groups=[
+                {
+                    "role": "exact-oom-signature",
+                    "acceptable_evidence_ids": [
+                        "ev-kubernetes-oom-0001",
+                        "ev-kernel-oom-0001",
+                    ],
+                    "minimum_matches": 1,
+                },
+                {
+                    "role": "same-pod-restart-delta",
+                    "acceptable_evidence_ids": ["ev-restart-delta-0001"],
+                    "minimum_matches": 1,
+                },
+            ],
+        )
+        candidate = prediction(
+            cited_evidence_ids=[
+                "ev-kubernetes-oom-0001",
+                "ev-restart-delta-0001",
+            ],
+            available_evidence_ids=[
+                "ev-kubernetes-oom-0001",
+                "ev-kernel-oom-0001",
+                "ev-restart-delta-0001",
+            ],
+        )
+
+        result = evaluate_rca_case(truth, candidate, evaluated_at=EVALUATED_AT)
+
+        self.assertEqual(result["metrics"]["evidence_precision"], 1.0)
+        self.assertEqual(result["metrics"]["evidence_recall"], 1.0)
+
     def test_failed_agent_run_is_not_misreported_as_abstention(self) -> None:
         actual = prediction_from_failed_agent_run(
             evaluation_case_id="eval-checkout-oom-0001",
@@ -240,6 +283,35 @@ class RCAEvaluationTests(unittest.TestCase):
             actual["predicted_root_cause_ids"],
             ["kubernetes.container-oomkilled"],
         )
+        self.assertEqual(
+            actual["cited_evidence_ids"],
+            ["ev-kernel-oom-0001", "ev-restart-delta-0001"],
+        )
+
+    def test_agent_score_uses_only_accepted_root_cause_evidence(self) -> None:
+        report = agent_report()
+        competing = dict(report["hypotheses"][0])
+        competing.update(
+            {
+                "rank": 2,
+                "cause_id": "kubernetes.image-pull-failure",
+                "summary": "A competing image-pull hypothesis was investigated.",
+                "confidence": 0.2,
+                "status": "competing",
+                "supporting_evidence_ids": ["ev-deployment-state-0001"],
+            }
+        )
+        report["hypotheses"].append(competing)
+
+        actual = prediction_from_agent_report(
+            evaluation_case_id="eval-checkout-oom-0001",
+            scenario_id="scenario-checkout-oom-change-stress",
+            incident_id="inc-checkout-oom-0001",
+            report=report,
+            available_evidence_ids=prediction()["available_evidence_ids"],
+            completed_at=EVALUATED_AT,
+        )
+
         self.assertEqual(
             actual["cited_evidence_ids"],
             ["ev-kernel-oom-0001", "ev-restart-delta-0001"],

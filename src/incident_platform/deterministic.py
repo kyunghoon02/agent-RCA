@@ -10,7 +10,23 @@ from .contracts import validate_contract
 
 OOM_RESTART_DELTA_MINIMUM = 1.0
 OOM_MEMORY_RATIO_REFERENCE_THRESHOLD = 0.95
-OOM_EVIDENCE_GATE_POLICY = "oom-signature-restart-v2"
+OOM_EVIDENCE_GATE_POLICY = "oom-signature-union-restart-v3"
+
+
+ROOT_CAUSE_EVIDENCE_REQUIREMENTS: Mapping[str, Tuple[str, ...]] = {
+    "kubernetes.container-oomkilled": (
+        "An exact Pod-scoped OOMKilled termination or kernel memcg OOM signature",
+        "Prometheus restart_count_delta at or above 1 for the same Pod UID",
+    ),
+    "kubernetes.image-pull-failure": (
+        "A Pod container waiting in ErrImagePull or ImagePullBackOff",
+        "A matching Kubernetes Event for the same Pod",
+    ),
+    "kubernetes.missing-configmap": (
+        "A required ConfigMap that does not exist",
+        "A matching CreateContainerConfigError or FailedMount Event",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -270,6 +286,22 @@ class MissingConfigMapRule:
         )
 
 
+def registered_rule_evaluations(
+    evidence: Sequence[Mapping[str, Any]],
+) -> Tuple[RuleEvaluation, ...]:
+    """Evaluate registered proof predicates without selecting a root cause.
+
+    The caller remains responsible for validating Evidence contracts. This
+    lightweight form is used only to rank an already-validated frozen catalog;
+    the Evidence Gate uses ``DeterministicRCAEngine.evaluate_rule`` instead.
+    """
+
+    return tuple(
+        rule.evaluate(evidence)
+        for rule in (OOMKilledRule(), ImagePullRule(), MissingConfigMapRule())
+    )
+
+
 class DeterministicRCAEngine:
     """Return a result only when exactly one rule has all required Evidence."""
 
@@ -282,6 +314,22 @@ class DeterministicRCAEngine:
         rule_ids = [rule.rule_id for rule in self._rules]
         if len(rule_ids) != len(set(rule_ids)):
             raise ValueError("deterministic rule IDs must be unique")
+        self._rules_by_id = {rule.rule_id: rule for rule in self._rules}
+
+    def evaluate_rule(
+        self,
+        rule_id: str,
+        evidence: Sequence[Mapping[str, Any]],
+    ) -> RuleEvaluation:
+        """Evaluate one registered cause against only the claimed Evidence."""
+
+        try:
+            rule = self._rules_by_id[rule_id]
+        except KeyError as error:
+            raise ValueError(f"unknown deterministic rule ID: {rule_id}") from error
+        for item in evidence:
+            validate_contract("evidence-item.schema.json", item)
+        return rule.evaluate(evidence)
 
     def evaluate(
         self, evidence: Sequence[Mapping[str, Any]]

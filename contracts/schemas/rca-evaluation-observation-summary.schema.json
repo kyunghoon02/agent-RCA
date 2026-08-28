@@ -25,7 +25,8 @@
     "evidence_gate_policy": {
       "enum": [
         "oom-signature-restart-memory-0.95-v1",
-        "oom-signature-restart-v2"
+        "oom-signature-restart-v2",
+        "oom-signature-union-restart-v3"
       ]
     },
     "generated_at": {"type": "string", "format": "date-time"},

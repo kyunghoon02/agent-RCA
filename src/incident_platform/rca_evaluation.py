@@ -129,9 +129,10 @@ def prediction_from_agent_report(
     cited_evidence_ids: list[str] = []
     if root_cause is not None:
         cited_evidence_ids.extend(root_cause["supporting_evidence_ids"])
-    for hypothesis in candidate["hypotheses"]:
-        cited_evidence_ids.extend(hypothesis["supporting_evidence_ids"])
-        cited_evidence_ids.extend(hypothesis["contradicting_evidence_ids"])
+    else:
+        for hypothesis in candidate["hypotheses"]:
+            cited_evidence_ids.extend(hypothesis["supporting_evidence_ids"])
+            cited_evidence_ids.extend(hypothesis["contradicting_evidence_ids"])
     cited_evidence_ids = list(dict.fromkeys(cited_evidence_ids))
 
     if root_cause is not None:
@@ -229,6 +230,28 @@ def evaluate_rca_case(
     relevant_evidence = set(truth["relevant_evidence_ids"])
     cited_evidence = set(candidate["cited_evidence_ids"])
     available_evidence = set(candidate["available_evidence_ids"])
+    evidence_groups = tuple(truth.get("relevant_evidence_groups", ()))
+    if evidence_groups:
+        roles = [group["role"] for group in evidence_groups]
+        if len(roles) != len(set(roles)):
+            raise ContractViolation("Ground Truth Evidence group roles must be unique")
+        grouped_evidence = {
+            evidence_id
+            for group in evidence_groups
+            for evidence_id in group["acceptable_evidence_ids"]
+        }
+        if grouped_evidence != relevant_evidence:
+            raise ContractViolation(
+                "Ground Truth Evidence groups must exactly cover relevant_evidence_ids"
+            )
+        if any(
+            int(group["minimum_matches"])
+            > len(group["acceptable_evidence_ids"])
+            for group in evidence_groups
+        ):
+            raise ContractViolation(
+                "Ground Truth Evidence group minimum exceeds its alternatives"
+            )
 
     missing_labeled_evidence = relevant_evidence - available_evidence
     if missing_labeled_evidence:
@@ -276,6 +299,17 @@ def evaluate_rca_case(
         evidence_precision = 0.0
     else:
         evidence_precision = None
+    if evidence_groups:
+        matched_groups = sum(
+            len(cited_evidence & set(group["acceptable_evidence_ids"]))
+            >= int(group["minimum_matches"])
+            for group in evidence_groups
+        )
+        evidence_recall = _ratio(matched_groups, len(evidence_groups))
+    else:
+        evidence_recall = _ratio(
+            len(matched_evidence), len(relevant_evidence)
+        )
 
     result = {
         "schema_version": "1.0.0",
@@ -299,9 +333,7 @@ def evaluate_rca_case(
             "multi_factor_exact_match": multi_factor_exact_match,
             "multi_factor_partial_match": multi_factor_partial_match,
             "evidence_precision": evidence_precision,
-            "evidence_recall": _ratio(
-                len(matched_evidence), len(relevant_evidence)
-            ),
+            "evidence_recall": evidence_recall,
             "unsupported_evidence_citation_rate": (
                 _ratio(len(unsupported_citations), len(cited_evidence)) or 0.0
             ),

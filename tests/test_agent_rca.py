@@ -189,8 +189,38 @@ class MismatchedTaxonomyFakeRunner(SuccessfulFakeRunner):
         )
 
 
+class UnsupportedCauseEvidenceFakeRunner(SuccessfulFakeRunner):
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        draft["root_cause"]["cause_id"] = "kubernetes.image-pull-failure"
+        draft["hypotheses"][0]["cause_id"] = "kubernetes.image-pull-failure"
+        return AgentModelRun(
+            draft,
+            model_run.llm_calls,
+            model_run.input_tokens,
+            model_run.output_tokens,
+            model_run.total_tokens,
+        )
+
+
+class ImagePullFakeRunner(SuccessfulFakeRunner):
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        draft["root_cause"]["cause_id"] = "kubernetes.image-pull-failure"
+        draft["hypotheses"][0]["cause_id"] = "kubernetes.image-pull-failure"
+        return AgentModelRun(
+            draft,
+            model_run.llm_calls,
+            model_run.input_tokens,
+            model_run.output_tokens,
+            model_run.total_tokens,
+        )
+
+
 def prepared_repository(
-    *, agent_enabled: bool = False
+    *, agent_enabled: bool = False, evidence_profile: str = "oom"
 ) -> tuple[InMemoryIncidentRepository, str, str]:
     labels = {
         "alertname": "AgentRCAFixture",
@@ -266,30 +296,67 @@ def prepared_repository(
         "uid": "pod-checkoutservice-0001",
         "exists": True,
     }
-    drafts = (
-        EvidenceDraft(
-            source="kubernetes",
-            kind="kubernetes-event",
-            observed_at="2026-08-22T01:58:30Z",
-            subject=subject,
-            summary="The checkout Pod repeatedly failed readiness.",
-            facts={"reason": "Unhealthy", "count": 8},
-            provider="kubernetes-test",
-            query="events for checkoutservice",
-            locator="kubernetes://gcp-dev-01/online-boutique/checkoutservice/events",
-        ),
-        EvidenceDraft(
-            source="prometheus",
-            kind="metric-summary",
-            observed_at="2026-08-22T01:58:30Z",
-            subject=subject,
-            summary="Checkout request error ratio reached 0.42.",
-            facts={"metric": "request_error_ratio", "peak": 0.42},
-            provider="prometheus-test",
-            query="request_error_ratio{service=checkoutservice}",
-            locator="prometheus://gcp-dev-01/checkoutservice/error-ratio",
-        ),
-    )
+    if evidence_profile == "oom":
+        drafts = (
+            EvidenceDraft(
+                source="kubernetes",
+                kind="resource-state",
+                observed_at="2026-08-22T01:58:30Z",
+                subject=subject,
+                summary="The checkout container last terminated with OOMKilled.",
+                facts={"last_termination_reason": "OOMKilled"},
+                provider="kubernetes-test",
+                query="pod state for checkoutservice",
+                locator=(
+                    "kubernetes://gcp-dev-01/online-boutique/checkoutservice/state"
+                ),
+            ),
+            EvidenceDraft(
+                source="prometheus",
+                kind="metric-summary",
+                observed_at="2026-08-22T01:58:30Z",
+                subject=subject,
+                summary="The same checkout Pod UID recorded one restart.",
+                facts={"metric": "restart_count_delta", "peak_delta": 1.0},
+                provider="prometheus-test",
+                query="restart_count_delta{pod=checkoutservice}",
+                locator="prometheus://gcp-dev-01/checkoutservice/restart-delta",
+            ),
+        )
+    elif evidence_profile == "image-pull":
+        drafts = (
+            EvidenceDraft(
+                source="kubernetes",
+                kind="resource-state",
+                observed_at="2026-08-22T01:58:30Z",
+                subject=subject,
+                summary="The checkout container is waiting in ImagePullBackOff.",
+                facts={
+                    "waiting_reason": "ImagePullBackOff",
+                    "image": "invalid.example/checkout:v1",
+                },
+                provider="kubernetes-test",
+                query="pod state for checkoutservice",
+                locator=(
+                    "kubernetes://gcp-dev-01/online-boutique/checkoutservice/state"
+                ),
+            ),
+            EvidenceDraft(
+                source="kubernetes",
+                kind="kubernetes-event",
+                observed_at="2026-08-22T01:58:30Z",
+                subject=subject,
+                summary="Kubernetes recorded ImagePullBackOff for checkoutservice.",
+                facts={"message_code": "ImagePullBackOff"},
+                provider="kubernetes-test",
+                query="events for checkoutservice",
+                locator=(
+                    "kubernetes://gcp-dev-01/online-boutique/checkoutservice/events"
+                ),
+            ),
+        )
+    else:
+        raise ValueError(f"unsupported Evidence profile: {evidence_profile}")
     evidence = [
         EvidenceBuilder().build(item, request, collected_at=NOW) for item in drafts
     ]
@@ -425,6 +492,35 @@ class AgentRCAServiceTests(unittest.TestCase):
 
         self.assertEqual(repository.get(incident_id)["status"], "FAILED")
 
+    def test_evidence_gate_rejects_taxonomy_label_without_registered_proof(
+        self,
+    ) -> None:
+        repository, incident_id, context_id = prepared_repository()
+
+        with self.assertRaisesRegex(ContractViolation, "registered Evidence policy"):
+            service(repository, UnsupportedCauseEvidenceFakeRunner()).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+
+        self.assertEqual(repository.get(incident_id)["status"], "FAILED")
+
+    def test_evidence_gate_accepts_complementary_channels_from_one_source(
+        self,
+    ) -> None:
+        repository, incident_id, context_id = prepared_repository(
+            evidence_profile="image-pull"
+        )
+
+        run = service(repository, ImagePullFakeRunner()).run(
+            incident_id, context_id=context_id, generated_at=NOW
+        )
+
+        self.assertEqual(run.incident["status"], "REPORTED")
+        self.assertEqual(
+            run.report["root_cause"]["cause_id"],
+            "kubernetes.image-pull-failure",
+        )
+
     def test_evidence_gate_requires_tool_inspection_before_citation(self) -> None:
         repository, incident_id, context_id = prepared_repository()
 
@@ -459,10 +555,10 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertEqual(audit["usage"]["tool_calls"], 1)
         self.assertEqual(repository.get(incident_id)["status"], "FAILED")
 
-    def test_conclusive_result_requires_distinct_evidence_sources(self) -> None:
+    def test_conclusive_result_requires_a_complete_registered_proof(self) -> None:
         repository, incident_id, context_id = prepared_repository()
 
-        with self.assertRaisesRegex(ContractViolation, "distinct Evidence sources"):
+        with self.assertRaisesRegex(ContractViolation, "registered Evidence policy"):
             service(repository, SuccessfulFakeRunner(single_evidence=True)).run(
                 incident_id, context_id=context_id, generated_at=NOW
             )
@@ -570,6 +666,94 @@ class AgentRCAServiceTests(unittest.TestCase):
         }
         self.assertEqual(len(selected_sources), 4)
 
+    def test_candidate_selector_prioritizes_registered_proof_pairs(self) -> None:
+        subject = {
+            "cluster_id": "gcp-dev-01",
+            "kind": "Pod",
+            "namespace": "online-boutique",
+            "name": "checkoutservice",
+            "uid": "pod-checkoutservice-0001",
+        }
+        evidence = [
+            {
+                "evidence_id": f"ev-causal-priority-{index:04d}",
+                "source": "deployment",
+                "kind": "deployment-change",
+                "observed_at": "2026-08-22T01:58:30Z",
+                "subject": subject,
+                "summary": f"high-ranking distractor {index}",
+                "facts": {},
+                "quality": {
+                    "freshness": "live",
+                    "completeness": 1.0,
+                    "confidence": 1.0,
+                },
+            }
+            for index in range(1, 7)
+        ]
+        evidence.extend(
+            (
+                {
+                    "evidence_id": "ev-causal-priority-0007",
+                    "source": "kubernetes",
+                    "kind": "resource-state",
+                    "observed_at": "2026-08-22T01:58:20Z",
+                    "subject": subject,
+                    "summary": "OOMKilled termination",
+                    "facts": {"last_termination_reason": "OOMKilled"},
+                    "quality": {
+                        "freshness": "recent",
+                        "completeness": 0.8,
+                        "confidence": 0.8,
+                    },
+                },
+                {
+                    "evidence_id": "ev-causal-priority-0008",
+                    "source": "prometheus",
+                    "kind": "metric-summary",
+                    "observed_at": "2026-08-22T01:58:20Z",
+                    "subject": subject,
+                    "summary": "same-UID restart delta",
+                    "facts": {
+                        "metric": "restart_count_delta",
+                        "peak_delta": 1.0,
+                    },
+                    "quality": {
+                        "freshness": "recent",
+                        "completeness": 0.8,
+                        "confidence": 0.8,
+                    },
+                },
+            )
+        )
+        context = {
+            "source_entity": {
+                "entity_id": ENTITY_ID,
+                "entity_type": "Pod",
+                "domain": "kubernetes",
+                "name": "checkoutservice",
+                "scope": {
+                    "cluster_id": "gcp-dev-01",
+                    "namespace": "online-boutique",
+                },
+            },
+            "evidence_ids": [item["evidence_id"] for item in evidence],
+            "recent_change_evidence_ids": ["ev-causal-priority-0001"],
+            "state_paths": [],
+        }
+        selector = EvidenceCandidateSelector()
+
+        selected = selector.select(context, evidence, max_candidates=4)
+        selected_reversed = selector.select(
+            context, list(reversed(evidence)), max_candidates=4
+        )
+
+        self.assertEqual(selected, selected_reversed)
+        self.assertEqual(
+            selected[:2],
+            ("ev-causal-priority-0007", "ev-causal-priority-0008"),
+        )
+
     def test_investigation_view_deduplicates_paths_and_omits_full_payloads(
         self,
     ) -> None:
@@ -632,9 +816,17 @@ class AgentRCAServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             decoded_input["hard_rules"][
-                "conclusive_minimum_distinct_evidence_sources"
+                "conclusive_minimum_distinct_evidence_channels"
             ],
             2,
+        )
+        self.assertEqual(
+            decoded_input["hard_rules"]["registered_cause_evidence_requirements"]
+            ["kubernetes.container-oomkilled"],
+            [
+                "An exact Pod-scoped OOMKilled termination or kernel memcg OOM signature",
+                "Prometheus restart_count_delta at or above 1 for the same Pod UID",
+            ],
         )
         self.assertNotIn('"frozen_context":', model_input)
         self.assertNotIn('"facts"', serialized)
@@ -656,13 +848,13 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertEqual(denied["status"], "DENIED")
         self.assertNotIn("ev-candidate-0002", runtime.inspected_evidence_ids)
 
-    def test_candidate_budget_must_support_cross_source_conclusions(self) -> None:
+    def test_candidate_budget_must_support_distinct_evidence_channels(self) -> None:
         with self.assertRaisesRegex(ValueError, "between 2 and 12"):
             AgentRCAPolicy(max_evidence_candidates=1)
         with self.assertRaisesRegex(ValueError, "candidate budget"):
             AgentRCAPolicy(
                 max_evidence_candidates=2,
-                minimum_conclusive_evidence_sources=3,
+                minimum_conclusive_evidence_channels=3,
             )
 
 

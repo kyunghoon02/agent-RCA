@@ -8,7 +8,7 @@ ANSIBLE_TARGET_INVENTORY ?= automation/ansible/inventories/chaos-eval.yml
 ANSIBLE_OBSERVABILITY_INVENTORY ?= automation/ansible/inventories/observability.yml
 RCA_GROUND_TRUTH ?=
 RCA_PREDICTION ?=
-EVIDENCE_GATE_POLICY ?= oom-signature-restart-v2
+EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
 
 .PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \

@@ -112,8 +112,8 @@ incident_platform:
   reconciler:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
-    image_tag: runtime-7cb30bf7b09b
-    image_digest: sha256:50bb50e2bbe309ea25cd8da311d4e93f14b966137412df880a0edfc9e7ba91a9
+    image_tag: runtime-9c99ff896aad
+    image_digest: sha256:f5c0f72dc5500d4872b6933ef82e81f7bb813d3694a52dca507c684183ba4631
   viewer_frontend:
     node_version: 22.17.1
     image_tag: viewer-abc5599bc22d
