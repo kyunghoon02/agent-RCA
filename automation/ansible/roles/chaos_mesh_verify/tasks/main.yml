@@ -80,6 +80,58 @@
   register: chaos_mesh_controller
   changed_when: false
 
+- name: Read the bounded Chaos Mesh controller runtime
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment chaos-controller-manager
+    --namespace {{ chaos_mesh_namespace }}
+    --output "jsonpath={range .spec.template.spec.containers[0].env[*]}{.name}={.value}{'\\n'}{end}"
+  register: chaos_mesh_controller_environment
+  changed_when: false
+
+- name: Require the bounded namespace-scoped common pipelines and StressChaos webhook
+  ansible.builtin.assert:
+    that:
+      - "'CLUSTER_SCOPED=false' in chaos_mesh_controller_environment.stdout_lines"
+      - "'TARGET_NAMESPACE=' ~ chaos_mesh_target_namespace in chaos_mesh_controller_environment.stdout_lines"
+      - >-
+        'ENABLED_CONTROLLERS=awschaos-records,azurechaos-records,dnschaos-records,httpchaos-records,iochaos-records,kernelchaos-records,networkchaos-records,podchaos-records,gcpchaos-records,stresschaos-records,jvmchaos-records,timechaos-records,physicalmachinechaos-records,blockchaos-records,stresschaos-initFinalizers,stresschaos-desiredphase,stresschaos-condition,stresschaos-cleanFinalizers'
+        in chaos_mesh_controller_environment.stdout_lines
+      - "'ENABLED_WEBHOOKS=stresschaos' in chaos_mesh_controller_environment.stdout_lines"
+    fail_msg: Chaos Mesh controller scope is broader than the reviewed StressChaos runtime.
+
+- name: Verify the StressChaos reconciler was actually registered
+  ansible.builtin.shell: |
+    set -euo pipefail
+    controller_logs="$(
+      kubectl --kubeconfig /etc/kubernetes/admin.conf \
+      logs --selector app.kubernetes.io/component=controller-manager \
+      --namespace {{ chaos_mesh_namespace }} \
+      --all-containers=true --prefix=true --tail=-1
+    )"
+    grep -F '"resource-name": "stresschaos"' <<<"$controller_logs"
+    grep -F '"name": "stresschaos-desiredphase"' <<<"$controller_logs"
+    grep -F '"name": "stresschaos-condition"' <<<"$controller_logs"
+  args:
+    executable: /bin/bash
+  register: chaos_mesh_stress_reconciler_log
+  changed_when: false
+
+- name: Verify the Chaos Mesh controller cannot list cluster-scoped RemoteClusters
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i
+    list remoteclusters.chaos-mesh.org --all-namespaces
+    --as=system:serviceaccount:{{ chaos_mesh_namespace }}:chaos-controller-manager
+  register: chaos_mesh_remotecluster_permission
+  changed_when: false
+  failed_when: false
+
+- name: Require RemoteCluster access to remain denied
+  ansible.builtin.assert:
+    that:
+      - chaos_mesh_remotecluster_permission.stdout | trim == 'no'
+    fail_msg: Chaos Mesh unexpectedly gained cluster-scoped RemoteCluster access.
+
 - name: Enforce the private single-node control boundary
   ansible.builtin.assert:
     that:

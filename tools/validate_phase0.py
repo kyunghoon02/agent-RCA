@@ -527,6 +527,28 @@ def validate_versions_and_manifests() -> None:
     if (
         chaos_values.get("clusterScoped") is not False
         or chaos_controller.get("targetNamespace") != "online-boutique"
+        or chaos_controller.get("enabledControllers")
+        != [
+            "awschaos-records",
+            "azurechaos-records",
+            "dnschaos-records",
+            "httpchaos-records",
+            "iochaos-records",
+            "kernelchaos-records",
+            "networkchaos-records",
+            "podchaos-records",
+            "gcpchaos-records",
+            "stresschaos-records",
+            "jvmchaos-records",
+            "timechaos-records",
+            "physicalmachinechaos-records",
+            "blockchaos-records",
+            "stresschaos-initFinalizers",
+            "stresschaos-desiredphase",
+            "stresschaos-condition",
+            "stresschaos-cleanFinalizers",
+        ]
+        or chaos_controller.get("enabledWebhooks") != ["stresschaos"]
         or chaos_controller.get("allowHostNetworkTesting") is not False
         or chaos_controller.get("replicaCount") != 1
         or chaos_controller.get("leaderElection", {}).get("enabled") is not False
@@ -2550,10 +2572,22 @@ def validate_controlled_fault_scenarios() -> None:
     }:
         raise ValidationFailure("checkout OOM baseline drifted from the pinned workload")
     if scenario["fault"]["resources"] != {
-        "requests": {"cpu": "100m", "memory": "8Mi"},
-        "limits": {"cpu": "200m", "memory": "8Mi"},
+        "requests": {"cpu": "100m", "memory": "64Mi"},
+        "limits": {"cpu": "200m", "memory": "96Mi"},
     }:
         raise ValidationFailure("checkout OOM fault resources changed")
+    if scenario["fault"]["chaos_mesh"] != {
+        "api_version": "chaos-mesh.org/v1alpha1",
+        "kind": "StressChaos",
+        "mode": "all",
+        "duration_seconds": 120,
+        "memory": {
+            "workers": 1,
+            "size": "128MiB",
+            "oom_score_adj": -1000,
+        },
+    }:
+        raise ValidationFailure("checkout OOM Chaos Mesh injection changed")
     if scenario["workload"]["runner"] != "external-controller":
         raise ValidationFailure("controlled load would contaminate the target node")
 
@@ -2571,6 +2605,8 @@ def validate_controlled_fault_scenarios() -> None:
         "controlled_fault_environment",
         "agent-rca-checkout-oom-lock",
         "remote fail-safe resource restoration watchdog",
+        "Create the bounded checkoutservice StressChaos",
+        "Delete the controlled StressChaos",
         "always:",
         "Restore the exact checkoutservice baseline resources",
         "Require successful automatic restoration",

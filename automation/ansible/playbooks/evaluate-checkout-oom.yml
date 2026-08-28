@@ -1,6 +1,6 @@
 ---
 - name: Evaluate the controlled checkoutservice OOM scenario
-  hosts: control_plane
+  hosts: fault_target
   become: true
   gather_facts: true
   vars_files:

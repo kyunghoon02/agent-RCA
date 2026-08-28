@@ -169,8 +169,10 @@ ansible-syntax:
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/verify-incident-viewer-frontend.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
-		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
-		automation/ansible/playbooks/evaluate-checkout-oom.yml
+		-i automation/ansible/inventories/dev.example.yml \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/evaluate-checkout-oom.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
 		-i automation/ansible/inventories/chaos-eval.example.yml \
@@ -272,13 +274,15 @@ evaluate-checkout-oom:
 	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
 		(echo "Refusing controlled fault: set CONFIRM_CONTROLLED_FAULT=yes" >&2; exit 2)
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
-		-i $(ANSIBLE_INVENTORY) \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/evaluate-checkout-oom.yml \
 		--extra-vars confirm_controlled_fault=yes \
 		--extra-vars controlled_fault_environment=development
 
 summarize-checkout-oom:
 	PYTHONPATH=src .venv/bin/python tools/summarize_controlled_fault_observations.py \
-		--scenario-id scenario-checkoutservice-oom-change-stress \
+		--scenario-id scenario-checkoutservice-oom-chaos-mesh-change-stress \
 		--evidence-gate-policy $(EVIDENCE_GATE_POLICY) \
 		--minimum-runs 5

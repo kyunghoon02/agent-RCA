@@ -10,6 +10,31 @@ controllerManager:
   allowHostNetworkTesting: false
   enableFilterNamespace: false
   targetNamespace: online-boutique
+  enabledControllers:
+    # Chaos Mesh 2.8.4 builds each fault reconciler through the common
+    # "<kind>-records" pipeline. Keep every common pipeline enabled because
+    # upstream Bootstrap returns at the first disabled pair; the namespace and
+    # RBAC boundary below still limits all reconciliation to online-boutique.
+    - awschaos-records
+    - azurechaos-records
+    - dnschaos-records
+    - httpchaos-records
+    - iochaos-records
+    - kernelchaos-records
+    - networkchaos-records
+    - podchaos-records
+    - gcpchaos-records
+    - stresschaos-records
+    - jvmchaos-records
+    - timechaos-records
+    - physicalmachinechaos-records
+    - blockchaos-records
+    - stresschaos-initFinalizers
+    - stresschaos-desiredphase
+    - stresschaos-condition
+    - stresschaos-cleanFinalizers
+  enabledWebhooks:
+    - stresschaos
   leaderElection:
     enabled: false
   resources:

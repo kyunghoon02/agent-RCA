@@ -1,13 +1,14 @@
-schema_version: "1.2.0"
+schema_version: "1.3.0"
 registered_at: "2026-07-27"
-amended_at: "2026-08-20"
+amended_at: "2026-08-28"
 status: frozen-before-runtime-evaluation
 amendment:
-  reason: add-change-evidence-and-change-workload-experiment-design
+  reason: add-three-domain-chaos-mesh-memory-stress-runtime
   preserves:
     - research-variant-ids
     - ground-truth-isolation
     - primary-rca-metrics
+    - change-workload-experiment-design
 
 research_questions:
   - id: rq1

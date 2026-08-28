@@ -144,9 +144,9 @@ control-domain Online Boutique는 삭제하지 않고 `0 replicas`로 내렸고 
 
 Chaos evaluation은 기존 v1.36 runtime을 제자리에서 내리지 않는다. Terraform의 기본값이
 꺼진 병렬 VM을 명시적으로 생성해 Kubernetes v1.35.8을 부트스트랩했고, Chaos Mesh 2.8.4는
-`online-boutique`만 대상으로 하는 namespace-scoped mode로 설치했다. 현재 모든 Chaos Mesh
-구성 요소는 Ready이고 활성 fault는 0개다. fault 실행은 별도 scenario 검토와
-`CONFIRM_CONTROLLED_FAULT=yes` 승인을 요구한다.
+`online-boutique`만 대상으로 하는 namespace-scoped mode로 설치했다. `StressChaos` 기반
+checkoutservice OOM을 한 차례 end-to-end로 재현하고 자동 복구했으며, 현재 활성 fault는
+0개다. fault 실행은 별도 scenario 검토와 `CONFIRM_CONTROLLED_FAULT=yes` 승인을 요구한다.
 
 이 runtime은 application/Kubernetes/Cilium fault 실험용이다. 각 failure domain이 여전히
 single-node이므로 production HA, zone 장애와 managed control-plane 장애를 증명하지 않는다.
@@ -160,15 +160,17 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 
 | Representative scenario | Evidence focus | Status |
 |---|---|---|
-| `checkoutservice` OOMKilled | kernel memcg OOM, same-UID restart, resource limit | v1 고정 scenario 5회 false negative 분석, v2 live 확인 1회 Top-1 `1.0` |
+| `checkoutservice` OOMKilled | kernel memcg OOM, same-UID restart, resource limit | Chaos Mesh 3-domain 실행 1회: Agent `conclusive`, 결정론적 Variant A Top-1 `1.0` |
 | NetworkPolicy regression | Hubble drop, policy verdict와 change time | 계획 |
 | Deployment regression | RED metric, trace, log와 ReplicaSet revision | 계획 |
 | Load-only saturation | latency/error, CPU·memory와 change 부재 | 계획 |
 
-OOM v1 결과는 순간 memory metric을 필수 조건으로 사용하면 실제 kernel OOM을 놓칠 수
-있음을 보여줬다. v2는 exact kernel signature와 same-UID restart를 필수 Evidence로 사용하며,
-memory ratio는 보조 관측으로 남긴다. 목표 평가는 최소 15개 scenario를 각각 5회 반복하는
-것이며, 현재 한 번의 v2 성공은 그 목표를 달성한 결과가 아니다.
+이전 OOM 결과는 순간 memory metric을 필수 조건으로 사용하면 실제 kernel OOM을 놓칠 수
+있음을 보여줬다. 현재 규칙은 exact kernel signature와 same-UID restart를 필수 Evidence로
+사용하며, memory ratio는 보조 관측으로 남긴다. 이번 Agent 결과는 실제 Report 저장과
+의미상 OOM 진단을 확인했지만, 공개한 Ground Truth metric은 아직 결정론적 Variant A를
+평가한다. 목표는 최소 15개 scenario를 각각 5회 반복하는 것이며, 한 번의 성공은 그 목표를
+달성한 결과가 아니다.
 
 상세 규칙은 [Evaluation Preregistration](evaluation/preregistration.yaml)과
 [KRCA Drilldown Contract](contracts/krca-drilldown.md)에 기록한다.
@@ -187,8 +189,8 @@ memory ratio는 보조 관측으로 남긴다. 목표 평가는 최소 15개 sce
 - Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
-- OOM 외 fault matrix와 반복 평가가 완료되지 않았다.
-- Chaos Mesh runtime은 배포됐지만 Chaos CR 기반 fault scenario와 반복 평가는 아직 실행하지 않았다.
+- OOM 외 fault matrix, no-fault control과 반복 평가가 완료되지 않았다.
+- Agent Report에는 아직 평가 taxonomy ID가 없어 Ground Truth scorer와 자동 결합되지 않는다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start
