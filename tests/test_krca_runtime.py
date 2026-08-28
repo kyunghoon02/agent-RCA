@@ -21,7 +21,14 @@ class KRCARuntimeConfigTests(unittest.TestCase):
 
         self.assertEqual(
             [profile.profile_id for profile in config.profiles],
-            ["browse-and-cart-read", "cart-mutation", "checkout-full"],
+            [
+                "browse-home",
+                "product-detail",
+                "cart-read",
+                "cart-add",
+                "cart-empty",
+                "checkout-full",
+            ],
         )
         checkout = config.profile("checkout-full")
         expression = config.query_spec.scoped_expression(
@@ -32,7 +39,7 @@ class KRCARuntimeConfigTests(unittest.TestCase):
         self.assertEqual(
             expression,
             'agent_rca_api_failure_rate{namespace="online-boutique",'
-            'service_name="frontend",span_name="POST"}',
+            'service_name="frontend",span_name="POST /cart/checkout"}',
         )
         self.assertNotIn("{{", expression)
 
@@ -44,7 +51,7 @@ class KRCARuntimeConfigTests(unittest.TestCase):
         self.assertEqual(
             latency_expression,
             'agent_rca_api_latency_p95_milliseconds{namespace="online-boutique",'
-            'service_name="frontend",span_name="POST"} >= 0',
+            'service_name="frontend",span_name="POST /cart/checkout"} >= 0',
         )
 
     def test_online_boutique_profiles_cover_every_application_service(self) -> None:
@@ -103,8 +110,12 @@ class KRCARuntimeConfigTests(unittest.TestCase):
                     "emailservice",
                     "/hipstershop.EmailService/SendOrderConfirmation",
                 ),
-                ("frontend", "GET"),
-                ("frontend", "POST"),
+                ("frontend", "GET /"),
+                ("frontend", "GET /cart"),
+                ("frontend", "GET /product/{id}"),
+                ("frontend", "POST /cart"),
+                ("frontend", "POST /cart/checkout"),
+                ("frontend", "POST /cart/empty"),
                 (
                     "paymentservice",
                     "grpc.hipstershop.PaymentService/Charge",

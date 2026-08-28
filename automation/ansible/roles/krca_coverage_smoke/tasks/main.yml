@@ -1,0 +1,350 @@
+---
+- name: Require one target and one observability domain
+  ansible.builtin.assert:
+    that:
+      - groups['fault_target'] | length == 1
+      - groups['observability_domain'] | length == 1
+      - krca_coverage_duration_seconds | int >= 900
+      - krca_coverage_duration_seconds | int <= 1200
+      - krca_coverage_requests_per_second | float > 0
+      - krca_coverage_requests_per_second | float <= 50
+    fail_msg: >-
+      KRCA coverage requires the private three-domain inventory and a bounded
+      workload covering the complete 15-minute Evidence window.
+
+- name: Read target workload availability
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment --namespace {{ online_boutique_namespace }} --output json
+  register: krca_coverage_deployments
+  changed_when: false
+
+- name: Require every target workload to be Ready
+  ansible.builtin.assert:
+    that:
+      - >-
+        (krca_coverage_deployments.stdout | from_json)['items']
+        | selectattr('status.readyReplicas', 'defined')
+        | selectattr('status.readyReplicas', 'equalto', 1)
+        | map(attribute='metadata.name') | list | sort
+        == online_boutique_expected_deployments | sort
+    fail_msg: The Online Boutique target is not at the exact Ready baseline.
+
+- name: Define bounded KRCA coverage runtime paths
+  ansible.builtin.set_fact:
+    krca_coverage_run_id: "krca-coverage-{{ ansible_facts.date_time.epoch }}"
+    krca_coverage_target_cluster_id: "{{ cluster_name }}"
+    krca_coverage_repo_root: "{{ playbook_dir }}/../../.."
+    krca_coverage_frontend_port: 18181
+    krca_coverage_frontend_remote_port: 28181
+    krca_coverage_prometheus_port: 19190
+    krca_coverage_prometheus_remote_port: 29190
+    krca_coverage_target_forward_log: >-
+      /tmp/agent-rca-krca-target-{{ ansible_facts.date_time.epoch }}.log
+    krca_coverage_observability_forward_log: >-
+      /tmp/agent-rca-krca-observability-{{ ansible_facts.date_time.epoch }}.log
+    krca_coverage_target_tunnel_log: >-
+      /tmp/agent-rca-krca-target-tunnel-{{ ansible_facts.date_time.epoch }}.log
+    krca_coverage_observability_tunnel_log: >-
+      /tmp/agent-rca-krca-observability-tunnel-{{ ansible_facts.date_time.epoch }}.log
+    krca_coverage_target_forward_started: false
+    krca_coverage_observability_forward_started: false
+    krca_coverage_target_tunnel_started: false
+    krca_coverage_observability_tunnel_started: false
+
+- name: Resolve private tunnel identities
+  ansible.builtin.set_fact:
+    krca_coverage_target_ssh_host: "{{ hostvars[inventory_hostname].ansible_host }}"
+    krca_coverage_target_ssh_user: "{{ hostvars[inventory_hostname].ansible_user }}"
+    krca_coverage_target_ssh_key: >-
+      {{ hostvars[inventory_hostname].ansible_ssh_private_key_file
+      | regex_replace('^~', lookup('env', 'HOME')) }}
+    krca_coverage_observability_ssh_host: >-
+      {{ hostvars[groups['observability_domain'][0]].ansible_host }}
+    krca_coverage_observability_ssh_user: >-
+      {{ hostvars[groups['observability_domain'][0]].ansible_user }}
+    krca_coverage_observability_ssh_key: >-
+      {{ hostvars[groups['observability_domain'][0]].ansible_ssh_private_key_file
+      | regex_replace('^~', lookup('env', 'HOME')) }}
+
+- name: Execute the bounded KRCA coverage smoke
+  block:
+    - name: Start the target frontend loopback port-forward
+      ansible.builtin.shell: |
+        set -eu
+        nohup kubectl --kubeconfig /etc/kubernetes/admin.conf port-forward \
+          --address=127.0.0.1 \
+          --namespace {{ online_boutique_namespace }} \
+          service/frontend {{ krca_coverage_frontend_remote_port }}:80 \
+          >{{ krca_coverage_target_forward_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: krca_coverage_target_forward_process
+      changed_when: true
+
+    - name: Mark the target frontend port-forward as started
+      ansible.builtin.set_fact:
+        krca_coverage_target_forward_started: true
+
+    - name: Wait for the target frontend loopback port-forward
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ krca_coverage_frontend_remote_port }}/"
+        status_code: 200
+      register: krca_coverage_remote_frontend_ready
+      until: krca_coverage_remote_frontend_ready.status == 200
+      retries: 20
+      delay: 1
+      changed_when: false
+
+    - name: Start the central Prometheus loopback port-forward
+      ansible.builtin.shell: |
+        set -eu
+        nohup kubectl --kubeconfig /etc/kubernetes/admin.conf port-forward \
+          --address=127.0.0.1 \
+          --namespace {{ observability_namespace }} \
+          service/monitoring-kube-prometheus-prometheus \
+          {{ krca_coverage_prometheus_remote_port }}:9090 \
+          >{{ krca_coverage_observability_forward_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: krca_coverage_observability_forward_process
+      changed_when: true
+
+    - name: Mark the central Prometheus port-forward as started
+      ansible.builtin.set_fact:
+        krca_coverage_observability_forward_started: true
+
+    - name: Wait for the central Prometheus loopback port-forward
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ krca_coverage_prometheus_remote_port }}/-/ready
+        status_code: 200
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: krca_coverage_remote_prometheus_ready
+      until: krca_coverage_remote_prometheus_ready.status == 200
+      retries: 20
+      delay: 1
+      changed_when: false
+
+    - name: Start the controller-to-target loopback tunnel
+      ansible.builtin.shell: |
+        set -eu
+        nohup ssh -N \
+          -o BatchMode=yes \
+          -o ExitOnForwardFailure=yes \
+          -o ServerAliveInterval=15 \
+          -o ServerAliveCountMax=3 \
+          -i {{ krca_coverage_target_ssh_key | quote }} \
+          -L {{ krca_coverage_frontend_port }}:127.0.0.1:{{ krca_coverage_frontend_remote_port }} \
+          {{ (krca_coverage_target_ssh_user + '@' + krca_coverage_target_ssh_host) | quote }} \
+          >{{ krca_coverage_target_tunnel_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: krca_coverage_target_tunnel_process
+      changed_when: true
+
+    - name: Mark the target tunnel as started
+      ansible.builtin.set_fact:
+        krca_coverage_target_tunnel_started: true
+
+    - name: Start the controller-to-observability loopback tunnel
+      ansible.builtin.shell: |
+        set -eu
+        nohup ssh -N \
+          -o BatchMode=yes \
+          -o ExitOnForwardFailure=yes \
+          -o ServerAliveInterval=15 \
+          -o ServerAliveCountMax=3 \
+          -i {{ krca_coverage_observability_ssh_key | quote }} \
+          -L {{ krca_coverage_prometheus_port }}:127.0.0.1:{{ krca_coverage_prometheus_remote_port }} \
+          {{ (krca_coverage_observability_ssh_user + '@' + krca_coverage_observability_ssh_host) | quote }} \
+          >{{ krca_coverage_observability_tunnel_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: krca_coverage_observability_tunnel_process
+      changed_when: true
+
+    - name: Mark the observability tunnel as started
+      ansible.builtin.set_fact:
+        krca_coverage_observability_tunnel_started: true
+
+    - name: Wait for the private frontend tunnel
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ krca_coverage_frontend_port }}/"
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      register: krca_coverage_frontend_ready
+      until: krca_coverage_frontend_ready.status == 200
+      retries: 20
+      delay: 1
+      changed_when: false
+
+    - name: Wait for the private Prometheus tunnel
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ krca_coverage_prometheus_port }}/-/ready"
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      register: krca_coverage_prometheus_ready
+      until: krca_coverage_prometheus_ready.status == 200
+      retries: 20
+      delay: 1
+      changed_when: false
+
+    - name: Run the full-window route coverage workload
+      ansible.builtin.command:
+        argv:
+          - .venv/bin/python
+          - tools/run_online_boutique_workload.py
+          - --base-url
+          - "http://127.0.0.1:{{ krca_coverage_frontend_port }}/"
+          - --duration-seconds
+          - "{{ krca_coverage_duration_seconds | string }}"
+          - --requests-per-second
+          - "{{ krca_coverage_requests_per_second | string }}"
+          - --seed
+          - "42"
+          - --marker
+          - "{{ krca_coverage_run_id }}"
+          - --profile
+          - krca-route-coverage
+      args:
+        chdir: "{{ krca_coverage_repo_root }}"
+      delegate_to: localhost
+      become: false
+      register: krca_coverage_workload_result
+      changed_when: true
+
+    - name: Require successful route coverage traffic
+      ansible.builtin.assert:
+        that:
+          - >-
+            (krca_coverage_workload_result.stdout | from_json).profile
+            == 'krca-route-coverage'
+          - >-
+            (krca_coverage_workload_result.stdout | from_json).transport_errors
+            | int == 0
+          - >-
+            (krca_coverage_workload_result.stdout | from_json).actions
+            | length == 6
+          - >-
+            ((krca_coverage_workload_result.stdout | from_json).status_families
+            .get('2xx', 0) | int)
+            + ((krca_coverage_workload_result.stdout | from_json).status_families
+            .get('3xx', 0) | int)
+            > 0
+        fail_msg: The controlled route workload was incomplete.
+
+    - name: Allow remote-write and recording rules to settle
+      ansible.builtin.pause:
+        seconds: "{{ krca_coverage_settle_seconds }}"
+
+    - name: Run every live KRCA Provider profile
+      ansible.builtin.command:
+        argv:
+          - .venv/bin/python
+          - tools/smoke_live_krca.py
+          - --prometheus-url
+          - "http://127.0.0.1:{{ krca_coverage_prometheus_port }}"
+      args:
+        chdir: "{{ krca_coverage_repo_root }}"
+      environment:
+        PYTHONPATH: src
+      delegate_to: localhost
+      become: false
+      register: krca_coverage_provider_result
+      changed_when: false
+
+    - name: Publish the sanitized KRCA coverage result
+      ansible.builtin.debug:
+        msg:
+          status: >-
+            {{ (krca_coverage_provider_result.stdout | from_json).status }}
+          profile_count: >-
+            {{ (krca_coverage_provider_result.stdout | from_json).profile_count }}
+          profiles: >-
+            {{ (krca_coverage_provider_result.stdout | from_json).profiles
+            | map(attribute='profile_id') | list }}
+  always:
+    - name: Stop the target loopback tunnel
+      ansible.builtin.shell: |
+        pid={{ krca_coverage_target_tunnel_process.stdout | default('0') | trim | int }}
+        if ps -p "$pid" -o command= 2>/dev/null | grep -Fq "ssh -N"; then
+          kill "$pid"
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: krca_coverage_target_tunnel_started | bool
+
+    - name: Stop the observability loopback tunnel
+      ansible.builtin.shell: |
+        pid={{ krca_coverage_observability_tunnel_process.stdout | default('0') | trim | int }}
+        if ps -p "$pid" -o command= 2>/dev/null | grep -Fq "ssh -N"; then
+          kill "$pid"
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: krca_coverage_observability_tunnel_started | bool
+
+    - name: Stop the target frontend port-forward
+      ansible.builtin.shell: |
+        pid={{ krca_coverage_target_forward_process.stdout | default('0') | trim | int }}
+        if ps -p "$pid" -o command= 2>/dev/null | grep -q "kubectl.*port-forward"; then
+          kill "$pid"
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: krca_coverage_target_forward_started | bool
+
+    - name: Stop the central Prometheus port-forward
+      ansible.builtin.shell: |
+        pid={{ krca_coverage_observability_forward_process.stdout | default('0') | trim | int }}
+        if ps -p "$pid" -o command= 2>/dev/null | grep -q "kubectl.*port-forward"; then
+          kill "$pid"
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      changed_when: false
+      when: krca_coverage_observability_forward_started | bool
+
+    - name: Remove the target KRCA coverage temporary log
+      ansible.builtin.file:
+        path: "{{ krca_coverage_target_forward_log }}"
+        state: absent
+      changed_when: false
+
+    - name: Remove the observability KRCA coverage temporary log
+      ansible.builtin.file:
+        path: "{{ krca_coverage_observability_forward_log }}"
+        state: absent
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      changed_when: false
+
+    - name: Remove controller KRCA coverage temporary logs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ krca_coverage_target_tunnel_log }}"
+        - "{{ krca_coverage_observability_tunnel_log }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false

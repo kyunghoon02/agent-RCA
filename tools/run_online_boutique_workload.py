@@ -29,8 +29,17 @@ PRODUCT_IDS = (
 )
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 MIN_DURATION_SECONDS = 10
-MAX_DURATION_SECONDS = 600
+MAX_DURATION_SECONDS = 1200
 MAX_REQUESTS_PER_SECOND = 50.0
+WORKLOAD_PROFILES = ("path-weighted", "krca-route-coverage")
+COVERAGE_ACTIONS = (
+    "home",
+    "product",
+    "add-cart",
+    "view-cart",
+    "empty-cart",
+    "checkout",
+)
 
 
 def require_loopback_base_url(value: str) -> str:
@@ -60,6 +69,14 @@ def deterministic_action_names(seed: int, count: int) -> list[str]:
         weights=(1, 2, 3, 8),
         k=count,
     )
+
+
+def deterministic_coverage_action_names(count: int) -> list[str]:
+    """Return a fixed cycle that exercises every KRCA-owned frontend route."""
+
+    if count < 0:
+        raise ValueError("count must not be negative")
+    return [COVERAGE_ACTIONS[index % len(COVERAGE_ACTIONS)] for index in range(count)]
 
 
 def _request(
@@ -112,6 +129,7 @@ def run_workload(
     marker: str,
     timeout_seconds: float,
     stop_file: Path | None,
+    profile: str = "path-weighted",
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
@@ -130,6 +148,8 @@ def run_workload(
         raise ValueError("timeout must be above 0 and at most 30 seconds")
     if not marker or len(marker) > 64:
         raise ValueError("synthetic marker must contain 1 to 64 characters")
+    if profile not in WORKLOAD_PROFILES:
+        raise ValueError(f"profile must be one of: {', '.join(WORKLOAD_PROFILES)}")
 
     generator = random.Random(seed)
     opener = urllib.request.build_opener(
@@ -162,11 +182,14 @@ def run_workload(
     while monotonic() < deadline:
         if stop_file is not None and stop_file.exists():
             break
-        action = generator.choices(
-            ("home", "product", "add-cart", "checkout"),
-            weights=(1, 2, 3, 8),
-            k=1,
-        )[0]
+        if profile == "krca-route-coverage":
+            action = COVERAGE_ACTIONS[sum(actions.values()) % len(COVERAGE_ACTIONS)]
+        else:
+            action = generator.choices(
+                ("home", "product", "add-cart", "checkout"),
+                weights=(1, 2, 3, 8),
+                k=1,
+            )[0]
         product_id = generator.choice(PRODUCT_IDS)
         actions[action] += 1
         if action == "home":
@@ -175,6 +198,10 @@ def run_workload(
             call(f"/product/{product_id}")
         elif action == "add-cart":
             call("/cart", {"product_id": product_id, "quantity": "1"})
+        elif action == "view-cart":
+            call("/cart")
+        elif action == "empty-cart":
+            call("/cart/empty", {})
         else:
             call("/cart", {"product_id": product_id, "quantity": "1"})
             call("/cart/checkout", _checkout_form())
@@ -186,7 +213,7 @@ def run_workload(
 
     return {
         "schema_version": "1.0.0",
-        "profile": "path-weighted",
+        "profile": profile,
         "seed": seed,
         "synthetic_marker": marker,
         "operations": sum(actions.values()),
@@ -206,6 +233,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--requests-per-second", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--marker", required=True)
+    parser.add_argument(
+        "--profile",
+        choices=WORKLOAD_PROFILES,
+        default="path-weighted",
+    )
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     parser.add_argument("--stop-file", type=Path)
     return parser
@@ -222,6 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             marker=arguments.marker,
             timeout_seconds=arguments.timeout_seconds,
             stop_file=arguments.stop_file,
+            profile=arguments.profile,
         )
     except ValueError as error:
         raise SystemExit(str(error)) from error

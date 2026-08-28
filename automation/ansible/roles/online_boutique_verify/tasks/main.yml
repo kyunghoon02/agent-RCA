@@ -114,6 +114,15 @@
       - >-
         'endpoint: ' ~ online_boutique_tempo_endpoint in
         (online_boutique_otel_configmap.stdout | from_json).data['collector.yaml']
+      - >-
+        'transform/frontend_routes:' in
+        (online_boutique_otel_configmap.stdout | from_json).data['collector.yaml']
+      - >-
+        'filter/krca_health:' in
+        (online_boutique_otel_configmap.stdout | from_json).data['collector.yaml']
+      - >-
+        '/_healthz' in
+        (online_boutique_otel_configmap.stdout | from_json).data['collector.yaml']
     fail_msg: The OpenTelemetry Collector cluster identity drifted.
 
 - name: Read direct instrumentation settings
@@ -352,24 +361,28 @@
   delay: 10
   until: >-
     (online_boutique_rca_alert_rule.stdout | from_json).get('status') == 'success'
-    and 'OnlineBoutiqueFrontendHighFailureRate' in online_boutique_rca_alert_rule.stdout
+    and 'OnlineBoutiqueHomeHighFailureRate' in online_boutique_rca_alert_rule.stdout
   changed_when: false
 
-- name: Require one healthy opt-in Agent RCA alerting rule
+- name: Require every route-owned Agent RCA alerting rule to be healthy
   ansible.builtin.assert:
     that:
       - >-
         (online_boutique_rca_alert_rule.stdout | from_json)['data']['groups']
         | map(attribute='rules') | flatten
-        | selectattr('name', 'equalto', 'OnlineBoutiqueFrontendHighFailureRate')
+        | selectattr('name', 'equalto', item.name)
         | selectattr('health', 'equalto', 'ok')
         | list | length == 1
       - >-
         'rca_enabled' in online_boutique_rca_alert_rule.stdout
         and 'krca_profile' in online_boutique_rca_alert_rule.stdout
-        and 'browse-and-cart-read' in online_boutique_rca_alert_rule.stdout
+        and item.profile in online_boutique_rca_alert_rule.stdout
+        and item.operation in online_boutique_rca_alert_rule.stdout
         and 'frontend' in online_boutique_rca_alert_rule.stdout
-    fail_msg: The opt-in Agent RCA alerting rule is missing, duplicated, or unhealthy.
+    fail_msg: "The {{ item.name }} Agent RCA rule is missing, duplicated, or unhealthy."
+  loop: "{{ online_boutique_expected_rca_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Wait for span-derived RED metrics in Prometheus
   ansible.builtin.command:
@@ -403,6 +416,12 @@
         /api/v1/namespaces/{{ observability_namespace
         }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=count%20by%20%28service_name%29%20%28agent_rca_calls_total%7Bnamespace%3D%22online-boutique%22%2Cspan_kind%3D%22SPAN_KIND_SERVER%22%7D%29
   register: online_boutique_server_span_services
+  retries: 12
+  delay: 5
+  until: >-
+    ((online_boutique_server_span_services.stdout | from_json)['data']['result']
+    | map(attribute='metric.service_name') | sort | list)
+    == (online_boutique_instrumented_services | sort | list)
   changed_when: false
 
 - name: Require server-span coverage for every application service
@@ -414,7 +433,7 @@
         == (online_boutique_instrumented_services | sort | list)
     fail_msg: One or more Online Boutique application services has no server-span coverage.
 
-- name: Wait for a stored Online Boutique trace in Tempo
+- name: Wait for a stored Online Boutique trace in local Tempo
   ansible.builtin.command:
     argv:
       - kubectl
@@ -431,8 +450,9 @@
   until: >-
     (online_boutique_tempo_traces.stdout | from_json).get('traces', []) | length > 0
   changed_when: false
+  when: observability_domain_mode != 'forwarder'
 
-- name: Wait for one recent Online Boutique log stream in Loki
+- name: Wait for one recent Online Boutique log stream in local Loki
   ansible.builtin.command:
     argv:
       - kubectl
@@ -449,17 +469,25 @@
   until: >-
     (loki_online_boutique_logs.stdout | from_json)['data']['result'] | length > 0
   changed_when: false
+  when: observability_domain_mode != 'forwarder'
+
+- name: Select the local Online Boutique Loki response
+  ansible.builtin.set_fact:
+    online_boutique_loki_result: >-
+      {{ loki_online_boutique_logs.stdout | from_json }}
+  when: observability_domain_mode != 'forwarder'
 
 - name: Require normalized Online Boutique labels on Loki logs
   ansible.builtin.assert:
     that:
       - >-
-        (loki_online_boutique_logs.stdout | from_json)['data']['result'][0]
+        online_boutique_loki_result['data']['result'][0]
         ['stream']['cluster_id'] == cluster_name
       - >-
-        (loki_online_boutique_logs.stdout | from_json)['data']['result'][0]
+        online_boutique_loki_result['data']['result'][0]
         ['stream']['namespace'] == online_boutique_namespace
       - >-
-        (loki_online_boutique_logs.stdout | from_json)['data']['result'][0]
+        online_boutique_loki_result['data']['result'][0]
         ['values'] | length > 0
     fail_msg: Loki did not return a normalized Online Boutique log stream.
+  when: observability_domain_mode != 'forwarder'

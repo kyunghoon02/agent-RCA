@@ -4,6 +4,7 @@ import unittest
 
 from tools.run_online_boutique_workload import (
     deterministic_action_names,
+    deterministic_coverage_action_names,
     require_loopback_base_url,
 )
 
@@ -32,6 +33,23 @@ class OnlineBoutiqueWorkloadTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, different)
         self.assertGreater(first.count("checkout"), first.count("home"))
+
+    def test_coverage_schedule_exercises_every_owned_frontend_route(self) -> None:
+        first_cycle = deterministic_coverage_action_names(6)
+        second_cycle = deterministic_coverage_action_names(12)[6:]
+
+        self.assertEqual(
+            first_cycle,
+            [
+                "home",
+                "product",
+                "add-cart",
+                "view-cart",
+                "empty-cart",
+                "checkout",
+            ],
+        )
+        self.assertEqual(second_cycle, first_cycle)
 
 
 if __name__ == "__main__":

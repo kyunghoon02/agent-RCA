@@ -141,6 +141,28 @@ online_boutique_instrumented_services:
   - productcatalogservice
   - recommendationservice
   - shippingservice
+online_boutique_expected_rca_alerts:
+  - name: OnlineBoutiqueHomeHighFailureRate
+    profile: browse-home
+    operation: GET /
+  - name: OnlineBoutiqueProductDetailHighFailureRate
+    profile: product-detail
+    operation: GET /product/{id}
+  - name: OnlineBoutiqueCartReadHighFailureRate
+    profile: cart-read
+    operation: GET /cart
+  - name: OnlineBoutiqueCartAddHighFailureRate
+    profile: cart-add
+    operation: POST /cart
+  - name: OnlineBoutiqueCartEmptyHighFailureRate
+    profile: cart-empty
+    operation: POST /cart/empty
+  - name: OnlineBoutiqueCheckoutHighFailureRate
+    profile: checkout-full
+    operation: POST /cart/checkout
+krca_coverage_duration_seconds: 900
+krca_coverage_requests_per_second: 6
+krca_coverage_settle_seconds: 45
 
 stategraph_namespace: graph-rca
 stategraph_statefulset_name: neo4j

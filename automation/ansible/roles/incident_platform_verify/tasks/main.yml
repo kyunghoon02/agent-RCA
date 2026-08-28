@@ -689,7 +689,6 @@
       severity: warning
       service: frontend
       rca_enabled: "true"
-      krca_profile: browse-and-cart-read
       verification_id: >-
         alertmanager-runtime-{{ ansible_facts.date_time.epoch }}
 
@@ -1186,18 +1185,18 @@
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).analysis_attempt_count | int == 0)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).agent_run_count | int == 0)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_count | int == 1)
-        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int >= 20)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_evidence_count | int >= 10)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_metric_evidence_count | int >= 5)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_workload_metric_evidence_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_restart_metric_evidence_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_deployment_evidence_count | int == 1)
-        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_krca_feature_evidence_count | int == 9)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).context_krca_feature_evidence_count | int == 0)
         and (
           ((incident_platform_alert_delivery_result.stdout | trim | from_json).krca_feature_has_data_count | int)
           + ((incident_platform_alert_delivery_result.stdout | trim | from_json).krca_feature_insufficient_data_count | int)
-          == 9
+          == 0
         )
-        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).evidence_count | int >= 20)
+        and ((incident_platform_alert_delivery_result.stdout | trim | from_json).evidence_count | int >= 10)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).kubernetes_pod_evidence_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).workload_metric_evidence_count | int >= 1)
         and ((incident_platform_alert_delivery_result.stdout | trim | from_json).workload_metric_matching_pod_count | int >= 1)
@@ -1222,7 +1221,7 @@
           - incident_platform_alert_delivery.collecting_audit_count | int == 1
           - incident_platform_alert_delivery.localizing_audit_count | int == 1
           - incident_platform_alert_delivery.analyzing_audit_count | int == 1
-          - incident_platform_alert_delivery.evidence_count | int >= 20
+          - incident_platform_alert_delivery.evidence_count | int >= 10
           - incident_platform_alert_delivery.kubernetes_pod_evidence_count | int >= 1
           - incident_platform_alert_delivery.workload_metric_evidence_count | int >= 1
           - incident_platform_alert_delivery.workload_metric_matching_pod_count | int >= 1
@@ -1233,11 +1232,11 @@
             (incident_platform_alert_delivery.deployment_no_change_count | int)
             + (incident_platform_alert_delivery.deployment_change_count | int)
             == 1
-          - incident_platform_alert_delivery.krca_feature_evidence_count | int == 9
+          - incident_platform_alert_delivery.krca_feature_evidence_count | int == 0
           - >-
             (incident_platform_alert_delivery.krca_feature_has_data_count | int)
             + (incident_platform_alert_delivery.krca_feature_insufficient_data_count | int)
-            == 9
+            == 0
           - incident_platform_alert_delivery.work_succeeded_count | int == 1
           - incident_platform_alert_delivery.localization_work_succeeded_count | int == 1
           - incident_platform_alert_delivery.analyzing_count | int == 1
@@ -1248,7 +1247,7 @@
           - incident_platform_alert_delivery.analysis_attempt_count | int == 0
           - incident_platform_alert_delivery.agent_run_count | int == 0
           - incident_platform_alert_delivery.context_count | int == 1
-          - incident_platform_alert_delivery.context_evidence_count | int >= 20
+          - incident_platform_alert_delivery.context_evidence_count | int >= 10
           - incident_platform_alert_delivery.context_metric_evidence_count | int >= 5
           - incident_platform_alert_delivery.context_workload_metric_evidence_count | int >= 1
           - incident_platform_alert_delivery.context_restart_metric_evidence_count | int >= 1
@@ -1256,15 +1255,13 @@
           - >-
             incident_platform_alert_delivery.context_recent_deployment_evidence_count | int
             == incident_platform_alert_delivery.deployment_change_count | int
-          - incident_platform_alert_delivery.context_krca_feature_evidence_count | int == 9
+          - incident_platform_alert_delivery.context_krca_feature_evidence_count | int == 0
           - incident_platform_alert_delivery.context_recent_krca_feature_evidence_count | int == 0
           - incident_platform_alert_delivery.context_recent_metric_evidence_count | int == 0
-          - incident_platform_alert_delivery.context_krca_profile == 'browse-and-cart-read'
-          - >-
-            incident_platform_alert_delivery.context_seed_source
-            in ['krca-top-services', 'source-entity-krca-fallback']
+          - incident_platform_alert_delivery.context_krca_profile is none
+          - incident_platform_alert_delivery.context_seed_source is none
           - incident_platform_alert_delivery.context_path_count | int >= 1
-          - incident_platform_alert_delivery.collector_count | int == 6
+          - incident_platform_alert_delivery.collector_count | int == 5
         fail_msg: Alertmanager delivery, Evidence collection, or StateGraph localization was incomplete.
   always:
     - name: Resolve the controlled Alertmanager verification alert

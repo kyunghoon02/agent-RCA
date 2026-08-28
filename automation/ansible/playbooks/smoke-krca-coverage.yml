@@ -1,0 +1,195 @@
+---
+- name: Verify route-complete live KRCA Prometheus Evidence
+  hosts: fault_target
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/chaos-eval.yml
+  roles:
+    - role: krca_coverage_smoke
+
+- name: Submit one route-owned KRCA verification alert
+  hosts: observability_domain
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  tasks:
+    - name: Define the bounded KRCA verification alert
+      ansible.builtin.set_fact:
+        krca_coverage_alert_id: >-
+          krca-provider-runtime-{{ ansible_facts.date_time.epoch }}
+        krca_coverage_alert_started_at: "{{ ansible_facts.date_time.iso8601 }}"
+        krca_coverage_alert_labels:
+          alertname: AgentRCAKRCACoverageVerification
+          cluster_id: >-
+            {{ hostvars[groups['fault_target'][0]].krca_coverage_target_cluster_id }}
+          namespace: "{{ online_boutique_namespace }}"
+          severity: warning
+          service: frontend
+          rca_enabled: "true"
+          agent_rca_enabled: "true"
+          krca_profile: browse-home
+          verification_id: >-
+            krca-provider-runtime-{{ ansible_facts.date_time.epoch }}
+
+    - name: Define an automatic expiry for the KRCA verification alert
+      ansible.builtin.command: date --utc --date=+5minutes +%Y-%m-%dT%H:%M:%SZ
+      register: krca_coverage_alert_expiry
+      changed_when: false
+
+    - name: Read the central Alertmanager Service
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get service {{ alertmanager_service_name }}
+        --namespace {{ observability_namespace }} --output json
+      register: krca_coverage_alertmanager_service
+      changed_when: false
+
+    - name: Submit the route-owned firing alert
+      ansible.builtin.uri:
+        url: >-
+          http://{{ (krca_coverage_alertmanager_service.stdout | from_json).spec.clusterIP
+          }}:9093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': krca_coverage_alert_labels,
+            'annotations': {
+              'summary': 'Controlled KRCA route coverage verification'
+            },
+            'startsAt': krca_coverage_alert_started_at,
+            'endsAt': krca_coverage_alert_expiry.stdout | trim,
+            'generatorURL': 'https://prometheus.invalid/krca-coverage-verification'
+          }] }}
+        status_code: 200
+      changed_when: true
+
+- name: Verify successful KRCA Evidence collection on RCA control
+  hosts: rca_control
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Wait for the profiled Incident to complete collection and localization
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT json_build_object(
+              'incident_count', count(*),
+              'processed_count', count(*) FILTER (
+                WHERE status IN ('ANALYZING', 'REPORTED')
+              ),
+              'failed_count', count(*) FILTER (WHERE status = 'FAILED'),
+              'collection_succeeded_count', (
+                SELECT count(*) FROM incident_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].krca_coverage_alert_id }}'
+                ) AND work.state = 'SUCCEEDED'
+              ),
+              'localization_succeeded_count', (
+                SELECT count(*) FROM incident_localization_work_items work
+                WHERE work.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].krca_coverage_alert_id }}'
+                ) AND work.state = 'SUCCEEDED'
+              ),
+              'prometheus_api_succeeded_count', (
+                SELECT count(*)
+                FROM incidents selected,
+                LATERAL jsonb_array_elements(
+                  selected.document->'collector_statuses'
+                ) collector
+                WHERE selected.document->'alert'->'labels'->>'verification_id'
+                  = '{{ hostvars[groups['observability_domain'][0]].krca_coverage_alert_id }}'
+                  AND collector->>'collector' = 'prometheus-api'
+                  AND collector->>'status' = 'SUCCEEDED'
+              ),
+              'krca_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].krca_coverage_alert_id }}'
+                ) AND evidence.document->'facts'->>'feature_set'
+                  = 'krca-api-edge-v1'
+              ),
+              'krca_has_data_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].krca_coverage_alert_id }}'
+                ) AND evidence.document->'facts'->>'feature_set'
+                  = 'krca-api-edge-v1'
+                  AND evidence.document->'facts'->>'result_status' = 'HAS_DATA'
+              )
+            ) FROM incidents
+            WHERE document->'alert'->'labels'->>'verification_id'
+              = '{{ hostvars[groups['observability_domain'][0]].krca_coverage_alert_id }}'"
+      register: krca_coverage_incident_result
+      changed_when: false
+      no_log: true
+      until: >-
+        ((krca_coverage_incident_result.stdout | trim | from_json).incident_count | int == 1)
+        and ((krca_coverage_incident_result.stdout | trim | from_json).processed_count | int == 1)
+        and ((krca_coverage_incident_result.stdout | trim | from_json).failed_count | int == 0)
+        and ((krca_coverage_incident_result.stdout | trim | from_json).collection_succeeded_count | int == 1)
+        and ((krca_coverage_incident_result.stdout | trim | from_json).localization_succeeded_count | int == 1)
+        and ((krca_coverage_incident_result.stdout | trim | from_json).prometheus_api_succeeded_count | int == 1)
+        and ((krca_coverage_incident_result.stdout | trim | from_json).krca_evidence_count | int == 5)
+        and ((krca_coverage_incident_result.stdout | trim | from_json).krca_has_data_count | int == 5)
+      retries: 60
+      delay: 2
+
+    - name: Publish the sanitized end-to-end KRCA proof
+      ansible.builtin.debug:
+        msg: "{{ krca_coverage_incident_result.stdout | trim | from_json }}"
+
+- name: Resolve the bounded KRCA verification alert
+  hosts: observability_domain
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  tasks:
+    - name: Resolve the route-owned verification alert
+      ansible.builtin.uri:
+        url: >-
+          http://{{ (krca_coverage_alertmanager_service.stdout | from_json).spec.clusterIP
+          }}:9093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': krca_coverage_alert_labels,
+            'annotations': {
+              'summary': 'Controlled KRCA route coverage verification resolved'
+            },
+            'startsAt': krca_coverage_alert_started_at,
+            'endsAt': krca_coverage_alert_started_at,
+            'generatorURL': 'https://prometheus.invalid/krca-coverage-verification'
+          }] }}
+        status_code: 200
+      changed_when: true

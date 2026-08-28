@@ -67,6 +67,7 @@ def main() -> int:
                 {
                     "profile_id": profile.profile_id,
                     "status": "INCOMPLETE",
+                    "provider_status": "FAILED",
                     "failure_class": type(error).__name__,
                     "edges": [],
                     "drilldown_stop_reason": None,
@@ -105,6 +106,7 @@ def main() -> int:
             {
                 "profile_id": profile.profile_id,
                 "status": "CONNECTED" if profile_complete else "INCOMPLETE",
+                "provider_status": batch.status,
                 "edges": edges,
                 "drilldown_stop_reason": feature_run.drilldown.stop_reason,
                 "top_services": [

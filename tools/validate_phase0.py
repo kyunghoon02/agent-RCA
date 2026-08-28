@@ -933,12 +933,41 @@ def validate_versions_and_manifests() -> None:
     ):
         raise ValidationFailure("Online Boutique span-derived metric boundary drifted")
     pipelines = collector_config.get("service", {}).get("pipelines", {})
-    if set(pipelines.get("traces", {}).get("exporters", [])) != {
-        "otlp/tempo",
-        "span_metrics",
-        "service_graph",
-    }:
-        raise ValidationFailure("Online Boutique trace pipeline is incomplete")
+    processors = collector_config.get("processors", {})
+    route_statements = "\n".join(
+        processors.get("transform/frontend_routes", {}).get("trace_statements", [])
+    )
+    health_conditions = "\n".join(
+        processors.get("filter/krca_health", {}).get("trace_conditions", [])
+    )
+    expected_frontend_operations = {
+        "GET /",
+        "GET /product/{id}",
+        "GET /cart",
+        "POST /cart",
+        "POST /cart/empty",
+        "POST /cart/checkout",
+    }
+    if (
+        not all(operation in route_statements for operation in expected_frontend_operations)
+        or 'span.attributes["url.path"]' not in route_statements
+        or "/_healthz" not in health_conditions
+    ):
+        raise ValidationFailure("Online Boutique frontend route normalization drifted")
+    if (
+        pipelines.get("traces", {}).get("exporters") != ["otlp/tempo"]
+        or set(pipelines.get("traces/derived", {}).get("exporters", []))
+        != {"span_metrics", "service_graph"}
+        or set(pipelines.get("traces/derived", {}).get("processors", []))
+        != {
+            "memory_limiter",
+            "resource",
+            "transform/frontend_routes",
+            "filter/krca_health",
+            "batch",
+        }
+    ):
+        raise ValidationFailure("Online Boutique trace pipeline isolation is incomplete")
     if set(pipelines.get("metrics/derived", {}).get("receivers", [])) != {
         "span_metrics",
         "service_graph",
@@ -973,27 +1002,44 @@ def validate_versions_and_manifests() -> None:
     alerting_rules = [
         rule for rule in groups[0].get("rules", []) if "alert" in rule
     ]
-    if len(alerting_rules) != 1:
-        raise ValidationFailure("Online Boutique must expose one RCA opt-in alert")
-    opt_in_alert = alerting_rules[0]
-    if (
-        opt_in_alert.get("alert") != "OnlineBoutiqueFrontendHighFailureRate"
-        or opt_in_alert.get("for") != "2m"
-        or opt_in_alert.get("labels")
-        != {
-            "namespace": "online-boutique",
-            "service": "frontend",
-            "severity": "critical",
-            "rca_enabled": "true",
-            "agent_rca_enabled": "true",
-            "krca_profile": "browse-and-cart-read",
-        }
-        or 'service_name="frontend"' not in opt_in_alert.get("expr", "")
-        or 'span_name="GET"' not in opt_in_alert.get("expr", "")
-        or "> 0.05" not in opt_in_alert.get("expr", "")
-        or "> 0.1" not in opt_in_alert.get("expr", "")
-    ):
-        raise ValidationFailure("Online Boutique RCA opt-in alert boundary drifted")
+    expected_alerts = {
+        "OnlineBoutiqueHomeHighFailureRate": ("browse-home", "GET /"),
+        "OnlineBoutiqueProductDetailHighFailureRate": (
+            "product-detail",
+            "GET /product/{id}",
+        ),
+        "OnlineBoutiqueCartReadHighFailureRate": ("cart-read", "GET /cart"),
+        "OnlineBoutiqueCartAddHighFailureRate": ("cart-add", "POST /cart"),
+        "OnlineBoutiqueCartEmptyHighFailureRate": (
+            "cart-empty",
+            "POST /cart/empty",
+        ),
+        "OnlineBoutiqueCheckoutHighFailureRate": (
+            "checkout-full",
+            "POST /cart/checkout",
+        ),
+    }
+    if {rule.get("alert") for rule in alerting_rules} != set(expected_alerts):
+        raise ValidationFailure("Online Boutique RCA route alert set drifted")
+    for opt_in_alert in alerting_rules:
+        profile, operation = expected_alerts[opt_in_alert["alert"]]
+        if (
+            opt_in_alert.get("for") != "2m"
+            or opt_in_alert.get("labels")
+            != {
+                "namespace": "online-boutique",
+                "service": "frontend",
+                "severity": "critical",
+                "rca_enabled": "true",
+                "agent_rca_enabled": "true",
+                "krca_profile": profile,
+            }
+            or 'service_name="frontend"' not in opt_in_alert.get("expr", "")
+            or f'span_name="{operation}"' not in opt_in_alert.get("expr", "")
+            or "> 0.05" not in opt_in_alert.get("expr", "")
+            or "> 0.1" not in opt_in_alert.get("expr", "")
+        ):
+            raise ValidationFailure("Online Boutique RCA opt-in alert boundary drifted")
 
     if scope["target"]["release_tag"] != versions["online_boutique"]["release_tag"]:
         raise ValidationFailure("project scope and version pin disagree on release tag")
@@ -1031,14 +1077,17 @@ def validate_krca_runtime_config() -> None:
     if runtime["prometheus"]["queries"] != expected_queries:
         raise ValidationFailure("Online Boutique live KRCA query allowlist drifted")
     expected_profiles = {
-        "browse-and-cart-read",
-        "cart-mutation",
+        "browse-home",
+        "product-detail",
+        "cart-read",
+        "cart-add",
+        "cart-empty",
         "checkout-full",
     }
     profile_ids = {profile["profile_id"] for profile in runtime["profiles"]}
     if profile_ids != expected_profiles:
         raise ValidationFailure("Online Boutique live KRCA profiles drifted")
-    if sum(len(profile["dependencies"]) for profile in runtime["profiles"]) != 23:
+    if sum(len(profile["dependencies"]) for profile in runtime["profiles"]) != 33:
         raise ValidationFailure("Online Boutique live KRCA edge coverage drifted")
 
 
@@ -2274,6 +2323,23 @@ def validate_three_domain_runtime() -> None:
         or 'rca_enabled: "true"' not in remote_alert
     ):
         raise ValidationFailure("remote alert identity or authentication drifted")
+    remote_alert_document = load_yaml_documents(
+        observability_directory / "remote-online-boutique-alerts.yaml"
+    )[0]
+    remote_rules = remote_alert_document["spec"]["groups"][0]["rules"]
+    expected_remote_profiles = {
+        "OnlineBoutiqueHomeHighFailureRate": "browse-home",
+        "OnlineBoutiqueProductDetailHighFailureRate": "product-detail",
+        "OnlineBoutiqueCartReadHighFailureRate": "cart-read",
+        "OnlineBoutiqueCartAddHighFailureRate": "cart-add",
+        "OnlineBoutiqueCartEmptyHighFailureRate": "cart-empty",
+        "OnlineBoutiqueCheckoutHighFailureRate": "checkout-full",
+    }
+    if {
+        rule.get("alert"): rule.get("labels", {}).get("krca_profile")
+        for rule in remote_rules
+    } != expected_remote_profiles:
+        raise ValidationFailure("remote route-to-KRCA profile mapping drifted")
 
 
 def validate_policy_configs() -> None:

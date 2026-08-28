@@ -95,7 +95,6 @@
           severity: warning
           service: frontend
           rca_enabled: "true"
-          krca_profile: browse-and-cart-read
           verification_id: >-
             three-domain-runtime-{{ ansible_facts.date_time.epoch }}
 
@@ -185,6 +184,15 @@
                     = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
                 ) AND evidence.document->>'source' = 'prometheus'
               ),
+              'krca_feature_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
+                ) AND evidence.document->'facts'->>'feature_set'
+                  = 'krca-api-edge-v1'
+              ),
               'work_succeeded_count', (
                 SELECT count(*) FROM incident_work_items work
                 WHERE work.incident_id IN (
@@ -200,6 +208,10 @@
                   WHERE document->'alert'->'labels'->>'verification_id'
                     = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
                 ) AND work.state = 'SUCCEEDED'
+              ),
+              'collector_count', COALESCE(
+                sum(jsonb_array_length(document->'collector_statuses')),
+                0
               )
             ) FROM incidents
             WHERE document->'alert'->'labels'->>'verification_id'
@@ -211,9 +223,11 @@
         ((three_domain_delivery_result.stdout | trim | from_json).incident_count | int == 1)
         and ((three_domain_delivery_result.stdout | trim | from_json).analyzing_count | int == 1)
         and ((three_domain_delivery_result.stdout | trim | from_json).failed_count | int == 0)
-        and ((three_domain_delivery_result.stdout | trim | from_json).evidence_count | int >= 20)
+        and ((three_domain_delivery_result.stdout | trim | from_json).evidence_count | int >= 10)
         and ((three_domain_delivery_result.stdout | trim | from_json).kubernetes_pod_evidence_count | int >= 1)
         and ((three_domain_delivery_result.stdout | trim | from_json).prometheus_evidence_count | int >= 5)
+        and ((three_domain_delivery_result.stdout | trim | from_json).krca_feature_evidence_count | int == 0)
+        and ((three_domain_delivery_result.stdout | trim | from_json).collector_count | int == 5)
         and ((three_domain_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
         and ((three_domain_delivery_result.stdout | trim | from_json).localization_succeeded_count | int == 1)
       retries: 60
@@ -236,6 +250,9 @@
             {{ three_domain_delivery_proof.kubernetes_pod_evidence_count }}
           prometheus_evidence_count: >-
             {{ three_domain_delivery_proof.prometheus_evidence_count }}
+          krca_feature_evidence_count: >-
+            {{ three_domain_delivery_proof.krca_feature_evidence_count }}
+          collector_count: "{{ three_domain_delivery_proof.collector_count }}"
 
 - name: Resolve the bounded cross-domain delivery probe
   hosts: observability_domain

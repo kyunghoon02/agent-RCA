@@ -21,6 +21,40 @@ processors:
       - key: deployment.environment.name
         value: dev
         action: upsert
+  transform/frontend_routes:
+    error_mode: ignore
+    trace_statements:
+      - >-
+        set(span.name, "GET /") where
+        resource.attributes["service.name"] == "frontend" and
+        span.name == "GET" and span.attributes["url.path"] == "/"
+      - >-
+        set(span.name, "GET /product/{id}") where
+        resource.attributes["service.name"] == "frontend" and
+        span.name == "GET" and
+        IsMatch(span.attributes["url.path"], "^/product/[^/]+$")
+      - >-
+        set(span.name, "GET /cart") where
+        resource.attributes["service.name"] == "frontend" and
+        span.name == "GET" and span.attributes["url.path"] == "/cart"
+      - >-
+        set(span.name, "POST /cart") where
+        resource.attributes["service.name"] == "frontend" and
+        span.name == "POST" and span.attributes["url.path"] == "/cart"
+      - >-
+        set(span.name, "POST /cart/empty") where
+        resource.attributes["service.name"] == "frontend" and
+        span.name == "POST" and span.attributes["url.path"] == "/cart/empty"
+      - >-
+        set(span.name, "POST /cart/checkout") where
+        resource.attributes["service.name"] == "frontend" and
+        span.name == "POST" and span.attributes["url.path"] == "/cart/checkout"
+  filter/krca_health:
+    error_mode: ignore
+    trace_conditions:
+      - >-
+        resource.attributes["service.name"] == "frontend" and
+        span.attributes["url.path"] == "/_healthz"
   batch:
     timeout: 5s
     send_batch_size: 512
@@ -77,8 +111,17 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
-      exporters: [otlp/tempo, span_metrics, service_graph]
+      processors: [memory_limiter, resource, transform/frontend_routes, batch]
+      exporters: [otlp/tempo]
+    traces/derived:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - resource
+        - transform/frontend_routes
+        - filter/krca_health
+        - batch
+      exporters: [span_metrics, service_graph]
     metrics/derived:
       receivers: [span_metrics, service_graph]
       processors: [memory_limiter, batch]

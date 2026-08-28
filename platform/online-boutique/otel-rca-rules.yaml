@@ -125,14 +125,14 @@ spec:
             max by (namespace, pod, uid) (
               kube_pod_info{namespace="online-boutique"}
             )
-        - alert: OnlineBoutiqueFrontendHighFailureRate
+        - alert: OnlineBoutiqueHomeHighFailureRate
           expr: |
             (
               max by (namespace, service_name) (
                 agent_rca_api_failure_rate{
                   namespace="online-boutique",
                   service_name="frontend",
-                  span_name="GET"
+                  span_name="GET /"
                 }
               ) > 0.05
             )
@@ -142,7 +142,7 @@ spec:
                 agent_rca_api_request_rate{
                   namespace="online-boutique",
                   service_name="frontend",
-                  span_name="GET"
+                  span_name="GET /"
                 }
               ) > 0.1
             )
@@ -153,7 +153,167 @@ spec:
             severity: critical
             rca_enabled: "true"
             agent_rca_enabled: "true"
-            krca_profile: browse-and-cart-read
+            krca_profile: browse-home
           annotations:
-            summary: Online Boutique frontend failure rate is above 5 percent
-            description: The frontend has sustained elevated server-side failures with active traffic.
+            summary: Online Boutique home route failure rate is above 5 percent
+            description: The home route has sustained elevated server-side failures with active traffic.
+        - alert: OnlineBoutiqueProductDetailHighFailureRate
+          expr: |
+            (
+              max by (namespace, service_name) (
+                agent_rca_api_failure_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="GET /product/{id}"
+                }
+              ) > 0.05
+            )
+            and on (namespace, service_name)
+            (
+              sum by (namespace, service_name) (
+                agent_rca_api_request_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="GET /product/{id}"
+                }
+              ) > 0.1
+            )
+          for: 2m
+          labels:
+            namespace: online-boutique
+            service: frontend
+            severity: critical
+            rca_enabled: "true"
+            agent_rca_enabled: "true"
+            krca_profile: product-detail
+          annotations:
+            summary: Online Boutique product route failure rate is above 5 percent
+            description: The product detail route has sustained elevated server-side failures with active traffic.
+        - alert: OnlineBoutiqueCartReadHighFailureRate
+          expr: |
+            (
+              max by (namespace, service_name) (
+                agent_rca_api_failure_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="GET /cart"
+                }
+              ) > 0.05
+            )
+            and on (namespace, service_name)
+            (
+              sum by (namespace, service_name) (
+                agent_rca_api_request_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="GET /cart"
+                }
+              ) > 0.1
+            )
+          for: 2m
+          labels:
+            namespace: online-boutique
+            service: frontend
+            severity: critical
+            rca_enabled: "true"
+            agent_rca_enabled: "true"
+            krca_profile: cart-read
+          annotations:
+            summary: Online Boutique cart read failure rate is above 5 percent
+            description: The cart read route has sustained elevated server-side failures with active traffic.
+        - alert: OnlineBoutiqueCartAddHighFailureRate
+          expr: |
+            (
+              max by (namespace, service_name) (
+                agent_rca_api_failure_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="POST /cart"
+                }
+              ) > 0.05
+            )
+            and on (namespace, service_name)
+            (
+              sum by (namespace, service_name) (
+                agent_rca_api_request_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="POST /cart"
+                }
+              ) > 0.1
+            )
+          for: 2m
+          labels:
+            namespace: online-boutique
+            service: frontend
+            severity: critical
+            rca_enabled: "true"
+            agent_rca_enabled: "true"
+            krca_profile: cart-add
+          annotations:
+            summary: Online Boutique cart add failure rate is above 5 percent
+            description: The cart add route has sustained elevated server-side failures with active traffic.
+        - alert: OnlineBoutiqueCartEmptyHighFailureRate
+          expr: |
+            (
+              max by (namespace, service_name) (
+                agent_rca_api_failure_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="POST /cart/empty"
+                }
+              ) > 0.05
+            )
+            and on (namespace, service_name)
+            (
+              sum by (namespace, service_name) (
+                agent_rca_api_request_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="POST /cart/empty"
+                }
+              ) > 0.1
+            )
+          for: 2m
+          labels:
+            namespace: online-boutique
+            service: frontend
+            severity: critical
+            rca_enabled: "true"
+            agent_rca_enabled: "true"
+            krca_profile: cart-empty
+          annotations:
+            summary: Online Boutique cart empty failure rate is above 5 percent
+            description: The cart empty route has sustained elevated server-side failures with active traffic.
+        - alert: OnlineBoutiqueCheckoutHighFailureRate
+          expr: |
+            (
+              max by (namespace, service_name) (
+                agent_rca_api_failure_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="POST /cart/checkout"
+                }
+              ) > 0.05
+            )
+            and on (namespace, service_name)
+            (
+              sum by (namespace, service_name) (
+                agent_rca_api_request_rate{
+                  namespace="online-boutique",
+                  service_name="frontend",
+                  span_name="POST /cart/checkout"
+                }
+              ) > 0.1
+            )
+          for: 2m
+          labels:
+            namespace: online-boutique
+            service: frontend
+            severity: critical
+            rca_enabled: "true"
+            agent_rca_enabled: "true"
+            krca_profile: checkout-full
+          annotations:
+            summary: Online Boutique checkout failure rate is above 5 percent
+            description: The checkout route has sustained elevated server-side failures with active traffic.

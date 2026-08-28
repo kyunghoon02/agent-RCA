@@ -221,7 +221,13 @@ make verify-incident-platform
 make deploy-viewer-frontend
 make verify-viewer-frontend
 make deploy-three-domain
+make smoke-krca-coverage
 ```
+
+`deploy-three-domain`의 synthetic alert는 webhook, queue와 기본 Provider 연결만 검증하며
+KRCA profile을 실행하지 않는다. `smoke-krca-coverage`는 별도의 15분 bounded workload로
+여섯 frontend route와 직전 baseline 구간을 채운 뒤, 모든 KRCA profile과 실제
+`Alertmanager → Incident worker → Evidence` 저장 경로를 검증한다.
 
 Controlled fault는 development 환경에서만 명시적으로 승인해 실행한다.
 

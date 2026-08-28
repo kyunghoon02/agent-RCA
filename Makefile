@@ -23,7 +23,7 @@ EVIDENCE_GATE_POLICY ?= oom-signature-restart-v2
 	render-viewer-frontend build-viewer-frontend-image \
 	deploy-incident-platform verify-incident-platform \
 	deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom \
-	deploy-three-domain summarize-checkout-oom
+	deploy-three-domain smoke-krca-coverage summarize-checkout-oom
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -176,6 +176,11 @@ ansible-syntax:
 		-i automation/ansible/inventories/chaos-eval.example.yml \
 		-i automation/ansible/inventories/observability.example.yml \
 		--syntax-check automation/ansible/playbooks/deploy-three-domain.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/dev.example.yml \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/smoke-krca-coverage.yml
 
 ansible-ping:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible \
@@ -255,6 +260,13 @@ deploy-three-domain:
 		-i $(ANSIBLE_TARGET_INVENTORY) \
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/deploy-three-domain.yml
+
+smoke-krca-coverage:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/smoke-krca-coverage.yml
 
 evaluate-checkout-oom:
 	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
