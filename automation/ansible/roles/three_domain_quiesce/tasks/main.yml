@@ -17,6 +17,7 @@
       - incident-agent-worker
       - incident-webhook
       - incident-viewer
+      - incident-viewer-frontend
       - --namespace
       - "{{ incident_platform_namespace }}"
       - --ignore-not-found

@@ -209,6 +209,7 @@ make render-observability
 make render-chaos-mesh
 make render-stategraph
 make render-incident-platform
+make render-viewer-frontend
 ```
 
 구성된 development inventory에 배포하고 검증:
@@ -217,6 +218,8 @@ make render-incident-platform
 make deploy-stategraph
 make deploy-incident-platform
 make verify-incident-platform
+make deploy-viewer-frontend
+make verify-viewer-frontend
 make deploy-three-domain
 ```
 
@@ -226,13 +229,22 @@ Controlled fault는 development 환경에서만 명시적으로 승인해 실행
 make evaluate-checkout-oom CONFIRM_CONTROLLED_FAULT=yes
 ```
 
-Viewer는 기본적으로 deterministic fixture를 사용한다. live API를 읽을 때 bearer token은
-browser에 노출하지 않고 server-side BFF의 `VIEWER_API_TOKEN`으로 설정한다.
+배포된 Viewer frontend와 API는 RCA control cluster의 `ClusterIP`로만 노출된다.
+Ingress, NodePort와 LoadBalancer는 만들지 않으며, browser에는 API bearer token을
+노출하지 않는다. 로컬에서 확인할 때는 RCA control VM을 거치는 다음 SSH tunnel만
+열고 `http://127.0.0.1:13100`에 접속한다.
 
 ```bash
-npm --prefix frontend/viewer install
-npm --prefix frontend/viewer run dev
+ssh -i ~/.ssh/google_compute_engine \
+  -L 13100:127.0.0.1:13100 \
+  <VM_USER>@<RCA_CONTROL_PUBLIC_IP> \
+  'sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf \
+    --namespace incident-platform port-forward \
+    service/incident-viewer-frontend 13100:3100 --address=127.0.0.1'
 ```
+
+이 tunnel은 Viewer frontend에만 도달한다. frontend의 same-origin BFF가 cluster 내부
+Viewer API를 호출하므로 별도의 로컬 API tunnel이나 browser token 설정은 필요 없다.
 
 ## Repository Structure
 

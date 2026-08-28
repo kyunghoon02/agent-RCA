@@ -20,7 +20,9 @@ EVIDENCE_GATE_POLICY ?= oom-signature-restart-v2
 	verify-observability deploy-online-boutique verify-online-boutique \
 	render-chaos-mesh deploy-chaos-mesh verify-chaos-mesh \
 	render-stategraph deploy-stategraph verify-stategraph \
-	deploy-incident-platform verify-incident-platform evaluate-checkout-oom \
+	render-viewer-frontend build-viewer-frontend-image \
+	deploy-incident-platform verify-incident-platform \
+	deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom \
 	deploy-three-domain summarize-checkout-oom
 
 bootstrap-dev:
@@ -69,11 +71,17 @@ render-stategraph:
 render-incident-platform:
 	kubectl kustomize platform/incident-platform
 
+render-viewer-frontend:
+	kubectl kustomize platform/incident-viewer-frontend
+
 build-online-boutique-otel-images:
 	GCLOUD_BIN=$(GCLOUD_BIN) tools/build_online_boutique_otel_images.sh
 
 build-incident-platform-image:
 	GCLOUD_BIN=$(GCLOUD_BIN) tools/build_incident_platform_image.sh
+
+build-viewer-frontend-image:
+	GCLOUD_BIN=$(GCLOUD_BIN) tools/build_viewer_frontend_image.sh
 
 render-observability:
 	helm template local-path-provisioner \
@@ -156,6 +164,12 @@ ansible-syntax:
 		automation/ansible/playbooks/verify-incident-platform.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/deploy-incident-viewer-frontend.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/verify-incident-viewer-frontend.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/evaluate-checkout-oom.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
@@ -224,6 +238,16 @@ verify-incident-platform:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-incident-platform.yml
+
+deploy-viewer-frontend:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		automation/ansible/playbooks/deploy-incident-viewer-frontend.yml
+
+verify-viewer-frontend:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		automation/ansible/playbooks/verify-incident-viewer-frontend.yml
 
 deploy-three-domain:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \

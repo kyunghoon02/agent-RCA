@@ -38,6 +38,8 @@ make verify-observability
 make render-online-boutique
 make deploy-online-boutique
 make verify-online-boutique
+make deploy-viewer-frontend
+make verify-viewer-frontend
 make deploy-three-domain
 ```
 
@@ -77,6 +79,13 @@ than deleted; their PVCs remain Bound.
 The target credential is a lab-scoped, long-lived ServiceAccount token stored
 only in Kubernetes Secrets. Its RBAC denies Secret reads, but it still requires
 explicit rotation and is not a production workload-identity design.
+
+The Incident Viewer frontend runs only in the RCA control domain. Its Service is
+`ClusterIP`, the deployment automation rejects any Incident Platform Ingress,
+and its NetworkPolicy denies inbound Pod traffic while allowing only DNS and the
+private Viewer API. `make deploy-viewer-frontend` updates this component without
+rewiring the other two domains. Access it through an SSH-wrapped Kubernetes
+port-forward; do not add a public firewall rule or Service type.
 
 The bootstrap is intentionally fail-fast on a host other than Ubuntu 24.04
 x86_64 with cgroup v2. Package and binary versions plus download checksums are

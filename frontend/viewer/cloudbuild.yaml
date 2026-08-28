@@ -1,0 +1,22 @@
+steps:
+  - id: build-agent-rca-viewer
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --platform=linux/amd64
+      - --build-arg=NEXT_PUBLIC_VIEWER_API_BASE_URL=/api/viewer
+      - --build-arg=NEXT_PUBLIC_VIEWER_ENVIRONMENT=gcp-dev
+      - --tag=${_REGISTRY_PREFIX}/agent-rca-viewer:${_IMAGE_TAG}
+      - .
+
+images:
+  - ${_REGISTRY_PREFIX}/agent-rca-viewer:${_IMAGE_TAG}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _REGISTRY_PREFIX: invalid.example/agent-rca-dev-workloads
+  _IMAGE_TAG: viewer-local
+
+timeout: 1200s

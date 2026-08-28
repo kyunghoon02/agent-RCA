@@ -1,0 +1,146 @@
+---
+- name: Wait for the private Viewer frontend Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/{{ incident_platform_viewer_frontend_deployment }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+
+- name: Read the Viewer frontend Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment {{ incident_platform_viewer_frontend_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_viewer_frontend_deployment_result
+  changed_when: false
+
+- name: Require a private digest-pinned Viewer frontend
+  ansible.builtin.assert:
+    that:
+      - (incident_viewer_frontend_deployment_result.stdout | from_json).status.readyReplicas == 1
+      - >-
+        incident_platform.viewer_frontend.image_digest in
+        (incident_viewer_frontend_deployment_result.stdout | from_json).spec.template.spec.containers[0].image
+      - >-
+        (incident_viewer_frontend_deployment_result.stdout | from_json).spec.template.spec.serviceAccountName
+        == 'incident-viewer-frontend'
+      - >-
+        not ((incident_viewer_frontend_deployment_result.stdout | from_json).spec.template.spec.automountServiceAccountToken)
+      - >-
+        (incident_viewer_frontend_deployment_result.stdout | from_json).spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+        | bool
+      - >-
+        ((incident_viewer_frontend_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'VIEWER_API_ORIGIN')
+        | map(attribute='value') | first)
+        == 'http://incident-viewer.incident-platform.svc.cluster.local:8080'
+      - >-
+        ((incident_viewer_frontend_deployment_result.stdout | from_json).spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'VIEWER_API_TOKEN')
+        | map(attribute='valueFrom.secretKeyRef') | first)
+        == {'name': incident_platform_viewer_secret, 'key': 'api-token'}
+    fail_msg: The Viewer frontend image, identity, or BFF credential boundary drifted.
+
+- name: Read the private Viewer frontend Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ incident_platform_viewer_frontend_service }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_viewer_frontend_service_result
+  changed_when: false
+
+- name: Require an internal-only Viewer frontend Service
+  ansible.builtin.assert:
+    that:
+      - (incident_viewer_frontend_service_result.stdout | from_json).spec.type == 'ClusterIP'
+      - (incident_viewer_frontend_service_result.stdout | from_json).spec.ports | length == 1
+      - (incident_viewer_frontend_service_result.stdout | from_json).spec.ports[0].port == 3100
+      - >-
+        (incident_viewer_frontend_service_result.stdout | from_json).spec.ports[0].nodePort
+        is not defined
+    fail_msg: The Viewer frontend must not expose NodePort or LoadBalancer access.
+
+- name: Reject Incident Platform Ingress resources
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get ingress --namespace {{ incident_platform_namespace }} --output json
+  register: incident_viewer_frontend_ingresses
+  changed_when: false
+
+- name: Require no public Viewer frontend Ingress
+  ansible.builtin.assert:
+    that:
+      - (incident_viewer_frontend_ingresses.stdout | from_json)['items'] | length == 0
+    fail_msg: An Incident Platform Ingress exists; the Viewer must remain private.
+
+- name: Read the Viewer frontend NetworkPolicy
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get networkpolicy {{ incident_platform_viewer_frontend_network_policy }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_viewer_frontend_network_policy_result
+  changed_when: false
+
+- name: Require deny-by-default ingress and bounded Viewer API egress
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((incident_viewer_frontend_network_policy_result.stdout | from_json).spec.ingress
+        | default([])) == []
+      - >-
+        (incident_viewer_frontend_network_policy_result.stdout | from_json).spec.egress
+        | length == 2
+      - >-
+        ((incident_viewer_frontend_network_policy_result.stdout | from_json).spec.egress[1].to[0].podSelector.matchLabels['app.kubernetes.io/name'])
+        == 'incident-viewer'
+      - >-
+        (incident_viewer_frontend_network_policy_result.stdout | from_json).spec.egress[1].ports
+        == [{'protocol': 'TCP', 'port': 8080}]
+    fail_msg: The Viewer frontend network boundary drifted.
+
+- name: Verify the Viewer frontend health endpoint through its Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ incident_platform_namespace
+    }}/services/http:{{ incident_platform_viewer_frontend_service }}:3100/proxy/api/healthz
+  register: incident_viewer_frontend_health
+  changed_when: false
+
+- name: Require a healthy Viewer frontend
+  ansible.builtin.assert:
+    that:
+      - (incident_viewer_frontend_health.stdout | from_json).status == 'ok'
+    fail_msg: The Viewer frontend health endpoint is unavailable.
+
+- name: Verify the rendered Incident view through its private Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ incident_platform_namespace
+    }}/services/http:{{ incident_platform_viewer_frontend_service }}:3100/proxy/incidents
+  register: incident_viewer_frontend_page
+  changed_when: false
+
+- name: Require the production Viewer page
+  ansible.builtin.assert:
+    that:
+      - "'<html' in incident_viewer_frontend_page.stdout"
+      - "'Agent RCA' in incident_viewer_frontend_page.stdout"
+    fail_msg: The private Viewer Service did not return the production page.
+
+- name: Verify the in-cluster BFF can query the Viewer API
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    '/api/v1/namespaces/{{ incident_platform_namespace
+    }}/services/http:{{ incident_platform_viewer_frontend_service
+    }}:3100/proxy/api/viewer/api/v1/incidents?limit=1'
+  register: incident_viewer_frontend_bff_query
+  changed_when: false
+  no_log: true
+
+- name: Require a live schema-versioned Viewer BFF response
+  ansible.builtin.assert:
+    that:
+      - (incident_viewer_frontend_bff_query.stdout | from_json).schema_version == '1.0.0'
+      - (incident_viewer_frontend_bff_query.stdout | from_json)['items'] | length >= 0
+    fail_msg: The Viewer frontend BFF cannot reach the private Viewer API.

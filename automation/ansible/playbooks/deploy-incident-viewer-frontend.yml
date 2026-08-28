@@ -1,0 +1,13 @@
+---
+- name: Deploy and verify the private Incident Viewer frontend
+  hosts: rca_control
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/default-profile.yml
+    - ../../../platform/versions.yaml
+
+  roles:
+    - role: incident_viewer_frontend_stack
+    - role: incident_viewer_frontend_verify

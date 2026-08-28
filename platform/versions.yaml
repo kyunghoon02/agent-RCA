@@ -114,6 +114,12 @@ incident_platform:
     concurrency_policy: Forbid
     image_tag: runtime-5370ce094cb0
     image_digest: sha256:c397235eb1d0b9d2d7176cde4c9ee96e8c863087c70b160789a7c05617b36164
+  viewer_frontend:
+    node_version: 22.17.1
+    image_tag: viewer-76d128d73ac7
+    image_digest: sha256:70ce94733eff4fd7bec8c4edcdcd0ca86b0a02b5bb73cd1f267054be93ca8276
+    service_type: ClusterIP
+    port: 3100
   webhook:
     server: gunicorn
     server_version: 26.0.0

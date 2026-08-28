@@ -169,6 +169,11 @@ incident_platform_viewer_deployment: incident-viewer
 incident_platform_viewer_service: incident-viewer
 incident_platform_viewer_secret: incident-viewer-auth
 incident_platform_viewer_database_role: incident_viewer
+incident_platform_viewer_frontend_deployment: incident-viewer-frontend
+incident_platform_viewer_frontend_service: incident-viewer-frontend
+incident_platform_viewer_frontend_network_policy: incident-viewer-frontend-network
+incident_platform_viewer_frontend_remote_directory: /etc/agent-rca/incident-viewer-frontend
+incident_platform_viewer_frontend_remote_manifest: /etc/agent-rca/incident-viewer-frontend/runtime.yaml
 incident_platform_agent_runtime_enabled: "{{ incident_platform.agent_worker.enabled }}"
 incident_platform_agent_worker_deployment: incident-agent-worker
 incident_platform_agent_secret: incident-agent-auth

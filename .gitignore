@@ -118,6 +118,7 @@ evaluation/runs/private/
 # Viewer frontend
 frontend/viewer/node_modules/
 frontend/viewer/.next/
+frontend/viewer/.next-*/
 frontend/viewer/next-env.d.ts
 frontend/viewer/*.tsbuildinfo
 

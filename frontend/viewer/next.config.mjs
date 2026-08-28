@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: "standalone",
   // The Viewer is read-only: it never posts, and it never embeds remote assets.
   poweredByHeader: false,
   /*

@@ -1181,6 +1181,15 @@ def validate_incident_platform_manifest() -> None:
                 "sha256:c397235eb1d0b9d2d7176cde4c9ee96e8c863087c70b160789a7c05617b36164"
             ),
         },
+        "viewer_frontend": {
+            "node_version": "22.17.1",
+            "image_tag": "viewer-76d128d73ac7",
+            "image_digest": (
+                "sha256:70ce94733eff4fd7bec8c4edcdcd0ca86b0a02b5bb73cd1f267054be93ca8276"
+            ),
+            "service_type": "ClusterIP",
+            "port": 3100,
+        },
         "webhook": {
             "server": "gunicorn",
             "server_version": "26.0.0",
@@ -1842,6 +1851,129 @@ def validate_incident_platform_manifest() -> None:
         raise ValidationFailure("Incident webhook WSGI server must remain pinned")
 
 
+def validate_incident_viewer_frontend_manifest() -> None:
+    directory = ROOT / "platform" / "incident-viewer-frontend"
+    kustomization = load_yaml_documents(directory / "kustomization.yaml")[0]
+    if kustomization.get("resources") != ["runtime.yaml"]:
+        raise ValidationFailure("Viewer frontend Kustomize resource set drifted")
+
+    documents = load_yaml_documents(directory / "runtime.yaml")
+    if any(document.get("kind") in {"Ingress", "Secret"} for document in documents):
+        raise ValidationFailure("Viewer frontend must not commit secrets or public ingress")
+    if [document.get("kind") for document in documents] != [
+        "ServiceAccount",
+        "Service",
+        "Deployment",
+        "NetworkPolicy",
+    ]:
+        raise ValidationFailure("Viewer frontend private runtime resource set drifted")
+
+    service_account, service, deployment, network_policy = documents
+    if service_account.get("automountServiceAccountToken") is not False:
+        raise ValidationFailure("Viewer frontend ServiceAccount token must stay disabled")
+
+    service_spec = service.get("spec", {})
+    service_ports = service_spec.get("ports", [])
+    if (
+        service_spec.get("type") != "ClusterIP"
+        or service_spec.get("selector")
+        != {"app.kubernetes.io/name": "incident-viewer-frontend"}
+        or service_ports
+        != [{"name": "http", "port": 3100, "targetPort": "http"}]
+        or any("nodePort" in port for port in service_ports)
+    ):
+        raise ValidationFailure("Viewer frontend must expose only private port 3100")
+
+    pod_spec = deployment["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    env = {item["name"]: item for item in container.get("env", [])}
+    if (
+        deployment["spec"].get("replicas") != 1
+        or pod_spec.get("serviceAccountName") != "incident-viewer-frontend"
+        or pod_spec.get("automountServiceAccountToken") is not False
+        or pod_spec.get("imagePullSecrets") != [{"name": "artifact-registry"}]
+        or container.get("image") != "agent-rca-viewer@sha256:" + "0" * 64
+        or container.get("ports")
+        != [{"name": "http", "containerPort": 3100, "protocol": "TCP"}]
+        or container.get("startupProbe", {}).get("httpGet")
+        != {"path": "/api/healthz", "port": "http"}
+        or container.get("readinessProbe", {}).get("httpGet")
+        != {"path": "/api/healthz", "port": "http"}
+        or container.get("livenessProbe", {}).get("httpGet")
+        != {"path": "/api/healthz", "port": "http"}
+        or container.get("securityContext", {}).get("readOnlyRootFilesystem")
+        is not True
+    ):
+        raise ValidationFailure("Viewer frontend Pod safety boundary drifted")
+    if (
+        env.get("NEXT_PUBLIC_VIEWER_API_BASE_URL", {}).get("value") != "/api/viewer"
+        or env.get("VIEWER_API_ORIGIN", {}).get("value")
+        != "http://incident-viewer.incident-platform.svc.cluster.local:8080"
+        or env.get("VIEWER_API_TOKEN", {})
+        .get("valueFrom", {})
+        .get("secretKeyRef")
+        != {"name": "incident-viewer-auth", "key": "api-token"}
+    ):
+        raise ValidationFailure("Viewer frontend BFF credential boundary drifted")
+
+    policy_spec = network_policy.get("spec", {})
+    if (
+        set(policy_spec.get("policyTypes", [])) != {"Ingress", "Egress"}
+        or policy_spec.get("ingress") != []
+        or len(policy_spec.get("egress", [])) != 2
+        or policy_spec["egress"][1].get("to", [])[0].get("podSelector")
+        != {"matchLabels": {"app.kubernetes.io/name": "incident-viewer"}}
+        or policy_spec["egress"][1].get("ports")
+        != [{"protocol": "TCP", "port": 8080}]
+    ):
+        raise ValidationFailure("Viewer frontend private network boundary drifted")
+
+    dockerfile = (ROOT / "frontend" / "viewer" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    next_config = (ROOT / "frontend" / "viewer" / "next.config.mjs").read_text(
+        encoding="utf-8"
+    )
+    build_script = (ROOT / "tools" / "build_viewer_frontend_image.sh").read_text(
+        encoding="utf-8"
+    )
+    stack_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "incident_viewer_frontend_stack"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    verify_role = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "incident_viewer_frontend_verify"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    required_tokens = {
+        "node:22.17.1-bookworm-slim@sha256:": dockerfile,
+        'output: "standalone"': next_config,
+        "agent-rca-viewer": build_script,
+        "digest: {{ incident_platform.viewer_frontend.image_digest }}": stack_role,
+        "service_type == 'ClusterIP'": stack_role,
+        "Reject Incident Platform Ingress resources": verify_role,
+        "is not defined": verify_role,
+        "incident-viewer.incident-platform.svc.cluster.local:8080": verify_role,
+    }
+    missing_tokens = sorted(
+        token for token, source in required_tokens.items() if token not in source
+    )
+    if missing_tokens:
+        raise ValidationFailure(
+            f"Viewer frontend deployment boundary is incomplete: {missing_tokens}"
+        )
+
+
 def validate_observability_values() -> None:
     directory = ROOT / "platform" / "observability"
     local_path = load_yaml_documents(directory / "local-path-values.yaml")[0]
@@ -2394,6 +2526,7 @@ def main() -> None:
     validate_krca_runtime_config()
     validate_stategraph_manifest()
     validate_incident_platform_manifest()
+    validate_incident_viewer_frontend_manifest()
     validate_three_domain_runtime()
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
@@ -2406,6 +2539,7 @@ def main() -> None:
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
     print("- opt-in Kubernetes 1.35 Chaos Mesh evaluation boundaries are consistent")
     print("- private three-domain telemetry, RCA control, and fault-target boundaries are consistent")
+    print("- private Incident Viewer frontend and same-origin BFF boundaries are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- the development-only checkout OOM scenario and restoration gates are valid")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")

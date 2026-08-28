@@ -11,4 +11,6 @@
   roles:
     - role: stategraph_verify
     - role: incident_platform_stack
+    - role: incident_viewer_frontend_stack
     - role: incident_platform_verify
+    - role: incident_viewer_frontend_verify
