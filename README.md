@@ -199,6 +199,9 @@ memory ratio는 보조 관측으로 남긴다. 목표 평가는 최소 15개 sce
 - 세 failure domain은 분리됐지만 각 도메인은 single-node이며 observability domain 자체는 HA가 아니다.
 - VM1의 기존 observability stack은 control-plane queue/dashboard 관측용 shadow로 남아 있다.
   control telemetry까지 VM3로 통합한 뒤 제거 여부를 별도로 결정해야 한다.
+- fault target의 `forwarder` profile도 전환기에는 base Prometheus/Loki/Tempo/Grafana
+  구성 요소를 유지한다. target telemetry의 authoritative 저장·조회는 VM3지만,
+  경량 forwarder-only profile과 기존 local telemetry PVC 정리는 후속 작업이다.
 - PostgreSQL, Neo4j와 local PV의 backup/restore 및 HA가 구현되지 않았다.
 - fault-target 원격 조회 credential은 제한된 RBAC의 장기 ServiceAccount token이며,
   production workload identity와 자동 rotation은 아직 구현되지 않았다.

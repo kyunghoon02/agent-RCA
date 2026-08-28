@@ -5,6 +5,11 @@ reference runtime. The same base supports `local`, `forwarder`, and `receiver`
 profiles. The fault target forwards selected metric, log, and trace data; the
 separate observability domain stores and queries it.
 
+The current `forwarder` profile is transitional: it keeps the base local stack
+installed while sending authoritative target telemetry to the receiver. A
+later lightweight profile can remove unused target-local stores only after
+their PVC retention or deletion is reviewed explicitly.
+
 | Release | Purpose | Development boundary |
 |---|---|---|
 | local-path-provisioner | Dynamic host-path PV provisioning | `Retain`, not default, VM boot disk only |
