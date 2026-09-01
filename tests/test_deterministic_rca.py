@@ -168,6 +168,26 @@ class DeterministicRCAFixtureTests(unittest.TestCase):
         self.assertEqual(decision.status, "ABSTAIN")
         self.assertEqual(oom_evaluation.status, "NOT_APPLICABLE")
 
+    def test_real_kubelet_backoff_event_proves_image_pull_failure(self) -> None:
+        def use_normalized_kubelet_event(drafts):
+            drafts[1]["facts"] = {
+                "message_code": "BackOff",
+                "image_pull_code": "ImagePullBackOff",
+            }
+
+        fixture, evidence = load_fixture(
+            FIXTURE_DIR / "image-pull.json",
+            use_normalized_kubelet_event,
+        )
+
+        decision = DeterministicRCAEngine().evaluate(evidence)
+
+        self.assertEqual(decision.status, fixture["expected_status"])
+        self.assertEqual(
+            decision.root_cause_id,
+            "kubernetes.image-pull-failure",
+        )
+
     def test_kernel_signal_from_an_untrusted_provider_does_not_apply(self) -> None:
         def use_untrusted_kernel_signal(drafts):
             for draft in drafts:

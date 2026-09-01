@@ -102,8 +102,9 @@ def main() -> int:
         "ground_truth": GROUND_TRUTH_ROOT / f"{evaluation_case_id}.json",
         "prediction": RUN_ROOT / f"{evaluation_case_id}.prediction.json",
         "result": RUN_ROOT / f"{evaluation_case_id}.result.json",
-        "observation": RUN_ROOT / f"{evaluation_case_id}.observation.json",
     }
+    if "observation" in artifacts:
+        paths["observation"] = RUN_ROOT / f"{evaluation_case_id}.observation.json"
     if "agent_result" in artifacts:
         paths.update(
             {

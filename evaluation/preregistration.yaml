@@ -15,6 +15,12 @@ amendments:
       - root-cause-labels
       - ground-truth-isolation
       - primary-rca-metrics
+  - reason: add-paymentservice-image-pull-scenario-before-first-runtime-evaluation
+    preserves:
+      - historical-oom-observations
+      - research-variant-ids
+      - ground-truth-isolation
+      - primary-rca-metrics
 
 research_questions:
   - id: rq1
@@ -154,6 +160,17 @@ evidence_ground_truth:
       minimum_matches: 1
       alternatives:
         - prometheus-restart-count-delta-for-same-pod-uid
+  controlled_image_pull_roles:
+    - role: image-pull-waiting-state
+      minimum_matches: 1
+      alternatives:
+        - kubernetes-pod-err-image-pull
+        - kubernetes-pod-image-pull-backoff
+    - role: matching-image-pull-event
+      minimum_matches: 1
+      alternatives:
+        - normalized-kubelet-err-image-pull-for-same-pod-uid
+        - normalized-kubelet-image-pull-backoff-for-same-pod-uid
 
 operational_metrics:
   - clean_environment_restore_seconds

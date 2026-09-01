@@ -123,6 +123,56 @@ def fixture_bundle(
     return {"incident": incident, "context": context, "evidence": evidence}, scenario
 
 
+def image_pull_fixture_bundle(*, mismatched_event_uid: bool = False) -> tuple[dict, dict]:
+    bundle, _ = fixture_bundle()
+    with (ROOT / "tests/fixtures/deterministic/image-pull.json").open() as handle:
+        fixture = json.load(handle)
+    drafts = fixture["evidence_drafts"]
+    drafts[1]["facts"] = {
+        "message_code": "BackOff",
+        "image_pull_code": "ImagePullBackOff",
+    }
+    if mismatched_event_uid:
+        drafts[1]["subject"]["uid"] = "different-image-pull-pod-uid"
+    incident_id = bundle["incident"]["incident_id"]
+    request = CollectionRequest(
+        request_id="req-controlled-image-pull-fixture",
+        incident_id=incident_id,
+        window=EvidenceWindow(
+            start="2026-08-12T00:30:00Z",
+            end="2026-08-12T05:00:00Z",
+        ),
+        scope=ResourceScope(
+            namespace="online-boutique",
+            resource_names=("paymentservice",),
+            resource_name_prefixes=("paymentservice-",),
+        ),
+        timeout_seconds=1,
+    )
+    evidence = [
+        EvidenceBuilder().build(
+            EvidenceDraft(**draft), request, collected_at=NOW
+        )
+        for draft in drafts
+    ]
+    subject = evidence[0]["subject"]
+    bundle["evidence"] = evidence
+    bundle["incident"]["source_entity"] = subject
+    bundle["incident"]["alert"]["name"] = (
+        "AgentRCAControlledPaymentImagePull"
+    )
+    bundle["incident"]["alert"]["labels"]["service"] = "paymentservice"
+    bundle["context"]["source_entity"] = subject
+    bundle["context"]["scope"]["entity_uids"] = [subject["uid"]]
+    bundle["context"]["evidence_ids"] = [
+        item["evidence_id"] for item in evidence
+    ]
+    scenario = yaml.safe_load(
+        (ROOT / "evaluation/scenarios/paymentservice-image-pull.yaml").read_text()
+    )
+    return bundle, scenario
+
+
 def with_agent_report(bundle: dict, *, cause_id: str) -> dict:
     copied = dict(bundle)
     context = copied["context"]
@@ -219,6 +269,51 @@ def with_failed_agent_run(bundle: dict) -> dict:
 
 
 class ControlledFaultEvaluationTests(unittest.TestCase):
+    def test_image_pull_snapshot_scores_normalized_state_and_event_roles(self) -> None:
+        bundle, scenario = image_pull_fixture_bundle()
+        bundle = with_agent_report(
+            bundle, cause_id="kubernetes.image-pull-failure"
+        )
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="b" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertNotIn("observation", artifacts)
+        self.assertEqual(
+            artifacts["prediction"]["predicted_root_cause_ids"],
+            ["kubernetes.image-pull-failure"],
+        )
+        self.assertEqual(
+            [
+                group["role"]
+                for group in artifacts["ground_truth"]["relevant_evidence_groups"]
+            ],
+            ["image-pull-waiting-state", "matching-image-pull-event"],
+        )
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["evidence_precision"], 1.0
+        )
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["evidence_recall"], 1.0
+        )
+
+    def test_image_pull_ground_truth_rejects_a_cross_uid_event(self) -> None:
+        bundle, scenario = image_pull_fixture_bundle(
+            mismatched_event_uid=True
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "one Pod UID"):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="b" * 64,
+                evaluated_at=NOW,
+            )
+
     def test_gate_rejected_agent_is_scored_as_failed_not_abstained(self) -> None:
         bundle, scenario = fixture_bundle()
         bundle = with_failed_agent_run(bundle)

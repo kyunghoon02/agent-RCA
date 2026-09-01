@@ -95,6 +95,25 @@ def warning_event() -> dict:
     }
 
 
+def real_kubelet_image_pull_event() -> dict:
+    event = warning_event()
+    event["reason"] = "BackOff"
+    event["message"] = (
+        'Back-off pulling image "registry.invalid/paymentservice:missing"'
+    )
+    return event
+
+
+def real_kubelet_failed_pull_event() -> dict:
+    event = warning_event()
+    event["reason"] = "Failed"
+    event["message"] = (
+        'Failed to pull image "registry.invalid/paymentservice:missing": '
+        "failed to pull and unpack image: failed to resolve image"
+    )
+    return event
+
+
 class KubernetesStateProviderTests(unittest.TestCase):
     def test_cluster_identity_is_required_from_trusted_configuration(self) -> None:
         with self.assertRaisesRegex(ValueError, "cluster_id"):
@@ -125,6 +144,41 @@ class KubernetesStateProviderTests(unittest.TestCase):
         self.assertEqual(state.facts["waiting_reason"], "ImagePullBackOff")
         self.assertNotIn("must-not-be-copied", str(state.facts))
         self.assertEqual(event.facts["message_code"], "ImagePullBackOff")
+
+    def test_real_kubelet_backoff_event_gets_a_stable_image_pull_code(self) -> None:
+        provider = KubernetesStateProvider(
+            StaticKubernetesClient(
+                pod_resource(),
+                [KubernetesEventPage((real_kubelet_image_pull_event(),))],
+            ),
+            KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
+        )
+
+        state, event = provider.collect(
+            contract_request(INCIDENT_ID, "checkoutservice")
+        ).items
+
+        self.assertEqual(state.facts["waiting_reason"], "ImagePullBackOff")
+        self.assertEqual(event.facts["message_code"], "BackOff")
+        self.assertEqual(event.facts["image_pull_code"], "ImagePullBackOff")
+
+    def test_real_kubelet_failed_pull_event_gets_err_image_pull_code(self) -> None:
+        provider = KubernetesStateProvider(
+            StaticKubernetesClient(
+                pod_resource(),
+                [KubernetesEventPage((real_kubelet_failed_pull_event(),))],
+            ),
+            KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
+        )
+
+        _, event = provider.collect(
+            contract_request(INCIDENT_ID, "checkoutservice")
+        ).items
+
+        self.assertEqual(event.facts["message_code"], "Failed")
+        self.assertEqual(event.facts["image_pull_code"], "ErrImagePull")
 
     def test_missing_required_configmap_is_explicit_state(self) -> None:
         provider = KubernetesStateProvider(

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:controlled-image-pull-scenario",
+  "title": "Controlled Image Pull Fault Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "fault",
+    "workload",
+    "alert",
+    "expected",
+    "restoration"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "single_node_allowed"],
+      "properties": {
+        "class": {"const": "development"},
+        "single_node_allowed": {"const": true}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "kind", "name", "container"],
+      "properties": {
+        "namespace": {"const": "online-boutique"},
+        "kind": {"const": "Deployment"},
+        "name": {"const": "paymentservice"},
+        "container": {"const": "server"}
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "ready_replicas", "fresh_pod_restart_count"],
+      "properties": {
+        "image": {
+          "const": "us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice:v0.10.6"
+        },
+        "ready_replicas": {"const": 1},
+        "fresh_pod_restart_count": {"const": 0}
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "image", "observation_seconds", "maximum_active_seconds"],
+      "properties": {
+        "type": {"const": "image-reference"},
+        "image": {"const": "registry.invalid/agent-rca/paymentservice:missing"},
+        "observation_seconds": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 120
+        },
+        "maximum_active_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 300
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner", "profile", "seed", "synthetic_marker"],
+      "properties": {
+        "runner": {"const": "none"},
+        "profile": {"const": "normal"},
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "synthetic_marker": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{8,64}$"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "service", "rca_enabled", "agent_rca_enabled"],
+      "properties": {
+        "name": {"const": "AgentRCAControlledPaymentImagePull"},
+        "service": {"const": "paymentservice"},
+        "rca_enabled": {"const": "true"},
+        "agent_rca_enabled": {"const": "true"}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "root_cause_ids",
+        "same_pod_uid_required",
+        "evidence_predicates"
+      ],
+      "properties": {
+        "outcome": {"const": "ROOT_CAUSE"},
+        "root_cause_ids": {"const": ["kubernetes.image-pull-failure"]},
+        "same_pod_uid_required": {"const": true},
+        "evidence_predicates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["waiting_reasons", "event_codes"],
+          "properties": {
+            "waiting_reasons": {
+              "const": ["ErrImagePull", "ImagePullBackOff"]
+            },
+            "event_codes": {
+              "const": ["ErrImagePull", "ImagePullBackOff"]
+            }
+          }
+        }
+      }
+    },
+    "restoration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restore_exact_image", "ready_replicas", "fresh_pod_restart_count"],
+      "properties": {
+        "restore_exact_image": {"const": true},
+        "ready_replicas": {"const": 1},
+        "fresh_pod_restart_count": {"const": 0}
+      }
+    }
+  }
+}

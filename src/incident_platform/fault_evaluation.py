@@ -173,6 +173,68 @@ def _controlled_oom_relevant_evidence_groups(
     )
 
 
+def _controlled_image_pull_relevant_evidence_groups(
+    evidence: Sequence[Mapping[str, Any]],
+    scenario: Mapping[str, Any],
+) -> Tuple[Dict[str, Any], ...]:
+    predicates = scenario["expected"]["evidence_predicates"]
+    waiting_reasons = set(predicates["waiting_reasons"])
+    event_codes = set(predicates["event_codes"])
+    states = [
+        item
+        for item in evidence
+        if item.get("source") == "kubernetes"
+        and item.get("kind") == "resource-state"
+        and item.get("subject", {}).get("kind") == "Pod"
+        and bool(item.get("subject", {}).get("uid"))
+        and _facts(item).get("waiting_reason") in waiting_reasons
+    ]
+    for state in states:
+        matching_states = [
+            item
+            for item in states
+            if _same_pod_uid(state, item)
+        ]
+        matching_events = [
+            item
+            for item in evidence
+            if item.get("source") == "kubernetes"
+            and item.get("kind") == "kubernetes-event"
+            and (
+                _facts(item).get("image_pull_code") in event_codes
+                or _facts(item).get("message_code") in event_codes
+            )
+            and _same_pod_uid(state, item)
+        ]
+        if matching_events:
+            return (
+                {
+                    "role": "image-pull-waiting-state",
+                    "acceptable_evidence_ids": list(
+                        dict.fromkeys(
+                            str(item["evidence_id"])
+                            for item in matching_states
+                        )
+                    ),
+                    "minimum_matches": 1,
+                },
+                {
+                    "role": "matching-image-pull-event",
+                    "acceptable_evidence_ids": list(
+                        dict.fromkeys(
+                            str(item["evidence_id"])
+                            for item in matching_events
+                        )
+                    ),
+                    "minimum_matches": 1,
+                },
+            )
+    raise ContractViolation(
+        "controlled image-pull Ground Truth requires a Pod waiting state and "
+        "matching normalized kubelet Event for one Pod UID"
+    )
+
+
 def _select_controlled_oom_ground_truth_items(
     evidence: Sequence[Mapping[str, Any]],
     scenario: Mapping[str, Any],
@@ -372,7 +434,21 @@ def build_controlled_fault_evaluation(
 ) -> Dict[str, Dict[str, Any]]:
     """Build Ground Truth plus separate baseline and Agent score artifacts."""
 
-    validate_contract("controlled-fault-scenario.schema.json", scenario)
+    expected_causes = tuple(
+        scenario.get("expected", {}).get("root_cause_ids", ())
+    )
+    if expected_causes == ("kubernetes.container-oomkilled",):
+        scenario_kind = "oom"
+        validate_contract("controlled-fault-scenario.schema.json", scenario)
+    elif expected_causes == ("kubernetes.image-pull-failure",):
+        scenario_kind = "image-pull"
+        validate_contract(
+            "controlled-image-pull-scenario.schema.json", scenario
+        )
+    else:
+        raise ContractViolation(
+            "controlled fault evaluation has no registered scenario handler"
+        )
     if not isinstance(scenario_sha256, str) or re.fullmatch(
         r"[0-9a-f]{64}", scenario_sha256
     ) is None:
@@ -429,12 +505,18 @@ def build_controlled_fault_evaluation(
         )
     frozen_evidence = [by_id[item] for item in context["evidence_ids"]]
 
-    selected_items = _select_controlled_oom_ground_truth_items(
-        frozen_evidence, scenario
-    )
-    relevant_groups = _controlled_oom_relevant_evidence_groups(
-        frozen_evidence, scenario, selected_items
-    )
+    selected_items = None
+    if scenario_kind == "oom":
+        selected_items = _select_controlled_oom_ground_truth_items(
+            frozen_evidence, scenario
+        )
+        relevant_groups = _controlled_oom_relevant_evidence_groups(
+            frozen_evidence, scenario, selected_items
+        )
+    else:
+        relevant_groups = _controlled_image_pull_relevant_evidence_groups(
+            frozen_evidence, scenario
+        )
     relevant_ids = tuple(
         dict.fromkeys(
             evidence_id
@@ -486,21 +568,21 @@ def build_controlled_fault_evaluation(
         prediction,
         evaluated_at=evaluated_at,
     )
-    observation = _build_observation(
-        evaluation_case_id=evaluation_case_id,
-        scenario_id=scenario["scenario_id"],
-        incident_id=incident_id,
-        selected_items=selected_items,
-        prediction=prediction,
-        result=result,
-        observed_at=timestamp,
-    )
     artifacts = {
         "ground_truth": ground_truth,
         "prediction": prediction,
         "result": result,
-        "observation": observation,
     }
+    if selected_items is not None:
+        artifacts["observation"] = _build_observation(
+            evaluation_case_id=evaluation_case_id,
+            scenario_id=scenario["scenario_id"],
+            incident_id=incident_id,
+            selected_items=selected_items,
+            prediction=prediction,
+            result=result,
+            observed_at=timestamp,
+        )
     raw_report = bundle.get("report")
     raw_agent_run = bundle.get("agent_run")
     agent_run = None

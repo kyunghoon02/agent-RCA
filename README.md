@@ -145,8 +145,9 @@ control-domain Online Boutique는 삭제하지 않고 `0 replicas`로 내렸고 
 Chaos evaluation은 기존 v1.36 runtime을 제자리에서 내리지 않는다. Terraform의 기본값이
 꺼진 병렬 VM을 명시적으로 생성해 Kubernetes v1.35.8을 부트스트랩했고, Chaos Mesh 2.8.4는
 `online-boutique`만 대상으로 하는 namespace-scoped mode로 설치했다. `StressChaos` 기반
-checkoutservice OOM을 통제 실행으로 end-to-end 재현하고 자동 복구했으며, 현재 활성 fault는
-0개다. fault 실행은 별도 scenario 검토와 `CONFIRM_CONTROLLED_FAULT=yes` 승인을 요구한다.
+checkoutservice OOM과 잘못된 paymentservice image reference를 통제 실행으로 end-to-end
+재현하고 자동 복구했으며, 현재 활성 fault는 0개다. fault 실행은 별도 scenario 검토와
+`CONFIRM_CONTROLLED_FAULT=yes` 승인을 요구한다.
 
 이 runtime은 application/Kubernetes/Cilium fault 실험용이다. 각 failure domain이 여전히
 single-node이므로 production HA, zone 장애와 managed control-plane 장애를 증명하지 않는다.
@@ -161,6 +162,7 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 | Representative scenario | Evidence focus | Status |
 |---|---|---|
 | `checkoutservice` OOMKilled | exact OOM signature, same-UID restart, resource limit | role-based scorer v3 live: 최신 Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0` |
+| `paymentservice` ImagePullBackOff | waiting state, normalized kubelet Event, same Pod UID | controlled live run: Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0`; exact image restore와 Ready/restart `0` 확인 |
 | NetworkPolicy regression | Hubble drop, policy verdict와 change time | 계획 |
 | Deployment regression | RED metric, trace, log와 ReplicaSet revision | 계획 |
 | Load-only saturation | latency/error, CPU·memory와 change 부재 | 계획 |
@@ -172,8 +174,11 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 Ground Truth와 결합한다. 실제 Agent Variant C score와 결정론적 Variant A baseline은 서로
 다른 artifact로 저장된다. restart delta의 pre-fault 기준점은 30초 central scrape 두 번을
 포함하는 65초 settle 구간 뒤에 fault를 주어 고정한다. 목표는 최소 15개 scenario를 각각
-5회 반복하는 것이며, 한 번의 성공은 그 목표를 달성한 결과가 아니다. Gate rejection 한
-건도 `ABSTAIN`으로 바꾸지 않고 Agent `FAILED`, Top-1 `0.0` artifact로 별도 보존했다.
+5회 반복하는 것이며, 한 번의 성공은 그 목표를 달성한 결과가 아니다. 첫 ImagePull 실험에서
+실제 kubelet `Failed` Event의 pull 실패 message를 안정된 `ErrImagePull` code로 정규화하지
+못해 발생한 Gate rejection은 `ABSTAIN`으로 바꾸지 않고 Agent `FAILED`, Top-1 `0.0`
+artifact로 보존했다. 정규화 규칙을 보완한 뒤 새 Incident로 재실행한 결과만 성공 run으로
+기록했다.
 Agent 후보 선택은 등록된 proof pair를 우선 보존하고, Gate는 Agent가 실제로 인용한
 Evidence만으로 해당 `cause_id` 조건을 다시 평가한다. 독립 관측 channel은 provider 이름이
 아니라 `source + kind`로 구분한다. Ground Truth schema `1.1.0`은 causal role마다 동등한
@@ -199,9 +204,9 @@ OOM은 `exact-oom-signature` 역할의 대안이며 둘 중 하나면 충족되�
 - Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
-- OOM 외 fault matrix, no-fault control과 반복 평가가 완료되지 않았다.
+- OOM과 ImagePullBackOff 외 fault matrix, no-fault control과 반복 평가가 완료되지 않았다.
 - 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
-- OOM 한 종류의 최신 단일 실행만 role-based citation score를 통과했으며, 반복 실행과 다른 fault의 동일 검증은 아직 없다.
+- OOM과 ImagePullBackOff는 각각 최신 단일 실행만 role-based citation score를 통과했으며, 반복 실행으로 재현성을 검증하지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start

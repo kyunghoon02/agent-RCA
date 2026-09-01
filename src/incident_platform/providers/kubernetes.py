@@ -1221,6 +1221,9 @@ class KubernetesStateProvider:
                     else None
                 ),
             }
+            image_pull_code = self._image_pull_code(reason, message)
+            if image_pull_code is not None:
+                facts["image_pull_code"] = image_pull_code
             self._add_missing_reference(facts, message)
             subject = {
                 "cluster_id": self._cluster_id,
@@ -1256,6 +1259,33 @@ class KubernetesStateProvider:
                 )
             )
         return tuple(drafts), truncated
+
+    @staticmethod
+    def _image_pull_code(
+        reason: Optional[str], message: Optional[str]
+    ) -> Optional[str]:
+        """Normalize kubelet image-pull Events without copying registry details."""
+
+        candidate = message or ""
+        if "ImagePullBackOff" in candidate:
+            return "ImagePullBackOff"
+        if "ErrImagePull" in candidate:
+            return "ErrImagePull"
+        lowered = candidate.lower()
+        if reason == "BackOff" and "pulling image" in lowered:
+            return "ImagePullBackOff"
+        if reason == "Failed" and any(
+            marker in lowered
+            for marker in (
+                "failed to pull image",
+                "failed to pull and unpack image",
+                "failed to resolve image",
+            )
+        ):
+            return "ErrImagePull"
+        if reason in {"ErrImagePull", "ImagePullBackOff"}:
+            return reason
+        return None
 
     @staticmethod
     def _event_time(event: Mapping[str, Any]) -> datetime:

@@ -208,7 +208,10 @@ class ImagePullRule:
                 for item in evidence
                 if item.get("source") == "kubernetes"
                 and item.get("kind") == "kubernetes-event"
-                and _facts(item).get("message_code") in self._WAITING_REASONS
+                and (
+                    _facts(item).get("image_pull_code") in self._WAITING_REASONS
+                    or _facts(item).get("message_code") in self._WAITING_REASONS
+                )
                 and _same_subject(state, item)
             ]
             if events:

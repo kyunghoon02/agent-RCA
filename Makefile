@@ -23,6 +23,7 @@ EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
 	render-viewer-frontend build-viewer-frontend-image \
 	deploy-incident-platform verify-incident-platform \
 	deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom \
+	evaluate-payment-image-pull \
 	deploy-three-domain smoke-krca-coverage summarize-checkout-oom
 
 bootstrap-dev:
@@ -177,6 +178,11 @@ ansible-syntax:
 		-i automation/ansible/inventories/dev.example.yml \
 		-i automation/ansible/inventories/chaos-eval.example.yml \
 		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/evaluate-payment-image-pull.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/dev.example.yml \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
 		--syntax-check automation/ansible/playbooks/deploy-three-domain.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
@@ -278,6 +284,17 @@ evaluate-checkout-oom:
 		-i $(ANSIBLE_TARGET_INVENTORY) \
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/evaluate-checkout-oom.yml \
+		--extra-vars confirm_controlled_fault=yes \
+		--extra-vars controlled_fault_environment=development
+
+evaluate-payment-image-pull:
+	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
+		(echo "Refusing controlled fault: set CONFIRM_CONTROLLED_FAULT=yes" >&2; exit 2)
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/evaluate-payment-image-pull.yml \
 		--extra-vars confirm_controlled_fault=yes \
 		--extra-vars controlled_fault_environment=development
 

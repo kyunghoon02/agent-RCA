@@ -1247,9 +1247,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-9c99ff896aad",
+            "image_tag": "runtime-fd3ab3b6517c",
             "image_digest": (
-                "sha256:f5c0f72dc5500d4872b6933ef82e81f7bb813d3694a52dca507c684183ba4631"
+                "sha256:4ebb06b9161cbd7d1e128e3a890092d6ea51214d185a5123fa0bb4e0d6fcfbd7"
             ),
         },
         "viewer_frontend": {
@@ -2642,6 +2642,61 @@ def validate_controlled_fault_scenarios() -> None:
             f"controlled-fault safety boundary is incomplete: {missing_tokens}"
         )
 
+    image_pull_path = (
+        ROOT
+        / "evaluation"
+        / "scenarios"
+        / "paymentservice-image-pull.yaml"
+    )
+    image_pull = load_yaml_documents(image_pull_path)[0]
+    validate_instance(
+        schemas["controlled-image-pull-scenario.schema.json"],
+        image_pull,
+        registry,
+        "paymentservice-image-pull.yaml",
+    )
+    if image_pull["baseline"]["image"] != (
+        "us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/"
+        "paymentservice:v0.10.6"
+    ):
+        raise ValidationFailure("payment image-pull baseline image changed")
+    if image_pull["fault"] != {
+        "type": "image-reference",
+        "image": "registry.invalid/agent-rca/paymentservice:missing",
+        "observation_seconds": 30,
+        "maximum_active_seconds": 180,
+    }:
+        raise ValidationFailure("payment image-pull injection changed")
+    image_pull_harness = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "payment_image_pull_fault_harness"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    image_pull_safety_tokens = {
+        "confirm_controlled_fault",
+        "controlled_fault_environment",
+        "agent-rca-payment-image-pull-lock",
+        "remote fail-safe exact-image restoration watchdog",
+        "Apply the preregistered invalid paymentservice image",
+        "always:",
+        "Restore the exact paymentservice image",
+        "Require successful exact-image automatic restoration",
+    }
+    missing_image_pull_tokens = sorted(
+        token
+        for token in image_pull_safety_tokens
+        if token not in image_pull_harness
+    )
+    if missing_image_pull_tokens:
+        raise ValidationFailure(
+            "image-pull controlled-fault safety boundary is incomplete: "
+            f"{missing_image_pull_tokens}"
+        )
+
 
 def main() -> None:
     examples = validate_contracts()
@@ -2666,7 +2721,7 @@ def main() -> None:
     print("- private three-domain telemetry, RCA control, and fault-target boundaries are consistent")
     print("- private Incident Viewer frontend and same-origin BFF boundaries are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
-    print("- the development-only checkout OOM scenario and restoration gates are valid")
+    print("- the development-only OOM and image-pull scenarios and restoration gates are valid")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 
 
