@@ -85,11 +85,21 @@
       changed_when: false
       failed_when: false
 
+    - name: Check for an active no-fault control lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get configmap agent-rca-no-fault-control-lock
+        --namespace {{ online_boutique_namespace }}
+      register: payment_image_pull_no_fault_control_lock
+      changed_when: false
+      failed_when: false
+
     - name: Refuse concurrent or uncleared controlled faults
       ansible.builtin.assert:
         that:
           - payment_image_pull_existing_lock.rc != 0
           - payment_image_pull_existing_oom_lock.rc != 0
+          - payment_image_pull_no_fault_control_lock.rc != 0
         fail_msg: >-
           A controlled-fault lock already exists. Verify workload health before
           removing a stale lock or starting another fault.

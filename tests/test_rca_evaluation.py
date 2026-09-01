@@ -534,6 +534,32 @@ class RCAEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(result["metrics"]["abstention_correctness"], 1.0)
 
+    def test_correct_abstention_can_cite_normal_state_without_causal_scores(self) -> None:
+        result = evaluate_rca_case(
+            ground_truth(
+                expected_outcome="ABSTAIN",
+                expected_root_cause_ids=[],
+                relevant_evidence_ids=[],
+                provenance={
+                    "controlled_fault": False,
+                    "fault_manifest_sha256": None,
+                    "workload_profile": "normal",
+                    "workload_seed": 44,
+                    "change_applied": False,
+                },
+            ),
+            prediction(
+                outcome="ABSTAIN",
+                predicted_root_cause_ids=[],
+                cited_evidence_ids=["ev-deployment-state-0001"],
+            ),
+            evaluated_at=EVALUATED_AT,
+        )
+
+        self.assertIsNone(result["metrics"]["evidence_precision"])
+        self.assertIsNone(result["metrics"]["evidence_recall"])
+        self.assertEqual(result["metrics"]["abstention_correctness"], 1.0)
+
     def test_fault_with_no_citations_scores_zero_precision_and_recall(self) -> None:
         result = evaluate_rca_case(
             ground_truth(),

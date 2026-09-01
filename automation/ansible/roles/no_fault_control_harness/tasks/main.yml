@@ -1,0 +1,974 @@
+---
+- name: Require explicit no-fault control authorization
+  ansible.builtin.assert:
+    that:
+      - confirm_no_fault_control | default('') == 'yes'
+      - controlled_fault_environment | default('') == 'development'
+      - no_fault_control_scenario.environment.class == 'development'
+      - no_fault_control_scenario.change.type == 'none'
+      - no_fault_control_scenario.target.namespace == online_boutique_namespace
+      - no_fault_control_scenario.target.name == 'frontend'
+      - groups['fault_target'] | length == 1
+      - groups['observability_domain'] | length == 1
+      - groups['rca_control'] | length == 1
+    fail_msg: >-
+      The no-fault control creates synthetic traffic and an Agent evaluation
+      Incident. Run it only through the explicitly confirmed Make target.
+
+- name: Define bounded no-fault control runtime paths
+  ansible.builtin.set_fact:
+    no_fault_control_id: "no-fault-{{ ansible_facts.date_time.epoch }}"
+    no_fault_control_lock_name: agent-rca-no-fault-control-lock
+    no_fault_control_repo_root: "{{ playbook_dir }}/../../.."
+    no_fault_control_frontend_port: 18281
+    no_fault_control_frontend_remote_port: 28281
+    no_fault_control_stop_file: >-
+      /tmp/agent-rca-no-fault-{{ ansible_facts.date_time.epoch }}.stop
+    no_fault_control_workload_log: >-
+      /tmp/agent-rca-no-fault-{{ ansible_facts.date_time.epoch }}.json
+    no_fault_control_tunnel_log: >-
+      /tmp/agent-rca-no-fault-tunnel-{{ ansible_facts.date_time.epoch }}.log
+    no_fault_control_forward_log: >-
+      /tmp/agent-rca-no-fault-forward-{{ ansible_facts.date_time.epoch }}.log
+    no_fault_control_watchdog_log: >-
+      /tmp/agent-rca-no-fault-watchdog-{{ ansible_facts.date_time.epoch }}.log
+    no_fault_control_lock_created: false
+    no_fault_control_forward_started: false
+    no_fault_control_tunnel_started: false
+    no_fault_control_workload_started: false
+    no_fault_control_watchdog_started: false
+    no_fault_control_alert_submitted: false
+
+- name: Read all Online Boutique Deployments before the control window
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployments --namespace {{ online_boutique_namespace }} --output json
+  register: no_fault_control_initial_deployments
+  changed_when: false
+
+- name: Read all Online Boutique Pods before the control window
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get pods --namespace {{ online_boutique_namespace }} --output json
+  register: no_fault_control_initial_pods
+  changed_when: false
+
+- name: Hash the initial Deployment specification snapshot
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get deployments \
+      --namespace {{ online_boutique_namespace }} --output json \
+    | jq -S -c '[.items[] | {
+        name: .metadata.name,
+        generation: .metadata.generation,
+        replicas: .spec.replicas,
+        selector: .spec.selector,
+        template: .spec.template
+      }] | sort_by(.name)' \
+    | sha256sum | awk '{print $1}'
+  args:
+    executable: /bin/bash
+  register: no_fault_control_initial_deployment_hash
+  changed_when: false
+
+- name: Hash the initial Pod identity and restart snapshot
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get pods \
+      --namespace {{ online_boutique_namespace }} --output json \
+    | jq -S -c '[.items[] | {
+        name: .metadata.name,
+        uid: .metadata.uid,
+        phase: .status.phase,
+        deleting: (.metadata.deletionTimestamp // null),
+        containers: ([.status.containerStatuses[]? | {
+          name: .name,
+          ready: .ready,
+          restartCount: .restartCount,
+          imageID: .imageID
+        }] | sort_by(.name))
+      }] | sort_by(.name)' \
+    | sha256sum | awk '{print $1}'
+  args:
+    executable: /bin/bash
+  register: no_fault_control_initial_pod_hash
+  changed_when: false
+
+- name: Read the initial total container restart count
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get pods \
+      --namespace {{ online_boutique_namespace }} --output json \
+    | jq '[.items[].status.containerStatuses[]?.restartCount] | add // 0'
+  args:
+    executable: /bin/bash
+  register: no_fault_control_initial_restart_total
+  changed_when: false
+
+- name: Count active faults and controlled-fault markers
+  ansible.builtin.shell: |
+    set -euo pipefail
+    count=0
+    for resource in stresschaos podchaos networkchaos iochaos timechaos httpchaos dnschaos; do
+      current="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get "$resource" \
+        --namespace {{ online_boutique_namespace }} --output name 2>/dev/null \
+        | sed '/^[[:space:]]*$/d' | wc -l)"
+      count=$((count + current))
+    done
+    annotations="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get deployments \
+      --namespace {{ online_boutique_namespace }} --output json \
+      | jq '[.items[] | select(.metadata.annotations["agent-rca.dev/controlled-fault-id"] != null)] | length')"
+    locks="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get configmaps \
+      --namespace {{ online_boutique_namespace }} --output name \
+      | awk '/agent-rca-(checkout-oom|payment-image-pull)-lock$/ {count++} END {print count+0}')"
+    echo $((count + annotations + locks))
+  args:
+    executable: /bin/bash
+  register: no_fault_control_initial_fault_count
+  changed_when: false
+
+- name: Check for an existing no-fault control lock
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap {{ no_fault_control_lock_name }}
+    --namespace {{ online_boutique_namespace }}
+  register: no_fault_control_existing_lock
+  changed_when: false
+  failed_when: false
+
+- name: Require a healthy unchanged starting baseline
+  ansible.builtin.assert:
+    that:
+      - >-
+        (no_fault_control_initial_deployments.stdout | from_json)['items']
+        | selectattr('status.readyReplicas', 'defined')
+        | selectattr('status.readyReplicas', 'equalto', 1)
+        | map(attribute='metadata.name') | list | sort
+        == online_boutique_expected_deployments | sort
+      - >-
+        (no_fault_control_initial_pods.stdout | from_json)['items']
+        | rejectattr('status.phase', 'equalto', 'Running') | list | length == 0
+      - no_fault_control_initial_fault_count.stdout | trim | int == 0
+      - no_fault_control_existing_lock.rc != 0
+    fail_msg: >-
+      The no-fault control requires every target workload Ready, every Pod
+      Running, no active Chaos object, no fault marker, and no stale lock.
+
+- name: Resolve the local SSH identity used by the private workload tunnel
+  ansible.builtin.set_fact:
+    no_fault_control_ssh_host: "{{ hostvars[inventory_hostname].ansible_host }}"
+    no_fault_control_ssh_user: "{{ hostvars[inventory_hostname].ansible_user }}"
+    no_fault_control_ssh_key: >-
+      {{ hostvars[inventory_hostname].ansible_ssh_private_key_file
+      | regex_replace('^~', lookup('env', 'HOME')) }}
+
+- name: Execute the bounded no-fault control
+  block:
+    - name: Create the no-fault control lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf create configmap
+        {{ no_fault_control_lock_name }}
+        --namespace {{ online_boutique_namespace }}
+        --from-literal=run_id={{ no_fault_control_id }}
+      changed_when: true
+
+    - name: Mark the no-fault control lock as owned by this run
+      ansible.builtin.set_fact:
+        no_fault_control_lock_created: true
+
+    - name: Start the target-side loopback frontend port-forward
+      ansible.builtin.shell: |
+        set -eu
+        nohup kubectl --kubeconfig /etc/kubernetes/admin.conf port-forward \
+          --address=127.0.0.1 \
+          --namespace {{ online_boutique_namespace }} \
+          service/frontend {{ no_fault_control_frontend_remote_port }}:80 \
+          >{{ no_fault_control_forward_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: no_fault_control_forward_process
+      changed_when: true
+
+    - name: Mark the target-side frontend port-forward as started
+      ansible.builtin.set_fact:
+        no_fault_control_forward_started: true
+
+    - name: Wait for the target-side frontend port-forward
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ no_fault_control_frontend_remote_port }}/"
+        status_code: 200
+      register: no_fault_control_remote_frontend_ready
+      changed_when: false
+      until: no_fault_control_remote_frontend_ready.status == 200
+      retries: 20
+      delay: 1
+
+    - name: Start the controller-to-target loopback SSH tunnel
+      ansible.builtin.shell: |
+        set -eu
+        nohup ssh -N \
+          -o BatchMode=yes \
+          -o ExitOnForwardFailure=yes \
+          -o ServerAliveInterval=15 \
+          -o ServerAliveCountMax=3 \
+          -i {{ no_fault_control_ssh_key | quote }} \
+          -L {{ no_fault_control_frontend_port }}:127.0.0.1:{{ no_fault_control_frontend_remote_port }} \
+          {{ (no_fault_control_ssh_user + '@' + no_fault_control_ssh_host) | quote }} \
+          >{{ no_fault_control_tunnel_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: no_fault_control_tunnel_process
+      changed_when: true
+
+    - name: Mark the controller SSH tunnel as started
+      ansible.builtin.set_fact:
+        no_fault_control_tunnel_started: true
+
+    - name: Wait for the private frontend tunnel
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ no_fault_control_frontend_port }}/"
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      register: no_fault_control_frontend_ready
+      changed_when: false
+      until: no_fault_control_frontend_ready.status == 200
+      retries: 20
+      delay: 1
+
+    - name: Start the external-controller normal workload
+      ansible.builtin.shell: |
+        set -eu
+        rm -f {{ no_fault_control_stop_file | quote }}
+        nohup .venv/bin/python tools/run_online_boutique_workload.py \
+          --base-url {{ ('http://127.0.0.1:' ~ no_fault_control_frontend_port ~ '/') | quote }} \
+          --duration-seconds {{ no_fault_control_scenario.workload.maximum_duration_seconds }} \
+          --requests-per-second {{ no_fault_control_scenario.workload.requests_per_second }} \
+          --seed {{ no_fault_control_scenario.workload.seed }} \
+          --marker {{ (no_fault_control_scenario.workload.synthetic_marker ~ '-' ~ no_fault_control_id) | quote }} \
+          --profile {{ no_fault_control_scenario.workload.profile }} \
+          --stop-file {{ no_fault_control_stop_file | quote }} \
+          >{{ no_fault_control_workload_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+        chdir: "{{ no_fault_control_repo_root }}"
+      delegate_to: localhost
+      become: false
+      register: no_fault_control_workload_process
+      changed_when: true
+
+    - name: Mark the normal workload as started
+      ansible.builtin.set_fact:
+        no_fault_control_workload_started: true
+
+    - name: Start a controller-side fail-safe process cleanup watchdog
+      ansible.builtin.shell: |
+        set -eu
+        nohup /bin/bash -c '
+          sleep {{ no_fault_control_scenario.workload.maximum_duration_seconds + 60 }}
+          touch {{ no_fault_control_stop_file | quote }}
+          workload_pid={{ no_fault_control_workload_process.stdout | trim | int }}
+          tunnel_pid={{ no_fault_control_tunnel_process.stdout | trim | int }}
+          if ps -p "$workload_pid" -o command= 2>/dev/null | grep -Fq "run_online_boutique_workload.py"; then
+            kill "$workload_pid" 2>/dev/null || true
+          fi
+          if ps -p "$tunnel_pid" -o command= 2>/dev/null | grep -Fq "ssh -N"; then
+            kill "$tunnel_pid" 2>/dev/null || true
+          fi
+        ' >{{ no_fault_control_watchdog_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: no_fault_control_watchdog_process
+      changed_when: true
+
+    - name: Mark the controller cleanup watchdog as started
+      ansible.builtin.set_fact:
+        no_fault_control_watchdog_started: true
+
+    - name: Fill the complete normal-traffic baseline window
+      ansible.builtin.pause:
+        seconds: "{{ no_fault_control_scenario.workload.baseline_seconds }}"
+
+    - name: Require the normal workload process to remain active
+      ansible.builtin.shell: |
+        set -eu
+        pid={{ no_fault_control_workload_process.stdout | trim | int }}
+        ps -p "$pid" -o command= | grep -Fq "run_online_boutique_workload.py"
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Hash the midpoint Deployment specification snapshot
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get deployments \
+          --namespace {{ online_boutique_namespace }} --output json \
+        | jq -S -c '[.items[] | {
+            name: .metadata.name,
+            generation: .metadata.generation,
+            replicas: .spec.replicas,
+            selector: .spec.selector,
+            template: .spec.template
+          }] | sort_by(.name)' \
+        | sha256sum | awk '{print $1}'
+      args:
+        executable: /bin/bash
+      register: no_fault_control_midpoint_deployment_hash
+      changed_when: false
+
+    - name: Hash the midpoint Pod identity and restart snapshot
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods \
+          --namespace {{ online_boutique_namespace }} --output json \
+        | jq -S -c '[.items[] | {
+            name: .metadata.name,
+            uid: .metadata.uid,
+            phase: .status.phase,
+            deleting: (.metadata.deletionTimestamp // null),
+            containers: ([.status.containerStatuses[]? | {
+              name: .name,
+              ready: .ready,
+              restartCount: .restartCount,
+              imageID: .imageID
+            }] | sort_by(.name))
+          }] | sort_by(.name)' \
+        | sha256sum | awk '{print $1}'
+      args:
+        executable: /bin/bash
+      register: no_fault_control_midpoint_pod_hash
+      changed_when: false
+
+    - name: Require an unchanged baseline before creating the synthetic alert
+      ansible.builtin.assert:
+        that:
+          - >-
+            no_fault_control_midpoint_deployment_hash.stdout | trim
+            == no_fault_control_initial_deployment_hash.stdout | trim
+          - >-
+            no_fault_control_midpoint_pod_hash.stdout | trim
+            == no_fault_control_initial_pod_hash.stdout | trim
+        fail_msg: >-
+          A Deployment or Pod changed during the normal baseline window, so
+          this run cannot be labeled as a no-fault control.
+
+    - name: Read the central Alertmanager Service for no-fault evaluation
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get service {{ alertmanager_service_name }}
+        --namespace {{ observability_namespace }} --output json
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: no_fault_control_alertmanager_service
+      changed_when: false
+
+    - name: Read bounded no-fault Alertmanager timestamps
+      ansible.builtin.shell: |
+        set -eu
+        printf '{"starts_at":"%s","ends_at":"%s"}\n' \
+          "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+          "$(date -u -d '+15 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: no_fault_control_alert_times_result
+      changed_when: false
+
+    - name: Freeze the synthetic no-fault alert payload
+      ansible.builtin.set_fact:
+        no_fault_control_alert_times: >-
+          {{ no_fault_control_alert_times_result.stdout | from_json }}
+        no_fault_control_alert_labels:
+          alertname: "{{ no_fault_control_scenario.alert.name }}"
+          cluster_id: "{{ cluster_name }}"
+          namespace: "{{ online_boutique_namespace }}"
+          severity: warning
+          service: "{{ no_fault_control_scenario.alert.service }}"
+          rca_enabled: "{{ no_fault_control_scenario.alert.rca_enabled }}"
+          agent_rca_enabled: "{{ no_fault_control_scenario.alert.agent_rca_enabled }}"
+          verification_id: "{{ no_fault_control_id }}"
+
+    - name: Submit the synthetic no-fault alert through Alertmanager
+      ansible.builtin.uri:
+        url: >-
+          http://{{ (no_fault_control_alertmanager_service.stdout | from_json).spec.clusterIP
+          }}:9093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': no_fault_control_alert_labels,
+            'annotations': {
+              'summary': 'Synthetic normal-traffic no-fault control'
+            },
+            'startsAt': no_fault_control_alert_times.starts_at,
+            'endsAt': no_fault_control_alert_times.ends_at,
+            'generatorURL': 'https://prometheus.invalid/no-fault-control'
+          }] }}
+        status_code: 200
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      changed_when: true
+
+    - name: Mark the synthetic no-fault alert as submitted
+      ansible.builtin.set_fact:
+        no_fault_control_alert_submitted: true
+
+    - name: Wait for a unique no-fault Frozen Context Package
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT CASE
+              WHEN count(*) FILTER (WHERE incident.status = 'FAILED') > 0
+                THEN 'FAILED'
+              WHEN count(*) FILTER (
+                WHERE incident.status IN ('ANALYZING', 'REPORTED', 'PARTIAL')
+                  AND EXISTS (
+                    SELECT 1 FROM context_packages context
+                    WHERE context.incident_id = incident.incident_id
+                  )
+              ) = 1 THEN 'READY'
+              ELSE 'WAITING'
+            END FROM incidents incident
+            WHERE incident.document->'alert'->'labels'->>'verification_id'
+              = '{{ no_fault_control_id }}';"
+      register: no_fault_control_context_wait
+      delegate_to: "{{ groups['rca_control'][0] }}"
+      changed_when: false
+      until: no_fault_control_context_wait.stdout | trim in ['READY', 'FAILED']
+      retries: 40
+      delay: 5
+
+    - name: Require successful no-fault collection and localization
+      ansible.builtin.assert:
+        that:
+          - no_fault_control_context_wait.stdout | trim == 'READY'
+        fail_msg: >-
+          The no-fault Incident failed before a Context Package was frozen.
+
+    - name: Wait for the no-fault Agent work to reach a terminal state
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="WITH target AS (
+              SELECT incident.incident_id, incident.status
+              FROM incidents incident
+              WHERE incident.document->'alert'->'labels'->>'verification_id'
+                = '{{ no_fault_control_id }}'
+              ORDER BY incident.created_at DESC LIMIT 1
+            ) SELECT json_build_object(
+              'terminal', COALESCE(work.state IN ('SUCCEEDED', 'FAILED'), false),
+              'incident_id', target.incident_id,
+              'incident_status', target.status,
+              'work_state', work.state,
+              'work_error_code', work.last_error_code,
+              'agent_status', run.document->>'status',
+              'agent_reason_code', run.document->>'reason_code',
+              'model', run.document->>'model',
+              'usage', run.document->'usage',
+              'report_status', report.document->>'status',
+              'report_path', report.document->>'path',
+              'report_root_cause_id', report.document->'root_cause'->>'cause_id'
+            ) FROM target
+            LEFT JOIN incident_analysis_work_items work
+              ON work.incident_id = target.incident_id
+            LEFT JOIN LATERAL (
+              SELECT candidate.document FROM agent_runs candidate
+              WHERE candidate.incident_id = target.incident_id
+              ORDER BY candidate.started_at DESC LIMIT 1
+            ) run ON true
+            LEFT JOIN LATERAL (
+              SELECT candidate.document FROM rca_reports candidate
+              WHERE candidate.incident_id = target.incident_id
+              ORDER BY candidate.generated_at DESC LIMIT 1
+            ) report ON true;"
+      register: no_fault_control_agent_wait
+      delegate_to: "{{ groups['rca_control'][0] }}"
+      changed_when: false
+      until: >-
+        no_fault_control_agent_wait.stdout | trim | length > 0 and
+        (no_fault_control_agent_wait.stdout | from_json).terminal | bool
+      retries: 80
+      delay: 5
+      no_log: true
+
+    - name: Decode the sanitized no-fault Agent result
+      ansible.builtin.set_fact:
+        no_fault_control_agent_summary: >-
+          {{ no_fault_control_agent_wait.stdout | from_json }}
+      no_log: true
+
+    - name: Report the sanitized no-fault Agent result
+      ansible.builtin.debug:
+        msg:
+          incident_status: "{{ no_fault_control_agent_summary.incident_status }}"
+          work_state: "{{ no_fault_control_agent_summary.work_state }}"
+          work_error_code: >-
+            {{ no_fault_control_agent_summary.work_error_code | default(none) }}
+          agent_status: >-
+            {{ no_fault_control_agent_summary.agent_status | default(none) }}
+          agent_reason_code: >-
+            {{ no_fault_control_agent_summary.agent_reason_code | default(none) }}
+          model: "{{ no_fault_control_agent_summary.model | default(none) }}"
+          usage: "{{ no_fault_control_agent_summary.usage | default({}) }}"
+          report_status: >-
+            {{ no_fault_control_agent_summary.report_status | default(none) }}
+          report_path: >-
+            {{ no_fault_control_agent_summary.report_path | default(none) }}
+          report_root_cause_id: >-
+            {{ no_fault_control_agent_summary.report_root_cause_id | default(none) }}
+
+    - name: Stop the normal workload and read its bounded result
+      ansible.builtin.shell: |
+        set -euo pipefail
+        touch {{ no_fault_control_stop_file | quote }}
+        pid={{ no_fault_control_workload_process.stdout | trim | int }}
+        for _ in $(seq 1 30); do
+          if ! kill -0 "$pid" 2>/dev/null; then
+            break
+          fi
+          sleep 1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+          exit 1
+        fi
+        test -s {{ no_fault_control_workload_log | quote }}
+        tail -n 1 {{ no_fault_control_workload_log | quote }}
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: no_fault_control_workload_result
+      changed_when: true
+
+    - name: Decode the normal workload result
+      ansible.builtin.set_fact:
+        no_fault_control_workload_summary: >-
+          {{ no_fault_control_workload_result.stdout | from_json }}
+        no_fault_control_successful_responses: >-
+          {{
+            ((no_fault_control_workload_result.stdout | from_json).status_families.get('2xx', 0) | int)
+            + ((no_fault_control_workload_result.stdout | from_json).status_families.get('3xx', 0) | int)
+          }}
+
+    - name: Read final Online Boutique Deployments
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get deployments --namespace {{ online_boutique_namespace }} --output json
+      register: no_fault_control_final_deployments
+      changed_when: false
+
+    - name: Hash the final Deployment specification snapshot
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get deployments \
+          --namespace {{ online_boutique_namespace }} --output json \
+        | jq -S -c '[.items[] | {
+            name: .metadata.name,
+            generation: .metadata.generation,
+            replicas: .spec.replicas,
+            selector: .spec.selector,
+            template: .spec.template
+          }] | sort_by(.name)' \
+        | sha256sum | awk '{print $1}'
+      args:
+        executable: /bin/bash
+      register: no_fault_control_final_deployment_hash
+      changed_when: false
+
+    - name: Hash the final Pod identity and restart snapshot
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods \
+          --namespace {{ online_boutique_namespace }} --output json \
+        | jq -S -c '[.items[] | {
+            name: .metadata.name,
+            uid: .metadata.uid,
+            phase: .status.phase,
+            deleting: (.metadata.deletionTimestamp // null),
+            containers: ([.status.containerStatuses[]? | {
+              name: .name,
+              ready: .ready,
+              restartCount: .restartCount,
+              imageID: .imageID
+            }] | sort_by(.name))
+          }] | sort_by(.name)' \
+        | sha256sum | awk '{print $1}'
+      args:
+        executable: /bin/bash
+      register: no_fault_control_final_pod_hash
+      changed_when: false
+
+    - name: Read the final total container restart count
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods \
+          --namespace {{ online_boutique_namespace }} --output json \
+        | jq '[.items[].status.containerStatuses[]?.restartCount] | add // 0'
+      args:
+        executable: /bin/bash
+      register: no_fault_control_final_restart_total
+      changed_when: false
+
+    - name: Count final active faults and controlled-fault markers
+      ansible.builtin.shell: |
+        set -euo pipefail
+        count=0
+        for resource in stresschaos podchaos networkchaos iochaos timechaos httpchaos dnschaos; do
+          current="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get "$resource" \
+            --namespace {{ online_boutique_namespace }} --output name 2>/dev/null \
+            | sed '/^[[:space:]]*$/d' | wc -l)"
+          count=$((count + current))
+        done
+        annotations="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get deployments \
+          --namespace {{ online_boutique_namespace }} --output json \
+          | jq '[.items[] | select(.metadata.annotations["agent-rca.dev/controlled-fault-id"] != null)] | length')"
+        locks="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get configmaps \
+          --namespace {{ online_boutique_namespace }} --output name \
+          | awk '/agent-rca-(checkout-oom|payment-image-pull)-lock$/ {count++} END {print count+0}')"
+        echo $((count + annotations + locks))
+      args:
+        executable: /bin/bash
+      register: no_fault_control_final_fault_count
+      changed_when: false
+
+    - name: Require the preregistered no-fault postconditions
+      ansible.builtin.assert:
+        that:
+          - >-
+            no_fault_control_final_deployment_hash.stdout | trim
+            == no_fault_control_initial_deployment_hash.stdout | trim
+          - >-
+            no_fault_control_final_pod_hash.stdout | trim
+            == no_fault_control_initial_pod_hash.stdout | trim
+          - >-
+            no_fault_control_final_restart_total.stdout | trim | int
+            == no_fault_control_initial_restart_total.stdout | trim | int
+          - no_fault_control_final_fault_count.stdout | trim | int == 0
+          - >-
+            (no_fault_control_final_deployments.stdout | from_json)['items']
+            | selectattr('status.readyReplicas', 'defined')
+            | selectattr('status.readyReplicas', 'equalto', 1)
+            | map(attribute='metadata.name') | list | sort
+            == online_boutique_expected_deployments | sort
+          - no_fault_control_workload_summary.profile == 'normal'
+          - no_fault_control_workload_summary.seed | int == no_fault_control_scenario.workload.seed
+          - no_fault_control_workload_summary.transport_errors | int == 0
+          - no_fault_control_successful_responses | int >= 1
+        fail_msg: >-
+          The target changed, restarted, became unready, entered a fault state,
+          or the normal workload failed. This run cannot receive a no-fault label.
+
+    - name: Export the completed no-fault Incident Evidence snapshot
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT json_build_object(
+              'incident', incident.document,
+              'context', (
+                SELECT context.document FROM context_packages context
+                WHERE context.incident_id = incident.incident_id
+                ORDER BY context.frozen_at DESC LIMIT 1
+              ),
+              'evidence', (
+                SELECT COALESCE(json_agg(evidence.document
+                  ORDER BY evidence.observed_at, evidence.evidence_id), '[]'::json)
+                FROM evidence_items evidence
+                WHERE evidence.incident_id = incident.incident_id
+              ),
+              'report', (
+                SELECT report.document FROM rca_reports report
+                WHERE report.incident_id = incident.incident_id
+                ORDER BY report.generated_at DESC LIMIT 1
+              ),
+              'agent_run', (
+                SELECT run.document FROM agent_runs run
+                WHERE run.incident_id = incident.incident_id
+                ORDER BY run.started_at DESC LIMIT 1
+              )
+            ) FROM incidents incident
+            WHERE incident.document->'alert'->'labels'->>'verification_id'
+              = '{{ no_fault_control_id }}'
+            ORDER BY incident.created_at DESC LIMIT 1;"
+      register: no_fault_control_bundle_result
+      delegate_to: "{{ groups['rca_control'][0] }}"
+      changed_when: false
+      no_log: true
+
+    - name: Build the post-run no-fault control attestation
+      ansible.builtin.set_fact:
+        no_fault_control_attestation:
+          schema_version: "1.0.0"
+          scenario_id: "{{ no_fault_control_scenario.scenario_id }}"
+          observed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+          observation_seconds: >-
+            {{ no_fault_control_scenario.workload.baseline_seconds }}
+          change_applied: false
+          active_fault_count: >-
+            {{ no_fault_control_final_fault_count.stdout | trim | int }}
+          all_workloads_ready: true
+          deployment_snapshot_sha256_before: >-
+            {{ no_fault_control_initial_deployment_hash.stdout | trim }}
+          deployment_snapshot_sha256_after: >-
+            {{ no_fault_control_final_deployment_hash.stdout | trim }}
+          pod_snapshot_sha256_before: >-
+            {{ no_fault_control_initial_pod_hash.stdout | trim }}
+          pod_snapshot_sha256_after: >-
+            {{ no_fault_control_final_pod_hash.stdout | trim }}
+          restart_delta_maximum: 0
+          workload:
+            profile: "{{ no_fault_control_workload_summary.profile }}"
+            seed: "{{ no_fault_control_workload_summary.seed | int }}"
+            operations: "{{ no_fault_control_workload_summary.operations | int }}"
+            request_attempts: >-
+              {{ no_fault_control_workload_summary.request_attempts | int }}
+            successful_responses: >-
+              {{ no_fault_control_successful_responses | int }}
+            transport_errors: >-
+              {{ no_fault_control_workload_summary.transport_errors | int }}
+
+    - name: Build local-only no-fault Ground Truth and score artifacts
+      ansible.builtin.command:
+        argv:
+          - .venv/bin/python
+          - tools/build_controlled_fault_evaluation.py
+          - --scenario
+          - evaluation/scenarios/frontend-no-fault-normal.yaml
+          - --require-agent-outcome
+        chdir: "{{ no_fault_control_repo_root }}"
+        stdin: >-
+          {{
+            (no_fault_control_bundle_result.stdout | trim | from_json)
+            | combine({'control_attestation': no_fault_control_attestation})
+            | to_json
+          }}
+      environment:
+        PYTHONPATH: src
+      delegate_to: localhost
+      become: false
+      register: no_fault_control_evaluation_result
+      changed_when: true
+      no_log: true
+
+    - name: Decode the sanitized no-fault evaluation result
+      ansible.builtin.set_fact:
+        no_fault_control_evaluation_summary: >-
+          {{ no_fault_control_evaluation_result.stdout | from_json }}
+      no_log: true
+
+    - name: Report the sanitized no-fault scores
+      ansible.builtin.debug:
+        msg:
+          evaluation_case_id: >-
+            {{ no_fault_control_evaluation_summary.evaluation_case_id }}
+          agent:
+            variant_id: >-
+              {{ no_fault_control_evaluation_summary.agent.variant_id }}
+            prediction_outcome: >-
+              {{ no_fault_control_evaluation_summary.agent.prediction_outcome }}
+            metrics: "{{ no_fault_control_evaluation_summary.agent.metrics }}"
+          deterministic_baseline:
+            variant_id: >-
+              {{ no_fault_control_evaluation_summary.deterministic_baseline.variant_id }}
+            prediction_outcome: >-
+              {{ no_fault_control_evaluation_summary.deterministic_baseline.prediction_outcome }}
+            metrics: >-
+              {{ no_fault_control_evaluation_summary.deterministic_baseline.metrics }}
+
+    - name: Require a correct no-fault Agent abstention
+      ansible.builtin.assert:
+        that:
+          - no_fault_control_agent_summary.work_state == 'SUCCEEDED'
+          - no_fault_control_agent_summary.agent_status == 'SUCCEEDED'
+          - no_fault_control_agent_summary.agent_reason_code == 'REPORT_ACCEPTED'
+          - no_fault_control_agent_summary.incident_status == 'REPORTED'
+          - no_fault_control_agent_summary.report_status == 'inconclusive'
+          - no_fault_control_agent_summary.report_root_cause_id == none
+          - no_fault_control_evaluation_summary.agent.prediction_outcome == 'ABSTAIN'
+          - no_fault_control_evaluation_summary.agent.metrics.abstention_correctness == 1.0
+          - no_fault_control_evaluation_summary.deterministic_baseline.prediction_outcome == 'ABSTAIN'
+          - no_fault_control_evaluation_summary.deterministic_baseline.metrics.abstention_correctness == 1.0
+        fail_msg: >-
+          The normal no-fault control did not produce a persisted, correctly
+          scored Agent abstention.
+
+  always:
+    - name: Resolve the synthetic no-fault Alertmanager alert
+      ansible.builtin.uri:
+        url: >-
+          http://{{ (no_fault_control_alertmanager_service.stdout | from_json).spec.clusterIP
+          }}:9093/api/v2/alerts
+        method: POST
+        body_format: json
+        body: >-
+          {{ [{
+            'labels': no_fault_control_alert_labels,
+            'annotations': {
+              'summary': 'Synthetic normal-traffic no-fault control'
+            },
+            'startsAt': no_fault_control_alert_times.starts_at,
+            'endsAt': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'),
+            'generatorURL': 'https://prometheus.invalid/no-fault-control'
+          }] }}
+        status_code: 200
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: no_fault_control_alert_resolution
+      changed_when: no_fault_control_alert_resolution.status | default(0) == 200
+      failed_when: false
+      when: no_fault_control_alert_submitted | bool
+
+    - name: Ask the normal workload to stop
+      ansible.builtin.file:
+        path: "{{ no_fault_control_stop_file }}"
+        state: touch
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: no_fault_control_workload_started | bool
+
+    - name: Stop the normal workload if still running
+      ansible.builtin.shell: |
+        pid={{ no_fault_control_workload_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ] && ps -p "$pid" -o command= 2>/dev/null | grep -Fq "run_online_boutique_workload.py"; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: no_fault_control_workload_started | bool
+
+    - name: Stop the controller cleanup watchdog
+      ansible.builtin.shell: |
+        pid={{ no_fault_control_watchdog_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: no_fault_control_watchdog_started | bool
+
+    - name: Stop the controller SSH tunnel
+      ansible.builtin.shell: |
+        pid={{ no_fault_control_tunnel_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ] && ps -p "$pid" -o command= 2>/dev/null | grep -Fq "ssh -N"; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: no_fault_control_tunnel_started | bool
+
+    - name: Stop the target-side frontend port-forward
+      ansible.builtin.shell: |
+        pid={{ no_fault_control_forward_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ] && ps -p "$pid" -o command= 2>/dev/null | grep -Fq "service/frontend"; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: no_fault_control_forward_started | bool
+
+    - name: Remove the no-fault control lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf delete configmap
+        {{ no_fault_control_lock_name }}
+        --namespace {{ online_boutique_namespace }} --ignore-not-found=true
+      changed_when: false
+      failed_when: false
+      when: no_fault_control_lock_created | bool
+
+    - name: Remove local no-fault runtime files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ no_fault_control_stop_file }}"
+        - "{{ no_fault_control_workload_log }}"
+        - "{{ no_fault_control_tunnel_log }}"
+        - "{{ no_fault_control_watchdog_log }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Remove the target-side no-fault port-forward log
+      ansible.builtin.file:
+        path: "{{ no_fault_control_forward_log }}"
+        state: absent
+      changed_when: false
+
+    - name: Read Online Boutique Deployments after cleanup
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get deployments --namespace {{ online_boutique_namespace }} --output json
+      register: no_fault_control_cleanup_deployments
+      changed_when: false
+      failed_when: false
+
+    - name: Require every target workload to remain Ready after cleanup
+      ansible.builtin.assert:
+        that:
+          - no_fault_control_cleanup_deployments.rc == 0
+          - >-
+            (no_fault_control_cleanup_deployments.stdout | from_json)['items']
+            | selectattr('status.readyReplicas', 'defined')
+            | selectattr('status.readyReplicas', 'equalto', 1)
+            | map(attribute='metadata.name') | list | sort
+            == online_boutique_expected_deployments | sort
+        fail_msg: >-
+          One or more target workloads are not Ready after the no-fault control cleanup.

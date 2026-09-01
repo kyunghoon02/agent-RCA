@@ -2697,6 +2697,91 @@ def validate_controlled_fault_scenarios() -> None:
             f"{missing_image_pull_tokens}"
         )
 
+    no_fault_path = (
+        ROOT
+        / "evaluation"
+        / "scenarios"
+        / "frontend-no-fault-normal.yaml"
+    )
+    no_fault = load_yaml_documents(no_fault_path)[0]
+    validate_instance(
+        schemas["no-fault-control-scenario.schema.json"],
+        no_fault,
+        registry,
+        "frontend-no-fault-normal.yaml",
+    )
+    if no_fault["change"] != {"type": "none"}:
+        raise ValidationFailure("no-fault control applies a runtime change")
+    if no_fault["expected"] != {
+        "outcome": "ABSTAIN",
+        "root_cause_ids": [],
+        "deterministic_rules_not_applicable": True,
+        "recent_change_evidence_ids_maximum": 0,
+        "collector_failures_maximum": 0,
+        "minimum_context_completeness": 0.7,
+    }:
+        raise ValidationFailure("no-fault expected outcome or quality gate changed")
+    if (
+        no_fault["workload"]["profile"] != "normal"
+        or int(no_fault["workload"]["baseline_seconds"]) < 900
+        or int(no_fault["workload"]["maximum_duration_seconds"])
+        <= int(no_fault["workload"]["baseline_seconds"])
+    ):
+        raise ValidationFailure(
+            "no-fault workload does not cover a full normal baseline window"
+        )
+    no_fault_harness = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "no_fault_control_harness"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    no_fault_safety_tokens = {
+        "confirm_no_fault_control",
+        "agent-rca-no-fault-control-lock",
+        "Fill the complete normal-traffic baseline window",
+        "Require an unchanged baseline before creating the synthetic alert",
+        "Build the post-run no-fault control attestation",
+        "Require the preregistered no-fault postconditions",
+        "Require a correct no-fault Agent abstention",
+        "always:",
+        "Require every target workload to remain Ready after cleanup",
+    }
+    missing_no_fault_tokens = sorted(
+        token
+        for token in no_fault_safety_tokens
+        if token not in no_fault_harness
+    )
+    if missing_no_fault_tokens:
+        raise ValidationFailure(
+            "no-fault control safety boundary is incomplete: "
+            f"{missing_no_fault_tokens}"
+        )
+    if "agent-rca-no-fault-control-lock" not in harness or (
+        "agent-rca-no-fault-control-lock" not in image_pull_harness
+    ):
+        raise ValidationFailure(
+            "controlled faults do not honor the active no-fault control lock"
+        )
+
+    no_fault_preregistration = load_yaml_documents(
+        ROOT / "evaluation" / "preregistration.yaml"
+    )[0]
+    no_fault_policy = no_fault_preregistration["evidence_ground_truth"].get(
+        "controlled_no_fault", {}
+    )
+    if no_fault_policy != {
+        "expected_outcome": "ABSTAIN",
+        "causal_roles": [],
+        "causal_precision_recall_applicable": False,
+        "require_all_registered_rules_not_applicable": True,
+        "require_post_run_attestation": True,
+    }:
+        raise ValidationFailure("no-fault Ground Truth policy changed")
+
 
 def main() -> None:
     examples = validate_contracts()
@@ -2721,7 +2806,7 @@ def main() -> None:
     print("- private three-domain telemetry, RCA control, and fault-target boundaries are consistent")
     print("- private Incident Viewer frontend and same-origin BFF boundaries are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
-    print("- the development-only OOM and image-pull scenarios and restoration gates are valid")
+    print("- the development-only fault scenarios and no-fault control gates are valid")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 
 

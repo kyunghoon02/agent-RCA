@@ -113,6 +113,15 @@
   changed_when: false
   failed_when: checkout_fault_existing_stress.stdout | trim | length > 0
 
+- name: Check for an active no-fault control lock
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap agent-rca-no-fault-control-lock
+    --namespace {{ online_boutique_namespace }}
+  register: checkout_fault_no_fault_control_lock
+  changed_when: false
+  failed_when: false
+
 - name: Resolve the local SSH identity used by the workload tunnel
   ansible.builtin.set_fact:
     checkout_fault_ssh_host: "{{ hostvars[inventory_hostname].ansible_host }}"
@@ -136,6 +145,7 @@
       ansible.builtin.assert:
         that:
           - checkout_fault_existing_lock.rc != 0
+          - checkout_fault_no_fault_control_lock.rc != 0
         fail_msg: >-
           A controlled-fault lock already exists. Verify workload health and
           remove the stale lock manually only after confirming recovery.

@@ -445,6 +445,12 @@ def build_controlled_fault_evaluation(
         validate_contract(
             "controlled-image-pull-scenario.schema.json", scenario
         )
+    elif (
+        expected_causes == ()
+        and scenario.get("expected", {}).get("outcome") == "ABSTAIN"
+    ):
+        scenario_kind = "no-fault"
+        validate_contract("no-fault-control-scenario.schema.json", scenario)
     else:
         raise ContractViolation(
             "controlled fault evaluation has no registered scenario handler"
@@ -505,6 +511,7 @@ def build_controlled_fault_evaluation(
         )
     frozen_evidence = [by_id[item] for item in context["evidence_ids"]]
 
+    decision = DeterministicRCAEngine().evaluate(frozen_evidence)
     selected_items = None
     if scenario_kind == "oom":
         selected_items = _select_controlled_oom_ground_truth_items(
@@ -513,10 +520,58 @@ def build_controlled_fault_evaluation(
         relevant_groups = _controlled_oom_relevant_evidence_groups(
             frozen_evidence, scenario, selected_items
         )
-    else:
+    elif scenario_kind == "image-pull":
         relevant_groups = _controlled_image_pull_relevant_evidence_groups(
             frozen_evidence, scenario
         )
+    else:
+        raw_attestation = bundle.get("control_attestation")
+        if not isinstance(raw_attestation, Mapping):
+            raise ContractViolation(
+                "no-fault evaluation requires a post-run control attestation"
+            )
+        attestation = copy.deepcopy(dict(raw_attestation))
+        validate_contract("no-fault-control-attestation.schema.json", attestation)
+        if attestation["scenario_id"] != scenario["scenario_id"]:
+            raise ContractViolation(
+                "no-fault control attestation belongs to another scenario"
+            )
+        if (
+            attestation["deployment_snapshot_sha256_before"]
+            != attestation["deployment_snapshot_sha256_after"]
+            or attestation["pod_snapshot_sha256_before"]
+            != attestation["pod_snapshot_sha256_after"]
+        ):
+            raise ContractViolation(
+                "no-fault control changed its Deployment or Pod snapshot"
+            )
+        non_applicable = all(
+            evaluation.status == "NOT_APPLICABLE"
+            for evaluation in decision.evaluations
+        )
+        if not non_applicable:
+            raise ContractViolation(
+                "no-fault control contains a registered deterministic fault signal"
+            )
+        if len(context["recent_change_evidence_ids"]) > int(
+            scenario["expected"]["recent_change_evidence_ids_maximum"]
+        ):
+            raise ContractViolation(
+                "no-fault control contains recent Change Evidence"
+            )
+        if len(context["collector_failures"]) > int(
+            scenario["expected"]["collector_failures_maximum"]
+        ):
+            raise ContractViolation(
+                "no-fault control has collector failures"
+            )
+        if float(context["localization"]["context_completeness"]) < float(
+            scenario["expected"]["minimum_context_completeness"]
+        ):
+            raise ContractViolation(
+                "no-fault control Context is below the completeness gate"
+            )
+        relevant_groups = tuple()
     relevant_ids = tuple(
         dict.fromkeys(
             evidence_id
@@ -545,16 +600,19 @@ def build_controlled_fault_evaluation(
         "labeled_at": timestamp,
         "labeler": "controlled-fault-manifest",
         "provenance": {
-            "controlled_fault": True,
-            "fault_manifest_sha256": f"sha256:{scenario_sha256}",
+            "controlled_fault": scenario_kind != "no-fault",
+            "fault_manifest_sha256": (
+                f"sha256:{scenario_sha256}"
+                if scenario_kind != "no-fault"
+                else None
+            ),
             "workload_profile": scenario["workload"]["profile"],
             "workload_seed": scenario["workload"]["seed"],
-            "change_applied": True,
+            "change_applied": scenario_kind != "no-fault",
         },
     }
     validate_contract("rca-evaluation-ground-truth.schema.json", ground_truth)
 
-    decision = DeterministicRCAEngine().evaluate(frozen_evidence)
     prediction = prediction_from_deterministic_decision(
         evaluation_case_id=evaluation_case_id,
         scenario_id=scenario["scenario_id"],

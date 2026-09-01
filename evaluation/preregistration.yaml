@@ -1,6 +1,6 @@
-schema_version: "1.4.0"
+schema_version: "1.5.0"
 registered_at: "2026-07-27"
-amended_at: "2026-08-28"
+amended_at: "2026-09-01"
 status: frozen-before-runtime-evaluation
 amendments:
   - reason: add-three-domain-chaos-mesh-memory-stress-runtime
@@ -18,6 +18,12 @@ amendments:
   - reason: add-paymentservice-image-pull-scenario-before-first-runtime-evaluation
     preserves:
       - historical-oom-observations
+      - research-variant-ids
+      - ground-truth-isolation
+      - primary-rca-metrics
+  - reason: add-normal-traffic-no-fault-control-before-first-runtime-evaluation
+    preserves:
+      - historical-fault-observations
       - research-variant-ids
       - ground-truth-isolation
       - primary-rca-metrics
@@ -171,6 +177,12 @@ evidence_ground_truth:
       alternatives:
         - normalized-kubelet-err-image-pull-for-same-pod-uid
         - normalized-kubelet-image-pull-backoff-for-same-pod-uid
+  controlled_no_fault:
+    expected_outcome: ABSTAIN
+    causal_roles: []
+    causal_precision_recall_applicable: false
+    require_all_registered_rules_not_applicable: true
+    require_post_run_attestation: true
 
 operational_metrics:
   - clean_environment_restore_seconds

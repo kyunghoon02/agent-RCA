@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from datetime import datetime, timezone
@@ -173,6 +174,91 @@ def image_pull_fixture_bundle(*, mismatched_event_uid: bool = False) -> tuple[di
     return bundle, scenario
 
 
+def no_fault_fixture_bundle() -> tuple[dict, dict]:
+    bundle, _ = fixture_bundle()
+    incident_id = bundle["incident"]["incident_id"]
+    request = CollectionRequest(
+        request_id="req-no-fault-control-fixture",
+        incident_id=incident_id,
+        window=EvidenceWindow(
+            start="2026-08-12T00:30:00Z",
+            end="2026-08-12T05:00:00Z",
+        ),
+        scope=ResourceScope(
+            namespace="online-boutique",
+            resource_names=("frontend",),
+            resource_name_prefixes=("frontend-",),
+        ),
+        timeout_seconds=1,
+    )
+    evidence = [
+        EvidenceBuilder().build(
+            EvidenceDraft(
+                source="kubernetes",
+                kind="resource-state",
+                observed_at="2026-08-12T02:05:00Z",
+                subject={
+                    "cluster_id": "agent-rca-chaos-eval",
+                    "api_version": "v1",
+                    "kind": "Pod",
+                    "namespace": "online-boutique",
+                    "name": "frontend-normal-abc",
+                    "uid": "uid-frontend-normal-abc",
+                    "exists": True,
+                },
+                summary="frontend is Running and Ready.",
+                facts={
+                    "phase": "Running",
+                    "ready": True,
+                    "restart_count": 0,
+                },
+                provider="kubernetes-state-provider",
+                query="get pod frontend-normal-abc",
+                locator="k8s://online-boutique/Pod/frontend-normal-abc",
+            ),
+            request,
+            collected_at=NOW,
+        )
+    ]
+    subject = evidence[0]["subject"]
+    bundle["evidence"] = evidence
+    bundle["incident"]["source_entity"] = subject
+    bundle["incident"]["alert"]["name"] = "AgentRCAControlledNoFault"
+    bundle["incident"]["alert"]["labels"]["service"] = "frontend"
+    bundle["context"]["source_entity"] = subject
+    bundle["context"]["scope"]["entity_uids"] = [subject["uid"]]
+    bundle["context"]["evidence_ids"] = [evidence[0]["evidence_id"]]
+    bundle["context"]["recent_change_evidence_ids"] = []
+    bundle["context"]["collector_failures"] = []
+    bundle["context"]["localization"]["context_completeness"] = 1.0
+    bundle["control_attestation"] = {
+        "schema_version": "1.0.0",
+        "scenario_id": "scenario-frontend-no-fault-normal",
+        "observed_at": "2026-08-12T02:05:00Z",
+        "observation_seconds": 900,
+        "change_applied": False,
+        "active_fault_count": 0,
+        "all_workloads_ready": True,
+        "deployment_snapshot_sha256_before": "a" * 64,
+        "deployment_snapshot_sha256_after": "a" * 64,
+        "pod_snapshot_sha256_before": "b" * 64,
+        "pod_snapshot_sha256_after": "b" * 64,
+        "restart_delta_maximum": 0,
+        "workload": {
+            "profile": "normal",
+            "seed": 44,
+            "operations": 900,
+            "request_attempts": 1000,
+            "successful_responses": 1000,
+            "transport_errors": 0,
+        },
+    }
+    scenario = yaml.safe_load(
+        (ROOT / "evaluation/scenarios/frontend-no-fault-normal.yaml").read_text()
+    )
+    return bundle, scenario
+
+
 def with_agent_report(bundle: dict, *, cause_id: str) -> dict:
     copied = dict(bundle)
     context = copied["context"]
@@ -268,7 +354,117 @@ def with_failed_agent_run(bundle: dict) -> dict:
     return copied
 
 
+def with_agent_abstain_report(bundle: dict) -> dict:
+    copied = copy.deepcopy(bundle)
+    context = copied["context"]
+    evidence = copied["evidence"]
+    subject = evidence[0]["subject"]
+    evidence_id = evidence[0]["evidence_id"]
+    copied["report"] = {
+        "schema_version": "1.1.0",
+        "report_id": "rpt-no-fault-agent-0001",
+        "incident_id": copied["incident"]["incident_id"],
+        "context_id": context["context_id"],
+        "path": "deep",
+        "status": "inconclusive",
+        "generated_at": "2026-08-26T08:59:00Z",
+        "root_cause": None,
+        "hypotheses": [
+            {
+                "rank": 1,
+                "cause_id": "kubernetes.container-oomkilled",
+                "summary": "No registered OOM proof is present.",
+                "entity": subject,
+                "confidence": 0.1,
+                "status": "rejected",
+                "supporting_evidence_ids": [],
+                "contradicting_evidence_ids": [evidence_id],
+                "reference_document_ids": [],
+                "missing_evidence": ["Exact OOM and restart evidence"],
+            }
+        ],
+        "remediation": {
+            "suggestions": [],
+            "verification_conditions": ["Continue normal observation."],
+        },
+        "budget": {
+            "applicable": True,
+            "llm_calls": 2,
+            "tool_calls": 2,
+            "tree_depth": 1,
+            "wall_time_ms": 10000,
+            "exhausted": False,
+        },
+        "read_only": True,
+        "limitations": ["No registered causal proof was present."],
+    }
+    return copied
+
+
 class ControlledFaultEvaluationTests(unittest.TestCase):
+    def test_no_fault_control_scores_correct_agent_abstention(self) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        bundle = with_agent_abstain_report(bundle)
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="c" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(artifacts["prediction"]["outcome"], "ABSTAIN")
+        self.assertEqual(artifacts["agent_prediction"]["outcome"], "ABSTAIN")
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["abstention_correctness"],
+            1.0,
+        )
+        self.assertIsNone(
+            artifacts["agent_result"]["metrics"]["evidence_precision"]
+        )
+        self.assertFalse(
+            artifacts["ground_truth"]["provenance"]["controlled_fault"]
+        )
+        self.assertFalse(
+            artifacts["ground_truth"]["provenance"]["change_applied"]
+        )
+
+    def test_no_fault_control_rejects_a_changed_snapshot(self) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        bundle["control_attestation"][
+            "deployment_snapshot_sha256_after"
+        ] = "c" * 64
+
+        with self.assertRaisesRegex(ContractViolation, "changed its Deployment"):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
+    def test_no_fault_control_rejects_registered_fault_evidence(self) -> None:
+        no_fault_bundle, scenario = no_fault_fixture_bundle()
+        fault_bundle, _ = fixture_bundle()
+        fault_bundle["incident"]["alert"]["name"] = (
+            "AgentRCAControlledNoFault"
+        )
+        fault_bundle["incident"]["alert"]["labels"]["service"] = "frontend"
+        fault_bundle["context"]["recent_change_evidence_ids"] = []
+        fault_bundle["context"]["collector_failures"] = []
+        fault_bundle["context"]["localization"]["context_completeness"] = 1.0
+        fault_bundle["control_attestation"] = no_fault_bundle[
+            "control_attestation"
+        ]
+
+        with self.assertRaisesRegex(ContractViolation, "deterministic fault"):
+            build_controlled_fault_evaluation(
+                fault_bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
     def test_image_pull_snapshot_scores_normalized_state_and_event_roles(self) -> None:
         bundle, scenario = image_pull_fixture_bundle()
         bundle = with_agent_report(

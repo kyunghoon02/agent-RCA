@@ -6,6 +6,7 @@ from tools.run_online_boutique_workload import (
     deterministic_action_names,
     deterministic_coverage_action_names,
     require_loopback_base_url,
+    run_workload,
 )
 
 
@@ -50,6 +51,35 @@ class OnlineBoutiqueWorkloadTests(unittest.TestCase):
             ],
         )
         self.assertEqual(second_cycle, first_cycle)
+
+    def test_normal_profile_is_bounded_and_not_checkout_weighted(self) -> None:
+        clock = [0.0]
+
+        def monotonic() -> float:
+            return clock[0]
+
+        def sleep(seconds: float) -> None:
+            clock[0] += seconds
+
+        result = run_workload(
+            base_url="http://127.0.0.1:18081/",
+            duration_seconds=10,
+            requests_per_second=2,
+            seed=44,
+            marker="normal-control",
+            timeout_seconds=1,
+            stop_file=None,
+            profile="normal",
+            monotonic=monotonic,
+            sleep=sleep,
+        )
+
+        self.assertEqual(result["profile"], "normal")
+        self.assertGreater(result["actions"].get("home", 0), 0)
+        self.assertLess(
+            result["actions"].get("checkout", 0),
+            result["actions"].get("home", 0),
+        )
 
 
 if __name__ == "__main__":

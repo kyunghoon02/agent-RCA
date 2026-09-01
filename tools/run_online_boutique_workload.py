@@ -31,7 +31,7 @@ LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 MIN_DURATION_SECONDS = 10
 MAX_DURATION_SECONDS = 1200
 MAX_REQUESTS_PER_SECOND = 50.0
-WORKLOAD_PROFILES = ("path-weighted", "krca-route-coverage")
+WORKLOAD_PROFILES = ("normal", "path-weighted", "krca-route-coverage")
 COVERAGE_ACTIONS = (
     "home",
     "product",
@@ -184,6 +184,12 @@ def run_workload(
             break
         if profile == "krca-route-coverage":
             action = COVERAGE_ACTIONS[sum(actions.values()) % len(COVERAGE_ACTIONS)]
+        elif profile == "normal":
+            action = generator.choices(
+                ("home", "product", "add-cart", "checkout"),
+                weights=(6, 5, 2, 1),
+                k=1,
+            )[0]
         else:
             action = generator.choices(
                 ("home", "product", "add-cart", "checkout"),

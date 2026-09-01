@@ -1,0 +1,54 @@
+schema_version: "1.0.0"
+scenario_id: scenario-frontend-no-fault-normal
+
+environment:
+  class: development
+  single_node_allowed: true
+
+target:
+  namespace: online-boutique
+  kind: Deployment
+  name: frontend
+  container: server
+
+baseline:
+  all_workloads_ready: true
+  no_active_faults: true
+  preserve_deployment_snapshot: true
+  preserve_pod_snapshot: true
+  restart_delta_maximum: 0
+
+change:
+  type: none
+
+workload:
+  runner: external-controller
+  profile: normal
+  seed: 44
+  requests_per_second: 2
+  baseline_seconds: 900
+  maximum_duration_seconds: 1200
+  synthetic_marker: agent-rca-no-fault-control
+
+alert:
+  name: AgentRCAControlledNoFault
+  service: frontend
+  rca_enabled: "true"
+  agent_rca_enabled: "true"
+
+expected:
+  outcome: ABSTAIN
+  root_cause_ids: []
+  deterministic_rules_not_applicable: true
+  recent_change_evidence_ids_maximum: 0
+  collector_failures_maximum: 0
+  minimum_context_completeness: 0.7
+
+postconditions:
+  all_workloads_ready: true
+  active_fault_count: 0
+  deployment_snapshot_unchanged: true
+  pod_snapshot_unchanged: true
+  restart_delta_maximum: 0
+  transport_errors_maximum: 0
+  successful_responses_minimum: 1

@@ -1,0 +1,18 @@
+---
+- name: Evaluate the frontend normal-traffic no-fault control
+  hosts: fault_target
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
+    - ../../../platform/versions.yaml
+  vars:
+    no_fault_control_scenario: >-
+      {{ lookup(
+        'file',
+        playbook_dir + '/../../../evaluation/scenarios/frontend-no-fault-normal.yaml'
+      ) | from_yaml }}
+
+  roles:
+    - role: no_fault_control_harness

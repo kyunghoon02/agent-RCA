@@ -291,25 +291,32 @@ def evaluate_rca_case(
         multi_factor_exact_match = None
         multi_factor_partial_match = None
 
-    if cited_evidence:
-        evidence_precision = _ratio(
-            len(matched_evidence), len(cited_evidence)
-        )
-    elif relevant_evidence:
-        evidence_precision = 0.0
-    else:
+    if expected_abstain:
+        # A no-fault label has no causal Evidence set. A rootless Report may
+        # still cite inspected normal-state Evidence to explain why a
+        # hypothesis was rejected, so causal precision/recall are undefined.
         evidence_precision = None
-    if evidence_groups:
-        matched_groups = sum(
-            len(cited_evidence & set(group["acceptable_evidence_ids"]))
-            >= int(group["minimum_matches"])
-            for group in evidence_groups
-        )
-        evidence_recall = _ratio(matched_groups, len(evidence_groups))
+        evidence_recall = None
     else:
-        evidence_recall = _ratio(
-            len(matched_evidence), len(relevant_evidence)
-        )
+        if cited_evidence:
+            evidence_precision = _ratio(
+                len(matched_evidence), len(cited_evidence)
+            )
+        elif relevant_evidence:
+            evidence_precision = 0.0
+        else:
+            evidence_precision = None
+        if evidence_groups:
+            matched_groups = sum(
+                len(cited_evidence & set(group["acceptable_evidence_ids"]))
+                >= int(group["minimum_matches"])
+                for group in evidence_groups
+            )
+            evidence_recall = _ratio(matched_groups, len(evidence_groups))
+        else:
+            evidence_recall = _ratio(
+                len(matched_evidence), len(relevant_evidence)
+            )
 
     result = {
         "schema_version": "1.0.0",

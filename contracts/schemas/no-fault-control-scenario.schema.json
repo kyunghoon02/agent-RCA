@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:no-fault-control-scenario",
+  "title": "No-fault Control Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "change",
+    "workload",
+    "alert",
+    "expected",
+    "postconditions"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {"const": "scenario-frontend-no-fault-normal"},
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "single_node_allowed"],
+      "properties": {
+        "class": {"const": "development"},
+        "single_node_allowed": {"const": true}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "kind", "name", "container"],
+      "properties": {
+        "namespace": {"const": "online-boutique"},
+        "kind": {"const": "Deployment"},
+        "name": {"const": "frontend"},
+        "container": {"const": "server"}
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "all_workloads_ready",
+        "no_active_faults",
+        "preserve_deployment_snapshot",
+        "preserve_pod_snapshot",
+        "restart_delta_maximum"
+      ],
+      "properties": {
+        "all_workloads_ready": {"const": true},
+        "no_active_faults": {"const": true},
+        "preserve_deployment_snapshot": {"const": true},
+        "preserve_pod_snapshot": {"const": true},
+        "restart_delta_maximum": {"const": 0}
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {"type": {"const": "none"}}
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runner",
+        "profile",
+        "seed",
+        "requests_per_second",
+        "baseline_seconds",
+        "maximum_duration_seconds",
+        "synthetic_marker"
+      ],
+      "properties": {
+        "runner": {"const": "external-controller"},
+        "profile": {"const": "normal"},
+        "seed": {"const": 44},
+        "requests_per_second": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 10
+        },
+        "baseline_seconds": {
+          "type": "integer",
+          "minimum": 900,
+          "maximum": 1200
+        },
+        "maximum_duration_seconds": {
+          "type": "integer",
+          "minimum": 960,
+          "maximum": 1200
+        },
+        "synthetic_marker": {"const": "agent-rca-no-fault-control"}
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "service", "rca_enabled", "agent_rca_enabled"],
+      "properties": {
+        "name": {"const": "AgentRCAControlledNoFault"},
+        "service": {"const": "frontend"},
+        "rca_enabled": {"const": "true"},
+        "agent_rca_enabled": {"const": "true"}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "root_cause_ids",
+        "deterministic_rules_not_applicable",
+        "recent_change_evidence_ids_maximum",
+        "collector_failures_maximum",
+        "minimum_context_completeness"
+      ],
+      "properties": {
+        "outcome": {"const": "ABSTAIN"},
+        "root_cause_ids": {"const": []},
+        "deterministic_rules_not_applicable": {"const": true},
+        "recent_change_evidence_ids_maximum": {"const": 0},
+        "collector_failures_maximum": {"const": 0},
+        "minimum_context_completeness": {
+          "type": "number",
+          "minimum": 0.7,
+          "maximum": 1
+        }
+      }
+    },
+    "postconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "all_workloads_ready",
+        "active_fault_count",
+        "deployment_snapshot_unchanged",
+        "pod_snapshot_unchanged",
+        "restart_delta_maximum",
+        "transport_errors_maximum",
+        "successful_responses_minimum"
+      ],
+      "properties": {
+        "all_workloads_ready": {"const": true},
+        "active_fault_count": {"const": 0},
+        "deployment_snapshot_unchanged": {"const": true},
+        "pod_snapshot_unchanged": {"const": true},
+        "restart_delta_maximum": {"const": 0},
+        "transport_errors_maximum": {"const": 0},
+        "successful_responses_minimum": {"const": 1}
+      }
+    }
+  }
+}

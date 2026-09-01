@@ -24,6 +24,7 @@ EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
 	deploy-incident-platform verify-incident-platform \
 	deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom \
 	evaluate-payment-image-pull \
+	evaluate-no-fault-control \
 	deploy-three-domain smoke-krca-coverage summarize-checkout-oom
 
 bootstrap-dev:
@@ -183,6 +184,11 @@ ansible-syntax:
 		-i automation/ansible/inventories/dev.example.yml \
 		-i automation/ansible/inventories/chaos-eval.example.yml \
 		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/evaluate-no-fault-control.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/dev.example.yml \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
 		--syntax-check automation/ansible/playbooks/deploy-three-domain.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
@@ -296,6 +302,17 @@ evaluate-payment-image-pull:
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/evaluate-payment-image-pull.yml \
 		--extra-vars confirm_controlled_fault=yes \
+		--extra-vars controlled_fault_environment=development
+
+evaluate-no-fault-control:
+	@test "$(CONFIRM_NO_FAULT_CONTROL)" = "yes" || \
+		(echo "Refusing no-fault evaluation: set CONFIRM_NO_FAULT_CONTROL=yes" >&2; exit 2)
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/evaluate-no-fault-control.yml \
+		--extra-vars confirm_no_fault_control=yes \
 		--extra-vars controlled_fault_environment=development
 
 summarize-checkout-oom:

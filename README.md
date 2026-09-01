@@ -161,6 +161,7 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 
 | Representative scenario | Evidence focus | Status |
 |---|---|---|
+| `frontend` no-fault normal traffic | unchanged workload snapshot, zero restart/fault/change, complete Evidence | contract, external workload harness와 ABSTAIN scorer 구현; live run pending |
 | `checkoutservice` OOMKilled | exact OOM signature, same-UID restart, resource limit | role-based scorer v3 live: 최신 Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0` |
 | `paymentservice` ImagePullBackOff | waiting state, normalized kubelet Event, same Pod UID | controlled live run: Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0`; exact image restore와 Ready/restart `0` 확인 |
 | NetworkPolicy regression | Hubble drop, policy verdict와 change time | 계획 |
@@ -204,7 +205,8 @@ OOM은 `exact-oom-signature` 역할의 대안이며 둘 중 하나면 충족되�
 - Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
-- OOM과 ImagePullBackOff 외 fault matrix, no-fault control과 반복 평가가 완료되지 않았다.
+- no-fault control의 contract, harness와 scorer는 구현됐지만 live run과 반복 평가는 완료되지 않았다.
+- OOM과 ImagePullBackOff 외 fault matrix가 완료되지 않았다.
 - 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
 - OOM과 ImagePullBackOff는 각각 최신 단일 실행만 role-based citation score를 통과했으며, 반복 실행으로 재현성을 검증하지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
@@ -247,10 +249,13 @@ KRCA profile을 실행하지 않는다. `smoke-krca-coverage`는 별도의 15분
 여섯 frontend route와 직전 baseline 구간을 채운 뒤, 모든 KRCA profile과 실제
 `Alertmanager → Incident worker → Evidence` 저장 경로를 검증한다.
 
-Controlled fault는 development 환경에서만 명시적으로 승인해 실행한다.
+No-fault control은 정상 트래픽만 발생시키며, 실행 중 workload와 Pod snapshot이 바뀌면
+평가를 폐기한다. Controlled fault는 development 환경에서만 명시적으로 승인해 실행한다.
 
 ```bash
+make evaluate-no-fault-control CONFIRM_NO_FAULT_CONTROL=yes
 make evaluate-checkout-oom CONFIRM_CONTROLLED_FAULT=yes
+make evaluate-payment-image-pull CONFIRM_CONTROLLED_FAULT=yes
 ```
 
 배포된 Viewer frontend와 API는 RCA control cluster의 `ClusterIP`로만 노출된다.
