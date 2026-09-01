@@ -115,7 +115,8 @@
         "outcome",
         "root_cause_ids",
         "deterministic_rules_not_applicable",
-        "recent_change_evidence_ids_maximum",
+        "detected_deployment_changes_maximum",
+        "deployment_no_change_evidence_minimum",
         "collector_failures_maximum",
         "minimum_context_completeness"
       ],
@@ -123,7 +124,8 @@
         "outcome": {"const": "ABSTAIN"},
         "root_cause_ids": {"const": []},
         "deterministic_rules_not_applicable": {"const": true},
-        "recent_change_evidence_ids_maximum": {"const": 0},
+        "detected_deployment_changes_maximum": {"const": 0},
+        "deployment_no_change_evidence_minimum": {"const": 1},
         "collector_failures_maximum": {"const": 0},
         "minimum_context_completeness": {
           "type": "number",

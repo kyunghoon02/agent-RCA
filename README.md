@@ -161,7 +161,7 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 
 | Representative scenario | Evidence focus | Status |
 |---|---|---|
-| `frontend` no-fault normal traffic | unchanged workload snapshot, zero restart/fault/change, complete Evidence | contract, external workload harness와 ABSTAIN scorer 구현; live run pending |
+| `frontend` no-fault normal traffic | unchanged workload snapshot, zero restart/fault/change, complete Evidence | controlled live run: Agent Variant C와 Variant A 모두 `ABSTAIN`, abstention correctness `1.0`, unsupported citation `0.0`; 900초 baseline과 post-run attestation 통과 |
 | `checkoutservice` OOMKilled | exact OOM signature, same-UID restart, resource limit | role-based scorer v3 live: 최신 Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0` |
 | `paymentservice` ImagePullBackOff | waiting state, normalized kubelet Event, same Pod UID | controlled live run: Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0`; exact image restore와 Ready/restart `0` 확인 |
 | NetworkPolicy regression | Hubble drop, policy verdict와 change time | 계획 |
@@ -180,6 +180,11 @@ Ground Truth와 결합한다. 실제 Agent Variant C score와 결정론적 Varia
 못해 발생한 Gate rejection은 `ABSTAIN`으로 바꾸지 않고 Agent `FAILED`, Top-1 `0.0`
 artifact로 보존했다. 정규화 규칙을 보완한 뒤 새 Incident로 재실행한 결과만 성공 run으로
 기록했다.
+첫 no-fault run도 Agent `ABSTAIN`과 runtime postcondition은 통과했지만,
+`recent_change_evidence_ids`의 일반 Kubernetes state/event까지 Deployment 변경으로 해석한
+scorer 정책 때문에 score artifact 생성이 거부됐다. 이 Incident를 재분류하지 않고 남긴 뒤,
+명시적인 Deployment `NO_CHANGES` Evidence를 확인하도록 preregistration을 개정하고 새
+Incident로 재실행한 결과만 성공 evaluation으로 기록했다.
 Agent 후보 선택은 등록된 proof pair를 우선 보존하고, Gate는 Agent가 실제로 인용한
 Evidence만으로 해당 `cause_id` 조건을 다시 평가한다. 독립 관측 channel은 provider 이름이
 아니라 `source + kind`로 구분한다. Ground Truth schema `1.1.0`은 causal role마다 동등한
@@ -205,10 +210,9 @@ OOM은 `exact-oom-signature` 역할의 대안이며 둘 중 하나면 충족되�
 - Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
-- no-fault control의 contract, harness와 scorer는 구현됐지만 live run과 반복 평가는 완료되지 않았다.
 - OOM과 ImagePullBackOff 외 fault matrix가 완료되지 않았다.
 - 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
-- OOM과 ImagePullBackOff는 각각 최신 단일 실행만 role-based citation score를 통과했으며, 반복 실행으로 재현성을 검증하지 않았다.
+- OOM, ImagePullBackOff와 normal-traffic no-fault control은 각각 최신 단일 실행만 scorer를 통과했으며, 반복 실행으로 재현성을 검증하지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start

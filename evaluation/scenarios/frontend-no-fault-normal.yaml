@@ -40,7 +40,8 @@ expected:
   outcome: ABSTAIN
   root_cause_ids: []
   deterministic_rules_not_applicable: true
-  recent_change_evidence_ids_maximum: 0
+  detected_deployment_changes_maximum: 0
+  deployment_no_change_evidence_minimum: 1
   collector_failures_maximum: 0
   minimum_context_completeness: 0.7
 

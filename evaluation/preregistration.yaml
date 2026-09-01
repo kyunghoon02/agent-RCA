@@ -1,7 +1,7 @@
-schema_version: "1.5.0"
+schema_version: "1.6.0"
 registered_at: "2026-07-27"
 amended_at: "2026-09-01"
-status: frozen-before-runtime-evaluation
+status: frozen-with-runtime-amendments
 amendments:
   - reason: add-three-domain-chaos-mesh-memory-stress-runtime
     preserves:
@@ -24,6 +24,13 @@ amendments:
   - reason: add-normal-traffic-no-fault-control-before-first-runtime-evaluation
     preserves:
       - historical-fault-observations
+      - research-variant-ids
+      - ground-truth-isolation
+      - primary-rca-metrics
+  - reason: correct-no-fault-change-semantics-after-first-runtime-scorer-rejection
+    preserves:
+      - first-no-fault-incident-and-agent-report
+      - original-snapshot-and-workload-postconditions
       - research-variant-ids
       - ground-truth-isolation
       - primary-rca-metrics
@@ -182,6 +189,7 @@ evidence_ground_truth:
     causal_roles: []
     causal_precision_recall_applicable: false
     require_all_registered_rules_not_applicable: true
+    require_explicit_deployment_no_changes: true
     require_post_run_attestation: true
 
 operational_metrics:

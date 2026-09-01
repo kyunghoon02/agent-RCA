@@ -553,11 +553,33 @@ def build_controlled_fault_evaluation(
             raise ContractViolation(
                 "no-fault control contains a registered deterministic fault signal"
             )
-        if len(context["recent_change_evidence_ids"]) > int(
-            scenario["expected"]["recent_change_evidence_ids_maximum"]
+        deployment_history = [
+            item
+            for item in frozen_evidence
+            if item.get("source") == "deployment"
+            and item.get("kind") == "deployment-change"
+        ]
+        detected_deployment_changes = [
+            item
+            for item in deployment_history
+            if item.get("facts", {}).get("result_status") == "CHANGE_DETECTED"
+        ]
+        deployment_no_changes = [
+            item
+            for item in deployment_history
+            if item.get("facts", {}).get("result_status") == "NO_CHANGES"
+        ]
+        if len(detected_deployment_changes) > int(
+            scenario["expected"]["detected_deployment_changes_maximum"]
         ):
             raise ContractViolation(
-                "no-fault control contains recent Change Evidence"
+                "no-fault control contains a detected Deployment change"
+            )
+        if len(deployment_no_changes) < int(
+            scenario["expected"]["deployment_no_change_evidence_minimum"]
+        ):
+            raise ContractViolation(
+                "no-fault control requires explicit Deployment NO_CHANGES Evidence"
             )
         if len(context["collector_failures"]) > int(
             scenario["expected"]["collector_failures_maximum"]

@@ -218,7 +218,36 @@ def no_fault_fixture_bundle() -> tuple[dict, dict]:
             ),
             request,
             collected_at=NOW,
-        )
+        ),
+        EvidenceBuilder().build(
+            EvidenceDraft(
+                source="deployment",
+                kind="deployment-change",
+                observed_at="2026-08-12T02:05:00Z",
+                subject={
+                    "cluster_id": "agent-rca-chaos-eval",
+                    "api_version": "apps/v1",
+                    "kind": "Deployment",
+                    "namespace": "online-boutique",
+                    "name": "frontend",
+                    "uid": "uid-frontend-deployment",
+                    "exists": True,
+                },
+                summary="Deployment history returned NO_CHANGES.",
+                facts={
+                    "result_status": "NO_CHANGES",
+                    "current_revision": 1,
+                    "retained_revision_count": 1,
+                    "window_change_count": 0,
+                    "history_source": "kubernetes-replicaset",
+                },
+                provider="kubernetes-deployment-history",
+                query="get frontend deployment history",
+                locator="k8s://online-boutique/Deployment/frontend/revisions",
+            ),
+            request,
+            collected_at=NOW,
+        ),
     ]
     subject = evidence[0]["subject"]
     bundle["evidence"] = evidence
@@ -227,8 +256,14 @@ def no_fault_fixture_bundle() -> tuple[dict, dict]:
     bundle["incident"]["alert"]["labels"]["service"] = "frontend"
     bundle["context"]["source_entity"] = subject
     bundle["context"]["scope"]["entity_uids"] = [subject["uid"]]
-    bundle["context"]["evidence_ids"] = [evidence[0]["evidence_id"]]
-    bundle["context"]["recent_change_evidence_ids"] = []
+    bundle["context"]["evidence_ids"] = [
+        item["evidence_id"] for item in evidence
+    ]
+    # Recent state/event Evidence is allowed. Deployment history is the
+    # authoritative no-change signal for this control.
+    bundle["context"]["recent_change_evidence_ids"] = [
+        evidence[0]["evidence_id"]
+    ]
     bundle["context"]["collector_failures"] = []
     bundle["context"]["localization"]["context_completeness"] = 1.0
     bundle["control_attestation"] = {
@@ -436,6 +471,81 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
         ] = "c" * 64
 
         with self.assertRaisesRegex(ContractViolation, "changed its Deployment"):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
+    def test_no_fault_control_requires_explicit_deployment_no_changes(self) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        bundle["evidence"] = bundle["evidence"][:1]
+        bundle["context"]["evidence_ids"] = [
+            bundle["evidence"][0]["evidence_id"]
+        ]
+
+        with self.assertRaisesRegex(ContractViolation, "NO_CHANGES Evidence"):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
+    def test_no_fault_control_allows_recent_state_but_rejects_deployment_change(
+        self,
+    ) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        request = CollectionRequest(
+            request_id="req-no-fault-detected-change-fixture",
+            incident_id=bundle["incident"]["incident_id"],
+            window=EvidenceWindow(
+                start="2026-08-12T00:30:00Z",
+                end="2026-08-12T05:00:00Z",
+            ),
+            scope=ResourceScope(
+                namespace="online-boutique",
+                resource_names=("frontend",),
+                resource_name_prefixes=("frontend-",),
+            ),
+            timeout_seconds=1,
+        )
+        detected = EvidenceBuilder().build(
+            EvidenceDraft(
+                source="deployment",
+                kind="deployment-change",
+                observed_at="2026-08-12T02:04:00Z",
+                subject=bundle["evidence"][1]["subject"],
+                summary="frontend Deployment revision changed.",
+                facts={
+                    "result_status": "CHANGE_DETECTED",
+                    "revision": 2,
+                    "previous_revision": 1,
+                    "replica_set": "frontend-00002",
+                    "occurred_at": "2026-08-12T02:04:00Z",
+                    "changed_fields": ["containers.server.image"],
+                    "before": {"containers": []},
+                    "after": {"containers": []},
+                    "retained_revision_count": 2,
+                    "history_source": "kubernetes-replicaset",
+                },
+                provider="kubernetes-deployment-history",
+                query="get frontend deployment history",
+                locator="k8s://online-boutique/Deployment/frontend/revisions",
+            ),
+            request,
+            collected_at=NOW,
+        )
+        bundle["evidence"][1] = detected
+        bundle["context"]["evidence_ids"] = [
+            item["evidence_id"] for item in bundle["evidence"]
+        ]
+        bundle["context"]["recent_change_evidence_ids"].append(
+            detected["evidence_id"]
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "detected Deployment"):
             build_controlled_fault_evaluation(
                 bundle,
                 scenario,

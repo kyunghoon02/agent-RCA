@@ -1247,9 +1247,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-fd3ab3b6517c",
+            "image_tag": "runtime-70a2dfa3ec81",
             "image_digest": (
-                "sha256:4ebb06b9161cbd7d1e128e3a890092d6ea51214d185a5123fa0bb4e0d6fcfbd7"
+                "sha256:16a0f0dfd9d593d2f395c4401a1ea017f2aa4b85efcbcb5d1790522b289407ce"
             ),
         },
         "viewer_frontend": {
@@ -2716,7 +2716,8 @@ def validate_controlled_fault_scenarios() -> None:
         "outcome": "ABSTAIN",
         "root_cause_ids": [],
         "deterministic_rules_not_applicable": True,
-        "recent_change_evidence_ids_maximum": 0,
+        "detected_deployment_changes_maximum": 0,
+        "deployment_no_change_evidence_minimum": 1,
         "collector_failures_maximum": 0,
         "minimum_context_completeness": 0.7,
     }:
@@ -2778,6 +2779,7 @@ def validate_controlled_fault_scenarios() -> None:
         "causal_roles": [],
         "causal_precision_recall_applicable": False,
         "require_all_registered_rules_not_applicable": True,
+        "require_explicit_deployment_no_changes": True,
         "require_post_run_attestation": True,
     }:
         raise ValidationFailure("no-fault Ground Truth policy changed")
