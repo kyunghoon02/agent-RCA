@@ -11,6 +11,30 @@ private firewall paths.
 It intentionally does not run `kubeadm reset`, distribute an admin kubeconfig
 off a VM, or create public application ingress.
 
+## Directory map
+
+```text
+inventories/  SSH targets only; real files are ignored, examples are tracked
+group_vars/   shared pins plus control, target and observability profiles
+playbooks/    thin workflow entrypoints selected by Make targets
+roles/        reusable bootstrap, stack, verification, wiring and evaluation units
+```
+
+Roles use these suffixes consistently:
+
+- `*_stack`: reconcile one deployed component.
+- `*_verify`: perform read-only runtime checks for that component.
+- `*_harness`: own one bounded fault or control experiment and its restoration.
+- `three_domain_*`: wire private access between the target, observability and
+  RCA control domains.
+
+`controlled_fault_evaluation` owns the shared post-injection path used by the
+image-pull and missing-ConfigMap harnesses: Alertmanager submission, Context and
+Agent completion waits, Evidence export, private Ground Truth scoring and alert
+resolution. Each scenario harness retains only its own baseline, injection,
+watchdog and exact restoration logic. OOM and no-fault remain separate because
+their external workload, Chaos Mesh and post-run attestation contracts differ.
+
 ## Local controller setup
 
 ```bash

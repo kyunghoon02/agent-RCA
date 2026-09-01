@@ -352,6 +352,9 @@ class ProfileAwareIncidentCollectionService:
                 resource_name_prefixes=tuple(
                     f"{name}-" for name in scope.resource_names
                 ),
+                related_resource_kinds=("ConfigMap",)
+                if spec.name == "kubernetes"
+                else (),
                 max_items=scope.max_items,
             )
             specs.append(replace(spec, request_scope=rooted_scope))
@@ -419,10 +422,18 @@ def build_collection_service(
         event_page_size=20,
         max_events=8,
     )
+    required_configmaps = KubernetesStateProvider(
+        kubernetes_client,
+        KubernetesResourceSpec("v1", "ConfigMap", required=True),
+        cluster_id=config.cluster_id,
+        include_events=False,
+    )
     kubernetes_provider = KubernetesIncidentProvider(
         kubernetes_inventory,
         service_events,
         pod_events,
+        required_configmaps,
+        max_required_configmaps=16,
     )
     deployment_provider = DeploymentHistoryProvider(
         kubernetes_client,

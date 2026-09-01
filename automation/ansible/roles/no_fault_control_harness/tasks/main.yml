@@ -120,7 +120,7 @@
       | jq '[.items[] | select(.metadata.annotations["agent-rca.dev/controlled-fault-id"] != null)] | length')"
     locks="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get configmaps \
       --namespace {{ online_boutique_namespace }} --output name \
-      | awk '/agent-rca-(checkout-oom|payment-image-pull)-lock$/ {count++} END {print count+0}')"
+      | awk '/agent-rca-(checkout-oom|payment-image-pull|missing-configmap)-lock$/ {count++} END {print count+0}')"
     echo $((count + annotations + locks))
   args:
     executable: /bin/bash
@@ -659,7 +659,7 @@
           | jq '[.items[] | select(.metadata.annotations["agent-rca.dev/controlled-fault-id"] != null)] | length')"
         locks="$(kubectl --kubeconfig /etc/kubernetes/admin.conf get configmaps \
           --namespace {{ online_boutique_namespace }} --output name \
-          | awk '/agent-rca-(checkout-oom|payment-image-pull)-lock$/ {count++} END {print count+0}')"
+          | awk '/agent-rca-(checkout-oom|payment-image-pull|missing-configmap)-lock$/ {count++} END {print count+0}')"
         echo $((count + annotations + locks))
       args:
         executable: /bin/bash

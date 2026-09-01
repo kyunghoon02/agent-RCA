@@ -63,11 +63,15 @@ class ResourceScope:
     resource_names: Tuple[str, ...]
     resource_name_prefixes: Tuple[str, ...] = field(default_factory=tuple)
     max_items: int = 100
+    related_resource_kinds: Tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "resource_names", tuple(self.resource_names))
         object.__setattr__(
             self, "resource_name_prefixes", tuple(self.resource_name_prefixes)
+        )
+        object.__setattr__(
+            self, "related_resource_kinds", tuple(self.related_resource_kinds)
         )
         if not self.namespace.strip():
             raise ContractViolation("ResourceScope.namespace is required")
@@ -81,6 +85,10 @@ class ResourceScope:
             raise ContractViolation("ResourceScope prefixes must not be empty")
         if len(self.resource_name_prefixes) != len(set(self.resource_name_prefixes)):
             raise ContractViolation("ResourceScope prefixes must be unique")
+        if any(not kind.strip() for kind in self.related_resource_kinds):
+            raise ContractViolation("ResourceScope related kinds must not be empty")
+        if len(self.related_resource_kinds) != len(set(self.related_resource_kinds)):
+            raise ContractViolation("ResourceScope related kinds must be unique")
         if self.max_items <= 0:
             raise ContractViolation("ResourceScope.max_items must be positive")
 
@@ -89,6 +97,50 @@ class ResourceScope:
             return False
         return name in self.resource_names or any(
             name.startswith(prefix) for prefix in self.resource_name_prefixes
+        )
+
+    def contains_evidence_subject(
+        self,
+        subject: Mapping[str, Any],
+        facts: Mapping[str, Any],
+    ) -> bool:
+        """Admit an exact root, a rooted dynamic name, or a proven relation target.
+
+        Related subjects are intentionally fail-closed. The provider must include
+        the exact destination plus at least one UID-bearing source already admitted
+        by this scope. This lets a rooted Pod authorize a read-only ConfigMap
+        existence check without allowing an alert label to widen collection.
+        """
+
+        name = subject.get("name")
+        if self.contains_resource_name(name):
+            return True
+        kind = subject.get("kind")
+        if kind not in self.related_resource_kinds:
+            return False
+        derivation = facts.get("scope_derivation")
+        if not isinstance(derivation, Mapping):
+            return False
+        if (
+            derivation.get("relation_type") != "REFERENCES"
+            or derivation.get("destination_kind") != kind
+            or derivation.get("destination_name") != name
+            or derivation.get("destination_namespace") != self.namespace
+            or subject.get("namespace") != self.namespace
+        ):
+            return False
+        sources = derivation.get("sources")
+        if not isinstance(sources, list) or not sources:
+            return False
+        return any(
+            isinstance(source, Mapping)
+            and source.get("kind") == "Pod"
+            and source.get("cluster_id") == subject.get("cluster_id")
+            and source.get("namespace") == self.namespace
+            and isinstance(source.get("uid"), str)
+            and bool(source.get("uid"))
+            and self.contains_resource_name(source.get("name"))
+            for source in sources
         )
 
 
@@ -219,10 +271,10 @@ class EvidenceBuilder:
                 f"Evidence subject namespace {subject_namespace!r} is outside "
                 f"scope {request.scope.namespace!r}"
             )
-        subject_name = subject.get("name")
-        if not request.scope.contains_resource_name(subject_name):
+        if not request.scope.contains_evidence_subject(subject, draft.facts):
             raise ContractViolation(
-                f"Evidence subject {subject_name!r} is outside the requested resource scope"
+                f"Evidence subject {subject.get('name')!r} is outside the requested "
+                "resource scope"
             )
 
         summary, summary_redactions = redact(draft.summary, "$.summary")
@@ -341,8 +393,7 @@ def validate_provider_batch(
         )
     for draft in batch.items:
         namespace = draft.subject.get("namespace")
-        name = draft.subject.get("name")
         if namespace != request.scope.namespace:
             raise ContractViolation("provider returned evidence outside namespace scope")
-        if not request.scope.contains_resource_name(name):
+        if not request.scope.contains_evidence_subject(draft.subject, draft.facts):
             raise ContractViolation("provider returned evidence outside resource scope")

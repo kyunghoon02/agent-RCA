@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import unittest
 from datetime import datetime, timezone
 
@@ -264,6 +265,59 @@ class KubernetesInventoryProviderTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "RESOLVED")
         self.assertEqual(result.method, "logical-service-exact")
+
+    def test_inventory_exposes_only_required_configmap_names_and_reference_types(self) -> None:
+        resources = copy.deepcopy(inventory_resources())
+        pod = resources["Pod"][0]
+        pod["spec"]["volumes"] = [
+            {
+                "name": "required-settings",
+                "configMap": {"name": "checkout-settings"},
+            },
+            {
+                "name": "optional-settings",
+                "configMap": {
+                    "name": "optional-checkout-settings",
+                    "optional": True,
+                },
+            },
+        ]
+        pod["spec"]["containers"][0]["env"] = [
+            {
+                "name": "SENSITIVE_SETTING",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "name": "checkout-runtime",
+                        "key": "must-not-be-copied",
+                    }
+                },
+            }
+        ]
+        provider = KubernetesInventoryProvider(
+            StaticInventoryClient(resources),
+            cluster_id="agent-rca-dev",
+        )
+
+        batch = provider.collect(request())
+        pod_draft = next(
+            item for item in batch.items if item.subject["kind"] == "Pod"
+        )
+
+        self.assertEqual(
+            pod_draft.facts["required_configmap_references"],
+            [
+                {
+                    "name": "checkout-runtime",
+                    "reference_keys": ["container-env-configmap-key"],
+                },
+                {
+                    "name": "checkout-settings",
+                    "reference_keys": ["pod-volume-configmap"],
+                },
+            ],
+        )
+        self.assertNotIn("optional-checkout-settings", str(pod_draft.facts))
+        self.assertNotIn("must-not-be-copied", str(pod_draft.facts))
 
     def test_inventory_rejects_a_prefix_not_derived_from_an_exact_root(self) -> None:
         provider = KubernetesInventoryProvider(

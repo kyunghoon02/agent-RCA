@@ -1,0 +1,18 @@
+---
+- name: Evaluate the controlled checkoutservice missing ConfigMap scenario
+  hosts: fault_target
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
+    - ../../../platform/versions.yaml
+  vars:
+    checkout_missing_configmap_scenario: >-
+      {{ lookup(
+        'file',
+        playbook_dir + '/../../../evaluation/scenarios/checkoutservice-missing-configmap.yaml'
+      ) | from_yaml }}
+
+  roles:
+    - role: checkout_missing_configmap_fault_harness

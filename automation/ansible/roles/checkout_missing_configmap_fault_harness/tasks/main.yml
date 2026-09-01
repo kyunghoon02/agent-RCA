@@ -1,0 +1,430 @@
+---
+- name: Require explicit controlled missing-ConfigMap authorization
+  ansible.builtin.assert:
+    that:
+      - confirm_controlled_fault | default('') == 'yes'
+      - controlled_fault_environment | default('') == 'development'
+      - checkout_missing_configmap_scenario.environment.class == 'development'
+      - checkout_missing_configmap_scenario.target.namespace == online_boutique_namespace
+      - checkout_missing_configmap_scenario.target.name == 'checkoutservice'
+      - checkout_missing_configmap_scenario.target.container == 'server'
+      - groups['fault_target'] | length == 1
+      - groups['observability_domain'] | length == 1
+      - groups['rca_control'] | length == 1
+    fail_msg: >-
+      This destructive development-only scenario requires
+      CONFIRM_CONTROLLED_FAULT=yes through the Make target.
+
+- name: Read checkoutservice before missing-ConfigMap injection
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment checkoutservice
+    --namespace {{ online_boutique_namespace }} --output json
+  register: checkout_missing_configmap_deployment_result
+  changed_when: false
+
+- name: Read checkoutservice Pods before missing-ConfigMap injection
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get pods --namespace {{ online_boutique_namespace }}
+    --selector app=checkoutservice --output json
+  register: checkout_missing_configmap_pods_result
+  changed_when: false
+
+- name: Hash the original checkoutservice Pod template
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get deployment checkoutservice \
+      --namespace {{ online_boutique_namespace }} --output json \
+      | jq -Sc '.spec.template' | sha256sum | awk '{print $1}'
+  args:
+    executable: /bin/bash
+  register: checkout_missing_configmap_template_hash_before
+  changed_when: false
+
+- name: Check that the preregistered ConfigMap is absent
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap {{ checkout_missing_configmap_scenario.fault.configmap_name }}
+    --namespace {{ online_boutique_namespace }}
+  register: checkout_missing_configmap_absent_before
+  changed_when: false
+  failed_when: false
+
+- name: Freeze missing-ConfigMap baseline and bounded patch documents
+  ansible.builtin.set_fact:
+    checkout_missing_configmap_original_deployment: >-
+      {{ checkout_missing_configmap_deployment_result.stdout | from_json }}
+    checkout_missing_configmap_original_pods: >-
+      {{ (checkout_missing_configmap_pods_result.stdout | from_json)['items'] }}
+    checkout_missing_configmap_original_container: >-
+      {{ (checkout_missing_configmap_deployment_result.stdout | from_json).spec.template.spec.containers
+      | selectattr('name', 'equalto', checkout_missing_configmap_scenario.target.container)
+      | first }}
+    checkout_missing_configmap_id: >-
+      checkout-missing-configmap-{{ ansible_facts.date_time.epoch }}
+    checkout_missing_configmap_lock_name: agent-rca-missing-configmap-lock
+    checkout_missing_configmap_watchdog_log: /tmp/agent-rca-missing-configmap-watchdog.log
+    checkout_missing_configmap_lock_created: false
+    checkout_missing_configmap_watchdog_started: false
+    checkout_missing_configmap_fault_applied: false
+    checkout_missing_configmap_apply_patch:
+      spec:
+        template:
+          spec:
+            containers:
+              - name: "{{ checkout_missing_configmap_scenario.target.container }}"
+                volumeMounts:
+                  - name: "{{ checkout_missing_configmap_scenario.fault.volume_name }}"
+                    mountPath: "{{ checkout_missing_configmap_scenario.fault.mount_path }}"
+                    readOnly: true
+            volumes:
+              - name: "{{ checkout_missing_configmap_scenario.fault.volume_name }}"
+                configMap:
+                  name: "{{ checkout_missing_configmap_scenario.fault.configmap_name }}"
+                  optional: false
+    checkout_missing_configmap_cleanup_patch:
+      spec:
+        template:
+          spec:
+            containers:
+              - name: "{{ checkout_missing_configmap_scenario.target.container }}"
+                volumeMounts:
+                  - name: "{{ checkout_missing_configmap_scenario.fault.volume_name }}"
+                    $patch: delete
+            volumes:
+              - name: "{{ checkout_missing_configmap_scenario.fault.volume_name }}"
+                $patch: delete
+
+- name: Require an exact healthy missing-ConfigMap baseline
+  ansible.builtin.assert:
+    that:
+      - checkout_missing_configmap_absent_before.rc != 0
+      - checkout_missing_configmap_original_deployment.status.readyReplicas | default(0) | int == checkout_missing_configmap_scenario.baseline.ready_replicas
+      - checkout_missing_configmap_original_deployment.status.availableReplicas | default(0) | int == checkout_missing_configmap_scenario.baseline.ready_replicas
+      - checkout_missing_configmap_original_pods | length == 1
+      - checkout_missing_configmap_original_pods[0].status.phase == 'Running'
+      - checkout_missing_configmap_original_pods[0].status.containerStatuses[0].ready | bool
+      - checkout_missing_configmap_original_pods[0].status.containerStatuses[0].restartCount | int == checkout_missing_configmap_scenario.baseline.fresh_pod_restart_count
+      - >-
+        checkout_missing_configmap_original_deployment.spec.template.spec.volumes
+        | default([])
+        | selectattr('name', 'equalto', checkout_missing_configmap_scenario.fault.volume_name)
+        | list | length == 0
+      - >-
+        checkout_missing_configmap_original_container.volumeMounts
+        | default([])
+        | selectattr('name', 'equalto', checkout_missing_configmap_scenario.fault.volume_name)
+        | list | length == 0
+    fail_msg: >-
+      checkoutservice is not at the preregistered Ready, restart-zero,
+      missing-reference-free baseline.
+
+- name: Execute the bounded controlled missing-ConfigMap experiment
+  block:
+    - name: Check controlled-fault locks before missing-ConfigMap injection
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for lock in \
+          agent-rca-checkout-oom-lock \
+          agent-rca-payment-image-pull-lock \
+          agent-rca-no-fault-control-lock \
+          {{ checkout_missing_configmap_lock_name }}; do
+          if kubectl --kubeconfig /etc/kubernetes/admin.conf get configmap "$lock" \
+            --namespace {{ online_boutique_namespace }} >/dev/null 2>&1; then
+            echo "$lock"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: checkout_missing_configmap_existing_locks
+      changed_when: false
+
+    - name: Refuse concurrent or uncleared controlled faults
+      ansible.builtin.assert:
+        that:
+          - checkout_missing_configmap_existing_locks.stdout | trim | length == 0
+        fail_msg: >-
+          A controlled-fault lock already exists. Verify workload health before
+          removing a stale lock or starting another fault.
+
+    - name: Create the missing-ConfigMap fault lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        create configmap {{ checkout_missing_configmap_lock_name }}
+        --namespace {{ online_boutique_namespace }}
+        --from-literal=run_id={{ checkout_missing_configmap_id }}
+      changed_when: true
+
+    - name: Mark the missing-ConfigMap fault lock as owned by this run
+      ansible.builtin.set_fact:
+        checkout_missing_configmap_lock_created: true
+
+    - name: Start a remote fail-safe reference-removal watchdog
+      ansible.builtin.shell: |
+        set -euo pipefail
+        nohup /bin/bash -c '
+          sleep {{ checkout_missing_configmap_scenario.fault.maximum_active_seconds }}
+          kubectl --kubeconfig /etc/kubernetes/admin.conf patch \
+            deployment checkoutservice \
+            --namespace {{ online_boutique_namespace }} \
+            --type strategic --patch "$1" || true
+          kubectl --kubeconfig /etc/kubernetes/admin.conf annotate \
+            deployment checkoutservice --namespace {{ online_boutique_namespace }} \
+            agent-rca.dev/controlled-fault-id- || true
+          kubectl --kubeconfig /etc/kubernetes/admin.conf delete \
+            configmap {{ checkout_missing_configmap_lock_name }} \
+            --namespace {{ online_boutique_namespace }} --ignore-not-found=true || true
+        ' _ {{ checkout_missing_configmap_cleanup_patch | to_json | quote }} \
+          >{{ checkout_missing_configmap_watchdog_log | quote }} 2>&1 </dev/null &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: checkout_missing_configmap_watchdog_process
+      changed_when: true
+
+    - name: Mark the missing-ConfigMap watchdog as started
+      ansible.builtin.set_fact:
+        checkout_missing_configmap_watchdog_started: true
+
+    - name: Annotate the controlled missing-ConfigMap change
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf annotate
+        deployment checkoutservice
+        --namespace {{ online_boutique_namespace }}
+        agent-rca.dev/controlled-fault-id={{ checkout_missing_configmap_id }}
+        --overwrite
+      changed_when: true
+
+    - name: Add the preregistered required ConfigMap volume reference
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - patch
+          - deployment
+          - checkoutservice
+          - --namespace
+          - "{{ online_boutique_namespace }}"
+          - --type
+          - strategic
+          - --patch
+          - "{{ checkout_missing_configmap_apply_patch | to_json }}"
+      changed_when: true
+
+    - name: Mark the missing-ConfigMap reference as applied
+      ansible.builtin.set_fact:
+        checkout_missing_configmap_fault_applied: true
+
+    - name: Wait for a new checkoutservice Pod referencing the absent ConfigMap
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods \
+          --namespace {{ online_boutique_namespace }} \
+          --selector app=checkoutservice --output json \
+        | jq -c '[.items[]
+          | select(any(.spec.volumes[]?;
+              .name == "{{ checkout_missing_configmap_scenario.fault.volume_name }}"
+              and .configMap.name == "{{ checkout_missing_configmap_scenario.fault.configmap_name }}"))
+          | {name: .metadata.name, uid: .metadata.uid, phase: .status.phase}
+        ] | sort_by(.name) | last // {}'
+      args:
+        executable: /bin/bash
+      register: checkout_missing_configmap_failed_pod_result
+      changed_when: false
+      until: >-
+        checkout_missing_configmap_failed_pod_result.stdout | trim | length > 2 and
+        (checkout_missing_configmap_failed_pod_result.stdout | from_json).uid
+        | default('') | length > 0
+      retries: 40
+      delay: 3
+
+    - name: Freeze the failed checkoutservice Pod identity
+      ansible.builtin.set_fact:
+        checkout_missing_configmap_failed_pod: >-
+          {{ checkout_missing_configmap_failed_pod_result.stdout | from_json }}
+
+    - name: Wait for an exact FailedMount missing-ConfigMap Event
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get events \
+          --namespace {{ online_boutique_namespace }} \
+          --field-selector involvedObject.name={{ checkout_missing_configmap_failed_pod.name }} \
+          --output json \
+        | jq '[.items[]
+          | select(.involvedObject.uid == "{{ checkout_missing_configmap_failed_pod.uid }}")
+          | select(.reason == "FailedMount")
+          | select((.message // "") | contains("{{ checkout_missing_configmap_scenario.fault.configmap_name }}"))
+          | select((.message // "") | ascii_downcase | contains("not found"))
+        ] | length'
+      args:
+        executable: /bin/bash
+      register: checkout_missing_configmap_event_result
+      changed_when: false
+      until: checkout_missing_configmap_event_result.stdout | trim | int > 0
+      retries: 30
+      delay: 2
+
+    - name: Observe the preregistered missing-ConfigMap window
+      ansible.builtin.pause:
+        seconds: "{{ checkout_missing_configmap_scenario.fault.observation_seconds }}"
+
+    - name: Run the shared controlled-fault evaluation pipeline
+      ansible.builtin.include_role:
+        name: controlled_fault_evaluation
+      vars:
+        controlled_fault_runtime:
+          run_id: "{{ checkout_missing_configmap_id }}"
+          scenario_path: evaluation/scenarios/checkoutservice-missing-configmap.yaml
+          alert:
+            name: "{{ checkout_missing_configmap_scenario.alert.name }}"
+            service: "{{ checkout_missing_configmap_scenario.alert.service }}"
+            rca_enabled: "{{ checkout_missing_configmap_scenario.alert.rca_enabled }}"
+            agent_rca_enabled: "{{ checkout_missing_configmap_scenario.alert.agent_rca_enabled }}"
+          summary: Controlled checkoutservice missing ConfigMap evaluation
+          generator_url: https://prometheus.invalid/controlled-missing-configmap
+
+  always:
+    - name: Remove the exact missing ConfigMap volume reference
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - patch
+          - deployment
+          - checkoutservice
+          - --namespace
+          - "{{ online_boutique_namespace }}"
+          - --type
+          - strategic
+          - --patch
+          - "{{ checkout_missing_configmap_cleanup_patch | to_json }}"
+      register: checkout_missing_configmap_restore_result
+      changed_when: checkout_missing_configmap_restore_result.rc == 0
+      failed_when: false
+      when: checkout_missing_configmap_fault_applied | bool
+
+    - name: Remove the missing-ConfigMap controlled-fault annotation
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf annotate
+        deployment checkoutservice
+        --namespace {{ online_boutique_namespace }}
+        agent-rca.dev/controlled-fault-id-
+      register: checkout_missing_configmap_annotation_cleanup
+      changed_when: checkout_missing_configmap_annotation_cleanup.rc == 0
+      failed_when: false
+      when: checkout_missing_configmap_lock_created | bool
+
+    - name: Wait for the restored checkoutservice rollout
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        rollout status deployment/checkoutservice
+        --namespace {{ online_boutique_namespace }} --timeout=5m
+      register: checkout_missing_configmap_restore_rollout
+      changed_when: false
+      failed_when: false
+      when: checkout_missing_configmap_fault_applied | bool
+
+    - name: Resolve the missing-ConfigMap evaluation alert
+      ansible.builtin.include_role:
+        name: controlled_fault_evaluation
+        tasks_from: resolve-alert
+      vars:
+        controlled_fault_runtime:
+          summary: Controlled checkoutservice missing ConfigMap evaluation
+          generator_url: https://prometheus.invalid/controlled-missing-configmap
+
+    - name: Stop the missing-ConfigMap restoration watchdog
+      ansible.builtin.shell: |
+        pid={{ checkout_missing_configmap_watchdog_process.stdout | default('0') | trim | int }}
+        if [ "$pid" -gt 1 ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: checkout_missing_configmap_watchdog_started | bool
+
+    - name: Remove the missing-ConfigMap fault lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf delete
+        configmap {{ checkout_missing_configmap_lock_name }}
+        --namespace {{ online_boutique_namespace }}
+        --ignore-not-found=true
+      changed_when: false
+      failed_when: false
+      when: checkout_missing_configmap_lock_created | bool
+
+    - name: Remove the missing-ConfigMap watchdog log
+      ansible.builtin.file:
+        path: "{{ checkout_missing_configmap_watchdog_log }}"
+        state: absent
+      changed_when: false
+
+    - name: Read the restored checkoutservice Deployment
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get deployment checkoutservice
+        --namespace {{ online_boutique_namespace }} --output json
+      register: checkout_missing_configmap_restored_deployment_result
+      changed_when: false
+      failed_when: false
+      when: checkout_missing_configmap_fault_applied | bool
+
+    - name: Read the restored checkoutservice Pods
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods
+        --namespace {{ online_boutique_namespace }}
+        --selector app=checkoutservice --output json
+      register: checkout_missing_configmap_restored_pods_result
+      changed_when: false
+      failed_when: false
+      when: checkout_missing_configmap_fault_applied | bool
+
+    - name: Recheck that the preregistered ConfigMap remains absent
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get configmap {{ checkout_missing_configmap_scenario.fault.configmap_name }}
+        --namespace {{ online_boutique_namespace }}
+      register: checkout_missing_configmap_absent_after
+      changed_when: false
+      failed_when: false
+      when: checkout_missing_configmap_fault_applied | bool
+
+    - name: Hash the restored checkoutservice Pod template
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get deployment checkoutservice \
+          --namespace {{ online_boutique_namespace }} --output json \
+          | jq -Sc '.spec.template' | sha256sum | awk '{print $1}'
+      args:
+        executable: /bin/bash
+      register: checkout_missing_configmap_template_hash_after
+      changed_when: false
+      failed_when: false
+      when: checkout_missing_configmap_fault_applied | bool
+
+    - name: Require successful exact missing-ConfigMap restoration
+      ansible.builtin.assert:
+        that:
+          - checkout_missing_configmap_restore_result.rc | default(1) == 0
+          - checkout_missing_configmap_restore_rollout.rc | default(1) == 0
+          - checkout_missing_configmap_restored_deployment_result.rc | default(1) == 0
+          - checkout_missing_configmap_restored_pods_result.rc | default(1) == 0
+          - checkout_missing_configmap_absent_after.rc | default(0) != 0
+          - checkout_missing_configmap_template_hash_after.stdout | trim == checkout_missing_configmap_template_hash_before.stdout | trim
+          - >-
+            (checkout_missing_configmap_restored_deployment_result.stdout | from_json).status.readyReplicas
+            | default(0) | int == checkout_missing_configmap_scenario.restoration.ready_replicas
+          - >-
+            (checkout_missing_configmap_restored_pods_result.stdout | from_json)['items'] | length == 1
+          - >-
+            (checkout_missing_configmap_restored_pods_result.stdout | from_json)['items'][0].status.containerStatuses[0].ready | bool
+          - >-
+            (checkout_missing_configmap_restored_pods_result.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
+            | int == checkout_missing_configmap_scenario.restoration.fresh_pod_restart_count
+        fail_msg: >-
+          checkoutservice did not return to the exact original Pod template,
+          Ready, restart-zero baseline; inspect the cluster before another run.
+      when: checkout_missing_configmap_fault_applied | bool

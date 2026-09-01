@@ -1,0 +1,22 @@
+---
+- name: Resolve the shared controlled-fault Alertmanager alert
+  ansible.builtin.uri:
+    url: >-
+      http://{{ (controlled_fault_alertmanager_service.stdout | from_json).spec.clusterIP
+      }}:9093/api/v2/alerts
+    method: POST
+    body_format: json
+    body: >-
+      {{ [{
+        'labels': controlled_fault_alert_labels,
+        'annotations': {'summary': controlled_fault_runtime.summary},
+        'startsAt': controlled_fault_alert_times.starts_at,
+        'endsAt': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'),
+        'generatorURL': controlled_fault_runtime.generator_url
+      }] }}
+    status_code: 200
+  delegate_to: "{{ groups['observability_domain'][0] }}"
+  register: controlled_fault_alert_resolution
+  changed_when: controlled_fault_alert_resolution.status | default(0) == 200
+  failed_when: false
+  when: controlled_fault_alert_submitted | default(false) | bool

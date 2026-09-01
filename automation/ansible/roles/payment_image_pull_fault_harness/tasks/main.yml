@@ -44,12 +44,10 @@
     payment_image_pull_id: >-
       payment-image-pull-{{ ansible_facts.date_time.epoch }}
     payment_image_pull_lock_name: agent-rca-payment-image-pull-lock
-    payment_image_pull_repo_root: "{{ playbook_dir }}/../../.."
     payment_image_pull_watchdog_log: /tmp/agent-rca-payment-image-pull-watchdog.log
     payment_image_pull_lock_created: false
     payment_image_pull_watchdog_started: false
     payment_image_pull_fault_applied: false
-    payment_image_pull_alert_submitted: false
 
 - name: Require an exact healthy image baseline before fault injection
   ansible.builtin.assert:
@@ -94,12 +92,22 @@
       changed_when: false
       failed_when: false
 
+    - name: Check for an active missing-ConfigMap fault lock
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get configmap agent-rca-missing-configmap-lock
+        --namespace {{ online_boutique_namespace }}
+      register: payment_image_pull_missing_configmap_lock
+      changed_when: false
+      failed_when: false
+
     - name: Refuse concurrent or uncleared controlled faults
       ansible.builtin.assert:
         that:
           - payment_image_pull_existing_lock.rc != 0
           - payment_image_pull_existing_oom_lock.rc != 0
           - payment_image_pull_no_fault_control_lock.rc != 0
+          - payment_image_pull_missing_configmap_lock.rc != 0
         fail_msg: >-
           A controlled-fault lock already exists. Verify workload health before
           removing a stale lock or starting another fault.
@@ -226,307 +234,20 @@
       ansible.builtin.pause:
         seconds: "{{ payment_image_pull_scenario.fault.observation_seconds }}"
 
-    - name: Read the central Alertmanager Service for image-pull evaluation
-      ansible.builtin.command: >-
-        kubectl --kubeconfig /etc/kubernetes/admin.conf
-        get service {{ alertmanager_service_name }}
-        --namespace {{ observability_namespace }} --output json
-      delegate_to: "{{ groups['observability_domain'][0] }}"
-      register: payment_image_pull_alertmanager_service
-      changed_when: false
-
-    - name: Read bounded image-pull Alertmanager timestamps
-      ansible.builtin.shell: |
-        set -eu
-        printf '{"starts_at":"%s","ends_at":"%s"}\n' \
-          "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-          "$(date -u -d '+10 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
-      args:
-        executable: /bin/bash
-      delegate_to: "{{ groups['observability_domain'][0] }}"
-      register: payment_image_pull_alert_times_result
-      changed_when: false
-
-    - name: Freeze the controlled image-pull alert payload
-      ansible.builtin.set_fact:
-        payment_image_pull_alert_times: >-
-          {{ payment_image_pull_alert_times_result.stdout | from_json }}
-        payment_image_pull_alert_labels:
-          alertname: "{{ payment_image_pull_scenario.alert.name }}"
-          cluster_id: "{{ cluster_name }}"
-          namespace: "{{ online_boutique_namespace }}"
-          severity: critical
-          service: "{{ payment_image_pull_scenario.alert.service }}"
-          rca_enabled: "{{ payment_image_pull_scenario.alert.rca_enabled }}"
-          agent_rca_enabled: "{{ payment_image_pull_scenario.alert.agent_rca_enabled }}"
-          verification_id: "{{ payment_image_pull_id }}"
-
-    - name: Submit the controlled image-pull alert through Alertmanager
-      ansible.builtin.uri:
-        url: >-
-          http://{{ (payment_image_pull_alertmanager_service.stdout | from_json).spec.clusterIP
-          }}:9093/api/v2/alerts
-        method: POST
-        body_format: json
-        body: >-
-          {{ [{
-            'labels': payment_image_pull_alert_labels,
-            'annotations': {
-              'summary': 'Controlled paymentservice image pull evaluation'
-            },
-            'startsAt': payment_image_pull_alert_times.starts_at,
-            'endsAt': payment_image_pull_alert_times.ends_at,
-            'generatorURL': 'https://prometheus.invalid/controlled-payment-image-pull'
-          }] }}
-        status_code: 200
-      delegate_to: "{{ groups['observability_domain'][0] }}"
-      changed_when: true
-
-    - name: Mark the controlled image-pull alert as submitted
-      ansible.builtin.set_fact:
-        payment_image_pull_alert_submitted: true
-
-    - name: Wait for a unique image-pull Frozen Context Package
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/kubernetes/admin.conf
-          - exec
-          - --namespace
-          - "{{ incident_platform_namespace }}"
-          - statefulset/{{ incident_platform_postgresql_statefulset }}
-          - --
-          - /bin/sh
-          - -ec
-          - >-
-            PGPASSWORD="$POSTGRES_PASSWORD" psql
-            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
-            --tuples-only --no-align
-            --command="SELECT CASE
-              WHEN count(*) FILTER (WHERE incident.status = 'FAILED') > 0
-                THEN 'FAILED'
-              WHEN count(*) FILTER (
-                WHERE incident.status IN ('ANALYZING', 'REPORTED', 'PARTIAL')
-                  AND EXISTS (
-                    SELECT 1 FROM context_packages context
-                    WHERE context.incident_id = incident.incident_id
-                  )
-              ) = 1 THEN 'READY'
-              ELSE 'WAITING'
-            END FROM incidents incident
-            WHERE incident.document->'alert'->'labels'->>'verification_id'
-              = '{{ payment_image_pull_id }}';"
-      register: payment_image_pull_context_wait
-      delegate_to: "{{ groups['rca_control'][0] }}"
-      changed_when: false
-      until: payment_image_pull_context_wait.stdout | trim in ['READY', 'FAILED']
-      retries: 40
-      delay: 5
-
-    - name: Require successful image-pull collection and localization
-      ansible.builtin.assert:
-        that:
-          - payment_image_pull_context_wait.stdout | trim == 'READY'
-        fail_msg: >-
-          The controlled image-pull Incident failed before a Context Package
-          was frozen.
-
-    - name: Wait for the image-pull Agent work to reach a terminal state
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/kubernetes/admin.conf
-          - exec
-          - --namespace
-          - "{{ incident_platform_namespace }}"
-          - statefulset/{{ incident_platform_postgresql_statefulset }}
-          - --
-          - /bin/sh
-          - -ec
-          - >-
-            PGPASSWORD="$POSTGRES_PASSWORD" psql
-            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
-            --tuples-only --no-align
-            --command="WITH target AS (
-              SELECT incident.incident_id, incident.status
-              FROM incidents incident
-              WHERE incident.document->'alert'->'labels'->>'verification_id'
-                = '{{ payment_image_pull_id }}'
-              ORDER BY incident.created_at DESC LIMIT 1
-            ) SELECT json_build_object(
-              'terminal', COALESCE(work.state IN ('SUCCEEDED', 'FAILED'), false),
-              'incident_id', target.incident_id,
-              'incident_status', target.status,
-              'work_state', work.state,
-              'work_error_code', work.last_error_code,
-              'agent_status', run.document->>'status',
-              'agent_reason_code', run.document->>'reason_code',
-              'model', run.document->>'model',
-              'usage', run.document->'usage',
-              'report_status', report.document->>'status',
-              'report_path', report.document->>'path',
-              'report_root_cause_id', report.document->'root_cause'->>'cause_id'
-            ) FROM target
-            LEFT JOIN incident_analysis_work_items work
-              ON work.incident_id = target.incident_id
-            LEFT JOIN LATERAL (
-              SELECT candidate.document FROM agent_runs candidate
-              WHERE candidate.incident_id = target.incident_id
-              ORDER BY candidate.started_at DESC LIMIT 1
-            ) run ON true
-            LEFT JOIN LATERAL (
-              SELECT candidate.document FROM rca_reports candidate
-              WHERE candidate.incident_id = target.incident_id
-              ORDER BY candidate.generated_at DESC LIMIT 1
-            ) report ON true;"
-      register: payment_image_pull_agent_wait
-      delegate_to: "{{ groups['rca_control'][0] }}"
-      changed_when: false
-      until: >-
-        payment_image_pull_agent_wait.stdout | trim | length > 0 and
-        (payment_image_pull_agent_wait.stdout | from_json).terminal | bool
-      retries: 80
-      delay: 5
-      no_log: true
-
-    - name: Decode the sanitized image-pull Agent result
-      ansible.builtin.set_fact:
-        payment_image_pull_agent_summary: >-
-          {{ payment_image_pull_agent_wait.stdout | from_json }}
-      no_log: true
-
-    - name: Report the sanitized image-pull Agent result
-      ansible.builtin.debug:
-        msg:
-          incident_status: "{{ payment_image_pull_agent_summary.incident_status }}"
-          work_state: "{{ payment_image_pull_agent_summary.work_state }}"
-          work_error_code: >-
-            {{ payment_image_pull_agent_summary.work_error_code | default(none) }}
-          agent_status: >-
-            {{ payment_image_pull_agent_summary.agent_status | default(none) }}
-          agent_reason_code: >-
-            {{ payment_image_pull_agent_summary.agent_reason_code | default(none) }}
-          model: "{{ payment_image_pull_agent_summary.model | default(none) }}"
-          usage: "{{ payment_image_pull_agent_summary.usage | default({}) }}"
-          report_status: >-
-            {{ payment_image_pull_agent_summary.report_status | default(none) }}
-          report_path: >-
-            {{ payment_image_pull_agent_summary.report_path | default(none) }}
-          report_root_cause_id: >-
-            {{ payment_image_pull_agent_summary.report_root_cause_id | default(none) }}
-
-    - name: Export the completed image-pull Incident Evidence snapshot
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/kubernetes/admin.conf
-          - exec
-          - --namespace
-          - "{{ incident_platform_namespace }}"
-          - statefulset/{{ incident_platform_postgresql_statefulset }}
-          - --
-          - /bin/sh
-          - -ec
-          - >-
-            PGPASSWORD="$POSTGRES_PASSWORD" psql
-            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
-            --tuples-only --no-align
-            --command="SELECT json_build_object(
-              'incident', incident.document,
-              'context', (
-                SELECT context.document FROM context_packages context
-                WHERE context.incident_id = incident.incident_id
-                ORDER BY context.frozen_at DESC LIMIT 1
-              ),
-              'evidence', (
-                SELECT COALESCE(json_agg(evidence.document
-                  ORDER BY evidence.observed_at, evidence.evidence_id), '[]'::json)
-                FROM evidence_items evidence
-                WHERE evidence.incident_id = incident.incident_id
-              ),
-              'report', (
-                SELECT report.document FROM rca_reports report
-                WHERE report.incident_id = incident.incident_id
-                ORDER BY report.generated_at DESC LIMIT 1
-              ),
-              'agent_run', (
-                SELECT run.document FROM agent_runs run
-                WHERE run.incident_id = incident.incident_id
-                ORDER BY run.started_at DESC LIMIT 1
-              )
-            ) FROM incidents incident
-            WHERE incident.document->'alert'->'labels'->>'verification_id'
-              = '{{ payment_image_pull_id }}'
-            ORDER BY incident.created_at DESC LIMIT 1;"
-      register: payment_image_pull_bundle_result
-      delegate_to: "{{ groups['rca_control'][0] }}"
-      changed_when: false
-      no_log: true
-
-    - name: Build local-only image-pull Ground Truth and score artifacts
-      ansible.builtin.command:
-        argv:
-          - .venv/bin/python
-          - tools/build_controlled_fault_evaluation.py
-          - --scenario
-          - evaluation/scenarios/paymentservice-image-pull.yaml
-          - --require-agent-outcome
-        chdir: "{{ payment_image_pull_repo_root }}"
-        stdin: "{{ payment_image_pull_bundle_result.stdout | trim }}"
-      environment:
-        PYTHONPATH: src
-      delegate_to: localhost
-      become: false
-      register: payment_image_pull_evaluation_result
-      changed_when: true
-      no_log: true
-
-    - name: Decode the sanitized image-pull evaluation result
-      ansible.builtin.set_fact:
-        payment_image_pull_evaluation_summary: >-
-          {{ payment_image_pull_evaluation_result.stdout | from_json }}
-      no_log: true
-
-    - name: Report the sanitized image-pull scores
-      ansible.builtin.debug:
-        msg:
-          evaluation_case_id: >-
-            {{ payment_image_pull_evaluation_summary.evaluation_case_id }}
-          agent:
-            variant_id: >-
-              {{ payment_image_pull_evaluation_summary.agent.variant_id }}
-            prediction_outcome: >-
-              {{ payment_image_pull_evaluation_summary.agent.prediction_outcome }}
-            metrics: "{{ payment_image_pull_evaluation_summary.agent.metrics }}"
-          deterministic_baseline:
-            variant_id: >-
-              {{ payment_image_pull_evaluation_summary.deterministic_baseline.variant_id }}
-            prediction_outcome: >-
-              {{ payment_image_pull_evaluation_summary.deterministic_baseline.prediction_outcome }}
-            metrics: >-
-              {{ payment_image_pull_evaluation_summary.deterministic_baseline.metrics }}
-
-    - name: Require an honestly represented image-pull Agent outcome
-      ansible.builtin.assert:
-        that:
-          - payment_image_pull_agent_summary.work_state in ['SUCCEEDED', 'FAILED']
-          - payment_image_pull_agent_summary.agent_status in ['SUCCEEDED', 'GATE_REJECTED', 'MODEL_FAILED', 'BUDGET_EXHAUSTED']
-          - >-
-            payment_image_pull_agent_summary.agent_status != 'SUCCEEDED'
-            or (
-              payment_image_pull_agent_summary.incident_status == 'REPORTED'
-              and payment_image_pull_agent_summary.agent_reason_code == 'REPORT_ACCEPTED'
-              and payment_image_pull_agent_summary.report_status in ['conclusive', 'inconclusive', 'partial']
-            )
-          - >-
-            payment_image_pull_agent_summary.agent_status == 'SUCCEEDED'
-            or payment_image_pull_agent_summary.incident_status == 'FAILED'
-        fail_msg: >-
-          The image-pull Agent terminal state was not represented by persisted
-          audit and evaluation artifacts.
+    - name: Run the shared controlled-fault evaluation pipeline
+      ansible.builtin.include_role:
+        name: controlled_fault_evaluation
+      vars:
+        controlled_fault_runtime:
+          run_id: "{{ payment_image_pull_id }}"
+          scenario_path: evaluation/scenarios/paymentservice-image-pull.yaml
+          alert:
+            name: "{{ payment_image_pull_scenario.alert.name }}"
+            service: "{{ payment_image_pull_scenario.alert.service }}"
+            rca_enabled: "{{ payment_image_pull_scenario.alert.rca_enabled }}"
+            agent_rca_enabled: "{{ payment_image_pull_scenario.alert.agent_rca_enabled }}"
+          summary: Controlled paymentservice image pull evaluation
+          generator_url: https://prometheus.invalid/controlled-payment-image-pull
 
   always:
     - name: Restore the exact paymentservice image
@@ -561,29 +282,14 @@
       failed_when: false
       when: payment_image_pull_fault_applied | bool
 
-    - name: Resolve the controlled image-pull Alertmanager alert
-      ansible.builtin.uri:
-        url: >-
-          http://{{ (payment_image_pull_alertmanager_service.stdout | from_json).spec.clusterIP
-          }}:9093/api/v2/alerts
-        method: POST
-        body_format: json
-        body: >-
-          {{ [{
-            'labels': payment_image_pull_alert_labels,
-            'annotations': {
-              'summary': 'Controlled paymentservice image pull evaluation'
-            },
-            'startsAt': payment_image_pull_alert_times.starts_at,
-            'endsAt': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'),
-            'generatorURL': 'https://prometheus.invalid/controlled-payment-image-pull'
-          }] }}
-        status_code: 200
-      delegate_to: "{{ groups['observability_domain'][0] }}"
-      register: payment_image_pull_alert_resolution
-      changed_when: payment_image_pull_alert_resolution.status | default(0) == 200
-      failed_when: false
-      when: payment_image_pull_alert_submitted | bool
+    - name: Resolve the image-pull evaluation alert
+      ansible.builtin.include_role:
+        name: controlled_fault_evaluation
+        tasks_from: resolve-alert
+      vars:
+        controlled_fault_runtime:
+          summary: Controlled paymentservice image pull evaluation
+          generator_url: https://prometheus.invalid/controlled-payment-image-pull
 
     - name: Stop the exact-image restoration watchdog
       ansible.builtin.shell: |

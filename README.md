@@ -260,7 +260,12 @@ No-fault control은 정상 트래픽만 발생시키며, 실행 중 workload와 
 make evaluate-no-fault-control CONFIRM_NO_FAULT_CONTROL=yes
 make evaluate-checkout-oom CONFIRM_CONTROLLED_FAULT=yes
 make evaluate-payment-image-pull CONFIRM_CONTROLLED_FAULT=yes
+make evaluate-checkout-missing-configmap CONFIRM_CONTROLLED_FAULT=yes
 ```
+
+missing ConfigMap scenario는 required volume reference에서 이름만 발견하고 Kubernetes
+API로 해당 ConfigMap의 존재 여부를 다시 확인한다. ConfigMap 값과 Pod spec 원문은
+Evidence에 저장하지 않는다. 하네스와 scorer는 구현돼 있으며 live 실행 결과는 아직 없다.
 
 배포된 Viewer frontend와 API는 RCA control cluster의 `ClusterIP`로만 노출된다.
 Ingress, NodePort와 LoadBalancer는 만들지 않으며, browser에는 API bearer token을

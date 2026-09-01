@@ -321,6 +321,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         rooted_scope = orchestrator._specs[0].request_scope
         self.assertEqual(rooted_scope.resource_names, ("frontend",))
         self.assertEqual(rooted_scope.resource_name_prefixes, ("frontend-",))
+        self.assertEqual(rooted_scope.related_resource_kinds, ("ConfigMap",))
         self.assertEqual(rooted_scope.max_items, 32)
 
     def test_workload_metric_scope_adds_only_root_derived_prefixes(self) -> None:
@@ -352,6 +353,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         rooted_scope = orchestrator._specs[0].request_scope
         self.assertEqual(rooted_scope.resource_names, ("frontend",))
         self.assertEqual(rooted_scope.resource_name_prefixes, ("frontend-",))
+        self.assertEqual(rooted_scope.related_resource_kinds, ())
         self.assertEqual(rooted_scope.max_items, 32)
 
     def test_kernel_oom_scope_adds_only_root_derived_prefixes(self) -> None:
@@ -383,6 +385,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         rooted_scope = orchestrator._specs[0].request_scope
         self.assertEqual(rooted_scope.resource_names, ("frontend",))
         self.assertEqual(rooted_scope.resource_name_prefixes, ("frontend-",))
+        self.assertEqual(rooted_scope.related_resource_kinds, ())
         self.assertEqual(rooted_scope.max_items, 32)
 
     def test_worker_claims_collects_and_completes_one_service_incident(self) -> None:

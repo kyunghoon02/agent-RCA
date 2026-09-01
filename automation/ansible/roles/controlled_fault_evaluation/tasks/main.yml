@@ -1,0 +1,313 @@
+---
+- name: Validate the shared controlled-fault evaluation input
+  ansible.builtin.assert:
+    that:
+      - controlled_fault_runtime is mapping
+      - controlled_fault_runtime.run_id | default('') | length > 0
+      - controlled_fault_runtime.scenario_path | default('') | length > 0
+      - controlled_fault_runtime.alert is mapping
+      - controlled_fault_runtime.alert.name | default('') | length > 0
+      - controlled_fault_runtime.alert.service | default('') | length > 0
+      - controlled_fault_runtime.alert.rca_enabled == 'true'
+      - controlled_fault_runtime.alert.agent_rca_enabled == 'true'
+      - controlled_fault_runtime.summary | default('') | length > 0
+      - controlled_fault_runtime.generator_url is match('^https://prometheus[.]invalid/')
+    fail_msg: The shared controlled-fault evaluation input is incomplete or unsafe.
+
+- name: Initialize the shared controlled-fault alert state
+  ansible.builtin.set_fact:
+    controlled_fault_alert_submitted: false
+
+- name: Read the central Alertmanager Service
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service {{ alertmanager_service_name }}
+    --namespace {{ observability_namespace }} --output json
+  delegate_to: "{{ groups['observability_domain'][0] }}"
+  register: controlled_fault_alertmanager_service
+  changed_when: false
+
+- name: Read bounded Alertmanager timestamps
+  ansible.builtin.shell: |
+    set -eu
+    printf '{"starts_at":"%s","ends_at":"%s"}\n' \
+      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+      "$(date -u -d '+10 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['observability_domain'][0] }}"
+  register: controlled_fault_alert_times_result
+  changed_when: false
+
+- name: Freeze the shared controlled-fault alert payload
+  ansible.builtin.set_fact:
+    controlled_fault_alert_times: >-
+      {{ controlled_fault_alert_times_result.stdout | from_json }}
+    controlled_fault_alert_labels:
+      alertname: "{{ controlled_fault_runtime.alert.name }}"
+      cluster_id: "{{ cluster_name }}"
+      namespace: "{{ online_boutique_namespace }}"
+      severity: critical
+      service: "{{ controlled_fault_runtime.alert.service }}"
+      rca_enabled: "{{ controlled_fault_runtime.alert.rca_enabled }}"
+      agent_rca_enabled: "{{ controlled_fault_runtime.alert.agent_rca_enabled }}"
+      verification_id: "{{ controlled_fault_runtime.run_id }}"
+
+- name: Submit the controlled fault through Alertmanager
+  ansible.builtin.uri:
+    url: >-
+      http://{{ (controlled_fault_alertmanager_service.stdout | from_json).spec.clusterIP
+      }}:9093/api/v2/alerts
+    method: POST
+    body_format: json
+    body: >-
+      {{ [{
+        'labels': controlled_fault_alert_labels,
+        'annotations': {'summary': controlled_fault_runtime.summary},
+        'startsAt': controlled_fault_alert_times.starts_at,
+        'endsAt': controlled_fault_alert_times.ends_at,
+        'generatorURL': controlled_fault_runtime.generator_url
+      }] }}
+    status_code: 200
+  delegate_to: "{{ groups['observability_domain'][0] }}"
+  changed_when: true
+
+- name: Mark the shared controlled-fault alert as submitted
+  ansible.builtin.set_fact:
+    controlled_fault_alert_submitted: true
+
+- name: Wait for a unique controlled-fault Frozen Context Package
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - statefulset/{{ incident_platform_postgresql_statefulset }}
+      - --
+      - /bin/sh
+      - -ec
+      - >-
+        PGPASSWORD="$POSTGRES_PASSWORD" psql
+        --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+        --tuples-only --no-align
+        --command="SELECT CASE
+          WHEN count(*) FILTER (WHERE incident.status = 'FAILED') > 0
+            THEN 'FAILED'
+          WHEN count(*) FILTER (
+            WHERE incident.status IN ('ANALYZING', 'REPORTED', 'PARTIAL')
+              AND EXISTS (
+                SELECT 1 FROM context_packages context
+                WHERE context.incident_id = incident.incident_id
+              )
+          ) = 1 THEN 'READY'
+          ELSE 'WAITING'
+        END FROM incidents incident
+        WHERE incident.document->'alert'->'labels'->>'verification_id'
+          = '{{ controlled_fault_runtime.run_id }}';"
+  register: controlled_fault_context_wait
+  delegate_to: "{{ groups['rca_control'][0] }}"
+  changed_when: false
+  until: controlled_fault_context_wait.stdout | trim in ['READY', 'FAILED']
+  retries: 40
+  delay: 5
+
+- name: Require successful controlled-fault collection and localization
+  ansible.builtin.assert:
+    that:
+      - controlled_fault_context_wait.stdout | trim == 'READY'
+    fail_msg: >-
+      The controlled-fault Incident failed before a Context Package was frozen.
+
+- name: Wait for the controlled-fault Agent work to reach a terminal state
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - statefulset/{{ incident_platform_postgresql_statefulset }}
+      - --
+      - /bin/sh
+      - -ec
+      - >-
+        PGPASSWORD="$POSTGRES_PASSWORD" psql
+        --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+        --tuples-only --no-align
+        --command="WITH target AS (
+          SELECT incident.incident_id, incident.status
+          FROM incidents incident
+          WHERE incident.document->'alert'->'labels'->>'verification_id'
+            = '{{ controlled_fault_runtime.run_id }}'
+          ORDER BY incident.created_at DESC LIMIT 1
+        ) SELECT json_build_object(
+          'terminal', COALESCE(work.state IN ('SUCCEEDED', 'FAILED'), false),
+          'incident_id', target.incident_id,
+          'incident_status', target.status,
+          'work_state', work.state,
+          'work_error_code', work.last_error_code,
+          'agent_status', run.document->>'status',
+          'agent_reason_code', run.document->>'reason_code',
+          'model', run.document->>'model',
+          'usage', run.document->'usage',
+          'report_status', report.document->>'status',
+          'report_path', report.document->>'path',
+          'report_root_cause_id', report.document->'root_cause'->>'cause_id'
+        ) FROM target
+        LEFT JOIN incident_analysis_work_items work
+          ON work.incident_id = target.incident_id
+        LEFT JOIN LATERAL (
+          SELECT candidate.document FROM agent_runs candidate
+          WHERE candidate.incident_id = target.incident_id
+          ORDER BY candidate.started_at DESC LIMIT 1
+        ) run ON true
+        LEFT JOIN LATERAL (
+          SELECT candidate.document FROM rca_reports candidate
+          WHERE candidate.incident_id = target.incident_id
+          ORDER BY candidate.generated_at DESC LIMIT 1
+        ) report ON true;"
+  register: controlled_fault_agent_wait
+  delegate_to: "{{ groups['rca_control'][0] }}"
+  changed_when: false
+  until: >-
+    controlled_fault_agent_wait.stdout | trim | length > 0 and
+    (controlled_fault_agent_wait.stdout | from_json).terminal | bool
+  retries: 80
+  delay: 5
+  no_log: true
+
+- name: Decode the sanitized controlled-fault Agent result
+  ansible.builtin.set_fact:
+    controlled_fault_agent_summary: >-
+      {{ controlled_fault_agent_wait.stdout | from_json }}
+  no_log: true
+
+- name: Report the sanitized controlled-fault Agent result
+  ansible.builtin.debug:
+    msg:
+      incident_status: "{{ controlled_fault_agent_summary.incident_status }}"
+      work_state: "{{ controlled_fault_agent_summary.work_state }}"
+      work_error_code: >-
+        {{ controlled_fault_agent_summary.work_error_code | default(none) }}
+      agent_status: "{{ controlled_fault_agent_summary.agent_status | default(none) }}"
+      agent_reason_code: >-
+        {{ controlled_fault_agent_summary.agent_reason_code | default(none) }}
+      model: "{{ controlled_fault_agent_summary.model | default(none) }}"
+      usage: "{{ controlled_fault_agent_summary.usage | default({}) }}"
+      report_status: "{{ controlled_fault_agent_summary.report_status | default(none) }}"
+      report_path: "{{ controlled_fault_agent_summary.report_path | default(none) }}"
+      report_root_cause_id: >-
+        {{ controlled_fault_agent_summary.report_root_cause_id | default(none) }}
+
+- name: Export the completed controlled-fault Incident Evidence snapshot
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - exec
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - statefulset/{{ incident_platform_postgresql_statefulset }}
+      - --
+      - /bin/sh
+      - -ec
+      - >-
+        PGPASSWORD="$POSTGRES_PASSWORD" psql
+        --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+        --tuples-only --no-align
+        --command="SELECT json_build_object(
+          'incident', incident.document,
+          'context', (
+            SELECT context.document FROM context_packages context
+            WHERE context.incident_id = incident.incident_id
+            ORDER BY context.frozen_at DESC LIMIT 1
+          ),
+          'evidence', (
+            SELECT COALESCE(json_agg(evidence.document
+              ORDER BY evidence.observed_at, evidence.evidence_id), '[]'::json)
+            FROM evidence_items evidence
+            WHERE evidence.incident_id = incident.incident_id
+          ),
+          'report', (
+            SELECT report.document FROM rca_reports report
+            WHERE report.incident_id = incident.incident_id
+            ORDER BY report.generated_at DESC LIMIT 1
+          ),
+          'agent_run', (
+            SELECT run.document FROM agent_runs run
+            WHERE run.incident_id = incident.incident_id
+            ORDER BY run.started_at DESC LIMIT 1
+          )
+        ) FROM incidents incident
+        WHERE incident.document->'alert'->'labels'->>'verification_id'
+          = '{{ controlled_fault_runtime.run_id }}'
+        ORDER BY incident.created_at DESC LIMIT 1;"
+  register: controlled_fault_bundle_result
+  delegate_to: "{{ groups['rca_control'][0] }}"
+  changed_when: false
+  no_log: true
+
+- name: Build local-only controlled-fault Ground Truth and score artifacts
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/build_controlled_fault_evaluation.py
+      - --scenario
+      - "{{ controlled_fault_runtime.scenario_path }}"
+      - --require-agent-outcome
+    chdir: "{{ playbook_dir }}/../../.."
+    stdin: "{{ controlled_fault_bundle_result.stdout | trim }}"
+  environment:
+    PYTHONPATH: src
+  delegate_to: localhost
+  become: false
+  register: controlled_fault_evaluation_result
+  changed_when: true
+  no_log: true
+
+- name: Decode the sanitized controlled-fault evaluation result
+  ansible.builtin.set_fact:
+    controlled_fault_evaluation_summary: >-
+      {{ controlled_fault_evaluation_result.stdout | from_json }}
+  no_log: true
+
+- name: Report the sanitized controlled-fault scores
+  ansible.builtin.debug:
+    msg:
+      evaluation_case_id: "{{ controlled_fault_evaluation_summary.evaluation_case_id }}"
+      agent:
+        variant_id: "{{ controlled_fault_evaluation_summary.agent.variant_id }}"
+        prediction_outcome: >-
+          {{ controlled_fault_evaluation_summary.agent.prediction_outcome }}
+        metrics: "{{ controlled_fault_evaluation_summary.agent.metrics }}"
+      deterministic_baseline:
+        variant_id: >-
+          {{ controlled_fault_evaluation_summary.deterministic_baseline.variant_id }}
+        prediction_outcome: >-
+          {{ controlled_fault_evaluation_summary.deterministic_baseline.prediction_outcome }}
+        metrics: >-
+          {{ controlled_fault_evaluation_summary.deterministic_baseline.metrics }}
+
+- name: Require an honestly represented controlled-fault Agent outcome
+  ansible.builtin.assert:
+    that:
+      - controlled_fault_agent_summary.work_state in ['SUCCEEDED', 'FAILED']
+      - controlled_fault_agent_summary.agent_status in ['SUCCEEDED', 'GATE_REJECTED', 'MODEL_FAILED', 'BUDGET_EXHAUSTED']
+      - >-
+        controlled_fault_agent_summary.agent_status != 'SUCCEEDED'
+        or (
+          controlled_fault_agent_summary.incident_status == 'REPORTED'
+          and controlled_fault_agent_summary.agent_reason_code == 'REPORT_ACCEPTED'
+          and controlled_fault_agent_summary.report_status in ['conclusive', 'inconclusive', 'partial']
+        )
+      - >-
+        controlled_fault_agent_summary.agent_status == 'SUCCEEDED'
+        or controlled_fault_agent_summary.incident_status == 'FAILED'
+    fail_msg: >-
+      The controlled-fault Agent terminal state was not represented by persisted
+      audit and evaluation artifacts.

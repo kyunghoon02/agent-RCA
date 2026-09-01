@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -821,6 +821,9 @@ class KubernetesInventoryProvider:
                     "container_statuses": safe_statuses,
                 }
             )
+            required_configmaps = cls._required_configmap_references(spec)
+            if required_configmaps:
+                facts["required_configmap_references"] = required_configmaps
             if len(waiting_reasons) == 1:
                 facts["waiting_reason"] = next(iter(waiting_reasons))
             if len(termination_reasons) == 1:
@@ -847,6 +850,77 @@ class KubernetesInventoryProvider:
                 }
             )
         return facts
+
+    @staticmethod
+    def _required_configmap_references(
+        pod_spec: Mapping[str, Any],
+    ) -> list[Dict[str, Any]]:
+        """Return required ConfigMap names without copying keys or Pod env values."""
+
+        references: Dict[str, set[str]] = {}
+
+        def add(reference: Any, reference_key: str) -> None:
+            if not isinstance(reference, Mapping) or reference.get("optional") is True:
+                return
+            name = reference.get("name")
+            if not isinstance(name, str):
+                return
+            _validate_resource_name(name)
+            references.setdefault(name, set()).add(reference_key)
+
+        volumes = pod_spec.get("volumes", [])
+        if isinstance(volumes, list):
+            for volume in volumes:
+                if not isinstance(volume, Mapping):
+                    continue
+                add(volume.get("configMap"), "pod-volume-configmap")
+                projected = volume.get("projected")
+                sources = (
+                    projected.get("sources", [])
+                    if isinstance(projected, Mapping)
+                    else []
+                )
+                if isinstance(sources, list):
+                    for source in sources:
+                        if isinstance(source, Mapping):
+                            add(
+                                source.get("configMap"),
+                                "pod-projected-volume-configmap",
+                            )
+
+        for field in ("initContainers", "containers"):
+            containers = pod_spec.get(field, [])
+            if not isinstance(containers, list):
+                continue
+            for container in containers:
+                if not isinstance(container, Mapping):
+                    continue
+                env_from = container.get("envFrom", [])
+                if isinstance(env_from, list):
+                    for source in env_from:
+                        if isinstance(source, Mapping):
+                            add(
+                                source.get("configMapRef"),
+                                "container-envfrom-configmap",
+                            )
+                env = container.get("env", [])
+                if isinstance(env, list):
+                    for variable in env:
+                        value_from = (
+                            variable.get("valueFrom", {})
+                            if isinstance(variable, Mapping)
+                            else {}
+                        )
+                        if isinstance(value_from, Mapping):
+                            add(
+                                value_from.get("configMapKeyRef"),
+                                "container-env-configmap-key",
+                            )
+
+        return [
+            {"name": name, "reference_keys": sorted(reference_keys)}
+            for name, reference_keys in sorted(references.items())
+        ]
 
 
 class KubernetesStateProvider:
@@ -1320,11 +1394,13 @@ class KubernetesStateProvider:
 
 
 class KubernetesIncidentProvider:
-    """Combine rooted workload inventory with bounded Service and Pod Events.
+    """Combine rooted inventory, Events, and required ConfigMap existence.
 
     Inventory establishes which dynamic Pod names belong to the exact logical
     service roots. Event collection is then restricted to those admitted names,
     so a caller cannot broaden an Incident by supplying an arbitrary prefix.
+    Required ConfigMap names are discovered only from those Pod specs and exact
+    GET results never include ConfigMap values.
     """
 
     def __init__(
@@ -1332,10 +1408,17 @@ class KubernetesIncidentProvider:
         inventory: KubernetesInventoryProvider,
         service_events: KubernetesStateProvider,
         pod_events: KubernetesStateProvider,
+        required_configmaps: Optional[KubernetesStateProvider] = None,
+        *,
+        max_required_configmaps: int = 16,
     ) -> None:
+        if not 1 <= max_required_configmaps <= 100:
+            raise ValueError("max_required_configmaps must be between 1 and 100")
         self._inventory = inventory
         self._service_events = service_events
         self._pod_events = pod_events
+        self._required_configmaps = required_configmaps
+        self._max_required_configmaps = max_required_configmaps
 
     def collect(self, request: CollectionRequest) -> ProviderBatch:
         deadline = time.monotonic() + request.timeout_seconds
@@ -1387,6 +1470,15 @@ class KubernetesIncidentProvider:
                 label="pod events",
             )
 
+        if self._required_configmaps is not None:
+            self._collect_required_configmaps(
+                items,
+                partial_reasons,
+                inventory_batch,
+                request,
+                deadline,
+            )
+
         if len(items) > request.scope.max_items:
             items = items[: request.scope.max_items]
             partial_reasons.append(
@@ -1399,6 +1491,83 @@ class KubernetesIncidentProvider:
                 error="; ".join(partial_reasons),
             )
         return ProviderBatch(items=tuple(items))
+
+    def _collect_required_configmaps(
+        self,
+        items: list[EvidenceDraft],
+        partial_reasons: list[str],
+        inventory_batch: ProviderBatch,
+        request: CollectionRequest,
+        deadline: float,
+    ) -> None:
+        references: Dict[str, list[Dict[str, Any]]] = {}
+        for item in inventory_batch.items:
+            if item.kind != "resource-state" or item.subject.get("kind") != "Pod":
+                continue
+            raw_references = item.facts.get("required_configmap_references", [])
+            if not isinstance(raw_references, list):
+                partial_reasons.append("required ConfigMap references are malformed")
+                return
+            for reference in raw_references:
+                if not isinstance(reference, Mapping):
+                    partial_reasons.append("required ConfigMap reference is malformed")
+                    return
+                name = reference.get("name")
+                reference_keys = reference.get("reference_keys")
+                if not isinstance(name, str) or not isinstance(reference_keys, list):
+                    partial_reasons.append("required ConfigMap reference is malformed")
+                    return
+                _validate_resource_name(name)
+                references.setdefault(name, []).append(
+                    {
+                        "cluster_id": item.subject.get("cluster_id"),
+                        "kind": "Pod",
+                        "namespace": request.scope.namespace,
+                        "name": item.subject.get("name"),
+                        "uid": item.subject.get("uid"),
+                        "reference_keys": sorted(
+                            key for key in reference_keys if isinstance(key, str)
+                        ),
+                    }
+                )
+        if not references:
+            return
+        if len(references) > self._max_required_configmaps:
+            partial_reasons.append(
+                "required ConfigMap references exceeded the bounded lookup budget"
+            )
+            return
+        scope = ResourceScope(
+            namespace=request.scope.namespace,
+            resource_names=tuple(sorted(references)),
+            max_items=min(request.scope.max_items, len(references)),
+        )
+        try:
+            derived_request = self._derived_request(request, scope, deadline)
+            assert self._required_configmaps is not None
+            batch = self._required_configmaps.collect(derived_request)
+        except ProviderError as error:
+            partial_reasons.append(f"required ConfigMaps: {error}")
+            return
+        for item in batch.items:
+            name = item.subject.get("name")
+            sources = references.get(str(name), [])
+            if not sources:
+                partial_reasons.append(
+                    "required ConfigMap lookup returned an unrequested subject"
+                )
+                continue
+            facts = dict(item.facts)
+            facts["scope_derivation"] = {
+                "relation_type": "REFERENCES",
+                "destination_kind": "ConfigMap",
+                "destination_namespace": request.scope.namespace,
+                "destination_name": name,
+                "sources": sources,
+            }
+            items.append(replace(item, facts=facts))
+        if batch.status == "PARTIAL" and batch.error:
+            partial_reasons.append(f"required ConfigMaps: {batch.error}")
 
     @staticmethod
     def _derived_request(

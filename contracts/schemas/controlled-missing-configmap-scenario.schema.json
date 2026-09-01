@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:controlled-missing-configmap-scenario",
+  "title": "Controlled Missing ConfigMap Fault Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "fault",
+    "workload",
+    "alert",
+    "expected",
+    "restoration"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "single_node_allowed"],
+      "properties": {
+        "class": {"const": "development"},
+        "single_node_allowed": {"const": true}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "kind", "name", "container"],
+      "properties": {
+        "namespace": {"const": "online-boutique"},
+        "kind": {"const": "Deployment"},
+        "name": {"const": "checkoutservice"},
+        "container": {"const": "server"}
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ready_replicas",
+        "fresh_pod_restart_count",
+        "fault_volume_absent",
+        "fault_volume_mount_absent",
+        "configmap_absent"
+      ],
+      "properties": {
+        "ready_replicas": {"const": 1},
+        "fresh_pod_restart_count": {"const": 0},
+        "fault_volume_absent": {"const": true},
+        "fault_volume_mount_absent": {"const": true},
+        "configmap_absent": {"const": true}
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "configmap_name",
+        "volume_name",
+        "mount_path",
+        "observation_seconds",
+        "maximum_active_seconds"
+      ],
+      "properties": {
+        "type": {"const": "required-configmap-reference"},
+        "configmap_name": {"const": "checkoutservice-agent-rca-missing"},
+        "volume_name": {"const": "agent-rca-required-config"},
+        "mount_path": {"const": "/var/run/agent-rca-required-config"},
+        "observation_seconds": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 120
+        },
+        "maximum_active_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 300
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner", "profile", "seed", "synthetic_marker"],
+      "properties": {
+        "runner": {"const": "none"},
+        "profile": {"const": "normal"},
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "synthetic_marker": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{8,64}$"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "service", "rca_enabled", "agent_rca_enabled"],
+      "properties": {
+        "name": {"const": "AgentRCAControlledCheckoutMissingConfigMap"},
+        "service": {"const": "checkoutservice"},
+        "rca_enabled": {"const": "true"},
+        "agent_rca_enabled": {"const": "true"}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "root_cause_ids", "evidence_predicates"],
+      "properties": {
+        "outcome": {"const": "ROOT_CAUSE"},
+        "root_cause_ids": {"const": ["kubernetes.missing-configmap"]},
+        "evidence_predicates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "configmap_name",
+            "required",
+            "event_reasons",
+            "missing_kind"
+          ],
+          "properties": {
+            "configmap_name": {"const": "checkoutservice-agent-rca-missing"},
+            "required": {"const": true},
+            "event_reasons": {"const": ["CreateContainerConfigError", "FailedMount"]},
+            "missing_kind": {"const": "ConfigMap"}
+          }
+        }
+      }
+    },
+    "restoration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remove_exact_volume",
+        "remove_exact_volume_mount",
+        "restore_exact_pod_template",
+        "ready_replicas",
+        "fresh_pod_restart_count",
+        "configmap_absent"
+      ],
+      "properties": {
+        "remove_exact_volume": {"const": true},
+        "remove_exact_volume_mount": {"const": true},
+        "restore_exact_pod_template": {"const": true},
+        "ready_replicas": {"const": 1},
+        "fresh_pod_restart_count": {"const": 0},
+        "configmap_absent": {"const": true}
+      }
+    }
+  }
+}

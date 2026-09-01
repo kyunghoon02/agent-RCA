@@ -1,0 +1,59 @@
+schema_version: "1.0.0"
+scenario_id: scenario-checkoutservice-missing-configmap-normal
+
+environment:
+  class: development
+  single_node_allowed: true
+
+target:
+  namespace: online-boutique
+  kind: Deployment
+  name: checkoutservice
+  container: server
+
+baseline:
+  ready_replicas: 1
+  fresh_pod_restart_count: 0
+  fault_volume_absent: true
+  fault_volume_mount_absent: true
+  configmap_absent: true
+
+fault:
+  type: required-configmap-reference
+  configmap_name: checkoutservice-agent-rca-missing
+  volume_name: agent-rca-required-config
+  mount_path: /var/run/agent-rca-required-config
+  observation_seconds: 30
+  maximum_active_seconds: 180
+
+workload:
+  runner: none
+  profile: normal
+  seed: 44
+  synthetic_marker: agent-rca-controlled-missing-configmap
+
+alert:
+  name: AgentRCAControlledCheckoutMissingConfigMap
+  service: checkoutservice
+  rca_enabled: "true"
+  agent_rca_enabled: "true"
+
+expected:
+  outcome: ROOT_CAUSE
+  root_cause_ids:
+    - kubernetes.missing-configmap
+  evidence_predicates:
+    configmap_name: checkoutservice-agent-rca-missing
+    required: true
+    event_reasons:
+      - CreateContainerConfigError
+      - FailedMount
+    missing_kind: ConfigMap
+
+restoration:
+  remove_exact_volume: true
+  remove_exact_volume_mount: true
+  restore_exact_pod_template: true
+  ready_replicas: 1
+  fresh_pod_restart_count: 0
+  configmap_absent: true

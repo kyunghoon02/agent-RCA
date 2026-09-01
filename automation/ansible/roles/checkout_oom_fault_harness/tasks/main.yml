@@ -122,6 +122,24 @@
   changed_when: false
   failed_when: false
 
+- name: Check for an active image-pull fault lock
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap agent-rca-payment-image-pull-lock
+    --namespace {{ online_boutique_namespace }}
+  register: checkout_fault_image_pull_lock
+  changed_when: false
+  failed_when: false
+
+- name: Check for an active missing-ConfigMap fault lock
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get configmap agent-rca-missing-configmap-lock
+    --namespace {{ online_boutique_namespace }}
+  register: checkout_fault_missing_configmap_lock
+  changed_when: false
+  failed_when: false
+
 - name: Resolve the local SSH identity used by the workload tunnel
   ansible.builtin.set_fact:
     checkout_fault_ssh_host: "{{ hostvars[inventory_hostname].ansible_host }}"
@@ -146,6 +164,8 @@
         that:
           - checkout_fault_existing_lock.rc != 0
           - checkout_fault_no_fault_control_lock.rc != 0
+          - checkout_fault_image_pull_lock.rc != 0
+          - checkout_fault_missing_configmap_lock.rc != 0
         fail_msg: >-
           A controlled-fault lock already exists. Verify workload health and
           remove the stale lock manually only after confirming recovery.

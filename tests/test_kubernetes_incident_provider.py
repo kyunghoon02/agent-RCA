@@ -28,6 +28,7 @@ def request() -> CollectionRequest:
             namespace="online-boutique",
             resource_names=("checkoutservice",),
             resource_name_prefixes=("checkoutservice-",),
+            related_resource_kinds=("ConfigMap",),
             max_items=10,
         ),
         timeout_seconds=5,
@@ -70,6 +71,32 @@ class StaticInventory:
         )
 
 
+class ConfigMapReferenceInventory:
+    def collect(self, collection_request):
+        pod = draft(
+            "resource-state",
+            "Pod",
+            "checkoutservice-7d9f8-q1w2e",
+        )
+        pod = EvidenceDraft(
+            **{
+                **pod.__dict__,
+                "facts": {
+                    "result_status": "FOUND",
+                    "required_configmap_references": [
+                        {
+                            "name": "shared-checkout-settings",
+                            "reference_keys": ["pod-volume-configmap"],
+                        }
+                    ],
+                },
+            }
+        )
+        return ProviderBatch(
+            items=(draft("resource-state", "Service", "checkoutservice"), pod)
+        )
+
+
 class RecordingEventProvider:
     def __init__(self) -> None:
         self.scopes = []
@@ -82,6 +109,38 @@ class RecordingEventProvider:
             items=(
                 draft("resource-state", resource_kind, name),
                 draft("kubernetes-event", resource_kind, name),
+            )
+        )
+
+
+class RecordingConfigMapProvider:
+    def __init__(self) -> None:
+        self.scopes = []
+
+    def collect(self, collection_request):
+        self.scopes.append(collection_request.scope)
+        name = collection_request.scope.resource_names[0]
+        return ProviderBatch(
+            items=(
+                EvidenceDraft(
+                    source="kubernetes",
+                    kind="resource-state",
+                    observed_at=WINDOW.end,
+                    subject={
+                        "cluster_id": "agent-rca-dev",
+                        "api_version": "v1",
+                        "kind": "ConfigMap",
+                        "namespace": "online-boutique",
+                        "name": name,
+                        "uid": None,
+                        "exists": False,
+                    },
+                    summary=f"Required ConfigMap {name} was not found.",
+                    facts={"result_status": "NOT_FOUND", "required": True},
+                    provider="fixture-kubernetes",
+                    query=f"get ConfigMap {name}",
+                    locator=f"fixture://ConfigMap/{name}",
+                ),
             )
         )
 
@@ -112,6 +171,39 @@ class KubernetesIncidentProviderTests(unittest.TestCase):
         self.assertEqual(
             [item.kind for item in batch.items].count("kubernetes-event"),
             2,
+        )
+
+    def test_required_configmap_lookup_is_derived_from_a_uid_backed_rooted_pod(self) -> None:
+        configmaps = RecordingConfigMapProvider()
+        provider = KubernetesIncidentProvider(
+            ConfigMapReferenceInventory(),
+            RecordingEventProvider(),
+            RecordingEventProvider(),
+            configmaps,
+        )
+        collection_request = request()
+
+        batch = provider.collect(collection_request)
+        validate_provider_batch(batch, collection_request)
+
+        self.assertEqual(
+            configmaps.scopes[0].resource_names,
+            ("shared-checkout-settings",),
+        )
+        configmap = next(
+            item for item in batch.items if item.subject["kind"] == "ConfigMap"
+        )
+        self.assertFalse(configmap.subject["exists"])
+        self.assertTrue(configmap.facts["required"])
+        derivation = configmap.facts["scope_derivation"]
+        self.assertEqual(derivation["relation_type"], "REFERENCES")
+        self.assertEqual(
+            derivation["sources"][0]["name"],
+            "checkoutservice-7d9f8-q1w2e",
+        )
+        self.assertEqual(
+            derivation["sources"][0]["uid"],
+            "uid-checkoutservice-7d9f8-q1w2e",
         )
 
 

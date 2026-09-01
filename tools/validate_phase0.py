@@ -1247,9 +1247,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-70a2dfa3ec81",
+            "image_tag": "runtime-27c503e9c7b9",
             "image_digest": (
-                "sha256:16a0f0dfd9d593d2f395c4401a1ea017f2aa4b85efcbcb5d1790522b289407ce"
+                "sha256:3b458fd4f9832b53637f54c2c04b7e5d44f53cbe5b859831feb4738255039cf5"
             ),
         },
         "viewer_frontend": {
@@ -2682,6 +2682,7 @@ def validate_controlled_fault_scenarios() -> None:
         "agent-rca-payment-image-pull-lock",
         "remote fail-safe exact-image restoration watchdog",
         "Apply the preregistered invalid paymentservice image",
+        "controlled_fault_evaluation",
         "always:",
         "Restore the exact paymentservice image",
         "Require successful exact-image automatic restoration",
@@ -2695,6 +2696,87 @@ def validate_controlled_fault_scenarios() -> None:
         raise ValidationFailure(
             "image-pull controlled-fault safety boundary is incomplete: "
             f"{missing_image_pull_tokens}"
+        )
+
+    missing_configmap_path = (
+        ROOT
+        / "evaluation"
+        / "scenarios"
+        / "checkoutservice-missing-configmap.yaml"
+    )
+    missing_configmap = load_yaml_documents(missing_configmap_path)[0]
+    validate_instance(
+        schemas["controlled-missing-configmap-scenario.schema.json"],
+        missing_configmap,
+        registry,
+        "checkoutservice-missing-configmap.yaml",
+    )
+    if missing_configmap["fault"] != {
+        "type": "required-configmap-reference",
+        "configmap_name": "checkoutservice-agent-rca-missing",
+        "volume_name": "agent-rca-required-config",
+        "mount_path": "/var/run/agent-rca-required-config",
+        "observation_seconds": 30,
+        "maximum_active_seconds": 180,
+    }:
+        raise ValidationFailure("checkout missing-ConfigMap injection changed")
+    missing_configmap_harness = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "checkout_missing_configmap_fault_harness"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    missing_configmap_safety_tokens = {
+        "confirm_controlled_fault",
+        "controlled_fault_environment",
+        "agent-rca-missing-configmap-lock",
+        "remote fail-safe reference-removal watchdog",
+        "Add the preregistered required ConfigMap volume reference",
+        "controlled_fault_evaluation",
+        "always:",
+        "Remove the exact missing ConfigMap volume reference",
+        "Require successful exact missing-ConfigMap restoration",
+    }
+    missing_configmap_safety_gaps = sorted(
+        token
+        for token in missing_configmap_safety_tokens
+        if token not in missing_configmap_harness
+    )
+    if missing_configmap_safety_gaps:
+        raise ValidationFailure(
+            "missing-ConfigMap controlled-fault safety boundary is incomplete: "
+            f"{missing_configmap_safety_gaps}"
+        )
+
+    common_evaluation = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "controlled_fault_evaluation"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    common_evaluation_tokens = {
+        "Submit the controlled fault through Alertmanager",
+        "Wait for a unique controlled-fault Frozen Context Package",
+        "Wait for the controlled-fault Agent work to reach a terminal state",
+        "Export the completed controlled-fault Incident Evidence snapshot",
+        "Build local-only controlled-fault Ground Truth and score artifacts",
+        "Require an honestly represented controlled-fault Agent outcome",
+    }
+    common_evaluation_gaps = sorted(
+        token
+        for token in common_evaluation_tokens
+        if token not in common_evaluation
+    )
+    if common_evaluation_gaps:
+        raise ValidationFailure(
+            "shared controlled-fault evaluation boundary is incomplete: "
+            f"{common_evaluation_gaps}"
         )
 
     no_fault_path = (

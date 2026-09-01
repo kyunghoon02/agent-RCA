@@ -177,6 +177,11 @@ ConfigMap value와 Pod spec 원문을 Evidence로 복사하지 않는다. Watch/
 Alert 입력이 아닌 trusted runtime 설정의 `cluster_id`를 요구하고 모든 Kubernetes
 Evidence subject에 포함한다.
 
+Incident runtime은 rooted Pod inventory에서 required ConfigMap 참조의 이름과 참조
+유형만 추출하고, exact `GET ConfigMap`으로 존재 여부를 독립 확인한다. root scope 밖의
+ConfigMap은 UID가 있는 admitted Pod의 `REFERENCES` scope derivation이 있을 때만
+Evidence subject로 허용되며 `data`, `binaryData`, key와 env value는 복사하지 않는다.
+
 ### NetworkFlowProvider
 
 ```text

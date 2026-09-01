@@ -235,6 +235,61 @@ def _controlled_image_pull_relevant_evidence_groups(
     )
 
 
+def _controlled_missing_configmap_relevant_evidence_groups(
+    evidence: Sequence[Mapping[str, Any]],
+    scenario: Mapping[str, Any],
+) -> Tuple[Dict[str, Any], ...]:
+    predicates = scenario["expected"]["evidence_predicates"]
+    namespace = scenario["target"]["namespace"]
+    configmap_name = predicates["configmap_name"]
+    event_reasons = set(predicates["event_reasons"])
+    missing_kind = predicates["missing_kind"]
+    missing_states = [
+        item
+        for item in evidence
+        if item.get("source") == "kubernetes"
+        and item.get("kind") == "resource-state"
+        and item.get("subject", {}).get("kind") == "ConfigMap"
+        and item.get("subject", {}).get("namespace") == namespace
+        and item.get("subject", {}).get("name") == configmap_name
+        and item.get("subject", {}).get("exists") is False
+        and _facts(item).get("required") is predicates["required"]
+    ]
+    matching_events = [
+        item
+        for item in evidence
+        if item.get("source") == "kubernetes"
+        and item.get("kind") == "kubernetes-event"
+        and item.get("subject", {}).get("kind") == "Pod"
+        and item.get("subject", {}).get("namespace") == namespace
+        and bool(item.get("subject", {}).get("uid"))
+        and _facts(item).get("reason") in event_reasons
+        and _facts(item).get("missing_kind") == missing_kind
+        and _facts(item).get("missing_name") == configmap_name
+    ]
+    if not missing_states or not matching_events:
+        raise ContractViolation(
+            "controlled missing-ConfigMap Ground Truth requires an exact required "
+            "ConfigMap NOT_FOUND state and a matching normalized Pod Event"
+        )
+    return (
+        {
+            "role": "required-configmap-absence",
+            "acceptable_evidence_ids": list(
+                dict.fromkeys(str(item["evidence_id"]) for item in missing_states)
+            ),
+            "minimum_matches": 1,
+        },
+        {
+            "role": "matching-missing-configmap-event",
+            "acceptable_evidence_ids": list(
+                dict.fromkeys(str(item["evidence_id"]) for item in matching_events)
+            ),
+            "minimum_matches": 1,
+        },
+    )
+
+
 def _select_controlled_oom_ground_truth_items(
     evidence: Sequence[Mapping[str, Any]],
     scenario: Mapping[str, Any],
@@ -445,6 +500,11 @@ def build_controlled_fault_evaluation(
         validate_contract(
             "controlled-image-pull-scenario.schema.json", scenario
         )
+    elif expected_causes == ("kubernetes.missing-configmap",):
+        scenario_kind = "missing-configmap"
+        validate_contract(
+            "controlled-missing-configmap-scenario.schema.json", scenario
+        )
     elif (
         expected_causes == ()
         and scenario.get("expected", {}).get("outcome") == "ABSTAIN"
@@ -522,6 +582,10 @@ def build_controlled_fault_evaluation(
         )
     elif scenario_kind == "image-pull":
         relevant_groups = _controlled_image_pull_relevant_evidence_groups(
+            frozen_evidence, scenario
+        )
+    elif scenario_kind == "missing-configmap":
+        relevant_groups = _controlled_missing_configmap_relevant_evidence_groups(
             frozen_evidence, scenario
         )
     else:

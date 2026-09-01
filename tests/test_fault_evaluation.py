@@ -174,6 +174,90 @@ def image_pull_fixture_bundle(*, mismatched_event_uid: bool = False) -> tuple[di
     return bundle, scenario
 
 
+def missing_configmap_fixture_bundle() -> tuple[dict, dict]:
+    bundle, _ = fixture_bundle()
+    incident_id = bundle["incident"]["incident_id"]
+    configmap_name = "checkoutservice-agent-rca-missing"
+    pod_name = "checkoutservice-missing-config-abc"
+    request = CollectionRequest(
+        request_id="req-controlled-missing-configmap-fixture",
+        incident_id=incident_id,
+        window=EvidenceWindow(
+            start="2026-08-12T00:30:00Z",
+            end="2026-08-12T05:00:00Z",
+        ),
+        scope=ResourceScope(
+            namespace="online-boutique",
+            resource_names=(configmap_name, pod_name),
+        ),
+        timeout_seconds=1,
+    )
+    drafts = (
+        EvidenceDraft(
+            source="kubernetes",
+            kind="resource-state",
+            observed_at="2026-08-12T03:05:00Z",
+            subject={
+                "cluster_id": "agent-rca-chaos-eval",
+                "api_version": "v1",
+                "kind": "ConfigMap",
+                "namespace": "online-boutique",
+                "name": configmap_name,
+                "uid": None,
+                "exists": False,
+            },
+            summary=f"Required ConfigMap {configmap_name} was not found.",
+            facts={"result_status": "NOT_FOUND", "required": True},
+            provider="kubernetes-http-api",
+            query=f"get ConfigMap {configmap_name}",
+            locator=f"k8s://online-boutique/ConfigMap/{configmap_name}",
+        ),
+        EvidenceDraft(
+            source="kubernetes",
+            kind="kubernetes-event",
+            observed_at="2026-08-12T03:04:59Z",
+            subject={
+                "cluster_id": "agent-rca-chaos-eval",
+                "api_version": "v1",
+                "kind": "Pod",
+                "namespace": "online-boutique",
+                "name": pod_name,
+                "uid": "uid-checkoutservice-missing-config-abc",
+                "exists": True,
+            },
+            summary="Pod volume setup failed because a ConfigMap was absent.",
+            facts={
+                "reason": "FailedMount",
+                "missing_kind": "ConfigMap",
+                "missing_name": configmap_name,
+            },
+            provider="kubernetes-http-api",
+            query=f"list events for Pod {pod_name}",
+            locator="k8s://online-boutique/Event/missing-configmap",
+        ),
+    )
+    evidence = [
+        EvidenceBuilder().build(draft, request, collected_at=NOW)
+        for draft in drafts
+    ]
+    bundle["evidence"] = evidence
+    bundle["incident"]["source_entity"] = evidence[1]["subject"]
+    bundle["incident"]["alert"]["name"] = (
+        "AgentRCAControlledCheckoutMissingConfigMap"
+    )
+    bundle["incident"]["alert"]["labels"]["service"] = "checkoutservice"
+    bundle["context"]["source_entity"] = evidence[1]["subject"]
+    bundle["context"]["scope"]["entity_uids"] = [evidence[1]["subject"]["uid"]]
+    bundle["context"]["evidence_ids"] = [item["evidence_id"] for item in evidence]
+    scenario = yaml.safe_load(
+        (
+            ROOT
+            / "evaluation/scenarios/checkoutservice-missing-configmap.yaml"
+        ).read_text()
+    )
+    return bundle, scenario
+
+
 def no_fault_fixture_bundle() -> tuple[dict, dict]:
     bundle, _ = fixture_bundle()
     incident_id = bundle["incident"]["incident_id"]
@@ -619,6 +703,37 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
                 scenario_sha256="b" * 64,
                 evaluated_at=NOW,
             )
+
+    def test_missing_configmap_snapshot_scores_exact_absence_and_event_roles(self) -> None:
+        bundle, scenario = missing_configmap_fixture_bundle()
+        bundle = with_agent_report(
+            bundle, cause_id="kubernetes.missing-configmap"
+        )
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="d" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(
+            artifacts["prediction"]["predicted_root_cause_ids"],
+            ["kubernetes.missing-configmap"],
+        )
+        self.assertEqual(
+            [
+                group["role"]
+                for group in artifacts["ground_truth"]["relevant_evidence_groups"]
+            ],
+            ["required-configmap-absence", "matching-missing-configmap-event"],
+        )
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["evidence_precision"], 1.0
+        )
+        self.assertEqual(
+            artifacts["agent_result"]["metrics"]["evidence_recall"], 1.0
+        )
 
     def test_gate_rejected_agent_is_scored_as_failed_not_abstained(self) -> None:
         bundle, scenario = fixture_bundle()
