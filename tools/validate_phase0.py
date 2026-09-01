@@ -2716,7 +2716,7 @@ def validate_controlled_fault_scenarios() -> None:
         "configmap_name": "checkoutservice-agent-rca-missing",
         "volume_name": "agent-rca-required-config",
         "mount_path": "/var/run/agent-rca-required-config",
-        "observation_seconds": 30,
+        "observation_seconds": 15,
         "maximum_active_seconds": 180,
     }:
         raise ValidationFailure("checkout missing-ConfigMap injection changed")

@@ -65,6 +65,7 @@
       checkout-missing-configmap-{{ ansible_facts.date_time.epoch }}
     checkout_missing_configmap_lock_name: agent-rca-missing-configmap-lock
     checkout_missing_configmap_watchdog_log: /tmp/agent-rca-missing-configmap-watchdog.log
+    checkout_missing_configmap_cleanup_script: /tmp/agent-rca-missing-configmap-cleanup.sh
     checkout_missing_configmap_lock_created: false
     checkout_missing_configmap_watchdog_started: false
     checkout_missing_configmap_fault_applied: false
@@ -83,19 +84,6 @@
                 configMap:
                   name: "{{ checkout_missing_configmap_scenario.fault.configmap_name }}"
                   optional: false
-    checkout_missing_configmap_cleanup_patch:
-      spec:
-        template:
-          spec:
-            containers:
-              - name: "{{ checkout_missing_configmap_scenario.target.container }}"
-                volumeMounts:
-                  - name: "{{ checkout_missing_configmap_scenario.fault.volume_name }}"
-                    $patch: delete
-            volumes:
-              - name: "{{ checkout_missing_configmap_scenario.fault.volume_name }}"
-                $patch: delete
-
 - name: Require an exact healthy missing-ConfigMap baseline
   ansible.builtin.assert:
     that:
@@ -160,22 +148,101 @@
       ansible.builtin.set_fact:
         checkout_missing_configmap_lock_created: true
 
+    - name: Install the exact missing-ConfigMap cleanup helper
+      ansible.builtin.copy:
+        dest: "{{ checkout_missing_configmap_cleanup_script }}"
+        mode: "0700"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            deployment_json="$(
+              kubectl --kubeconfig /etc/kubernetes/admin.conf get \
+                deployment checkoutservice \
+                --namespace {{ online_boutique_namespace }} --output json
+            )"
+            cleanup_patch="$(
+              jq -c \
+                --arg container '{{ checkout_missing_configmap_scenario.target.container }}' \
+                --arg volume '{{ checkout_missing_configmap_scenario.fault.volume_name }}' \
+                '[.metadata.resourceVersion] as $resource_version
+                | (.spec.template.spec.containers
+                    | to_entries
+                    | map(select(.value.name == $container))
+                    | first) as $container_entry
+                | (.spec.template.spec.volumes // []
+                    | to_entries
+                    | map(select(.value.name == $volume))
+                    | first) as $volume_entry
+                | (($container_entry.value.volumeMounts // [])
+                    | to_entries
+                    | map(select(.value.name == $volume))
+                    | first) as $mount_entry
+                | if $container_entry == null then
+                    error("target container is absent")
+                  elif $volume_entry == null and $mount_entry == null then
+                    []
+                  else
+                    [{
+                      "op": "test",
+                      "path": "/metadata/resourceVersion",
+                      "value": $resource_version[0]
+                    }]
+                    + (if $mount_entry == null then [] else [{
+                        "op": "test",
+                        "path": ("/spec/template/spec/containers/"
+                          + ($container_entry.key | tostring)
+                          + "/volumeMounts/"
+                          + ($mount_entry.key | tostring)
+                          + "/name"),
+                        "value": $volume
+                      }, {
+                        "op": "remove",
+                        "path": ("/spec/template/spec/containers/"
+                          + ($container_entry.key | tostring)
+                          + "/volumeMounts/"
+                          + ($mount_entry.key | tostring))
+                      }] end)
+                    + (if $volume_entry == null then [] else [{
+                        "op": "test",
+                        "path": ("/spec/template/spec/volumes/"
+                          + ($volume_entry.key | tostring)
+                          + "/name"),
+                        "value": $volume
+                      }, {
+                        "op": "remove",
+                        "path": ("/spec/template/spec/volumes/"
+                          + ($volume_entry.key | tostring))
+                      }] end)
+                  end' <<<"$deployment_json"
+            )"
+
+            if [[ "$cleanup_patch" == "[]" ]]; then
+              exit 0
+            fi
+            if kubectl --kubeconfig /etc/kubernetes/admin.conf patch \
+              deployment checkoutservice \
+              --namespace {{ online_boutique_namespace }} \
+              --type json --patch "$cleanup_patch"; then
+              exit 0
+            fi
+          done
+          exit 1
+
     - name: Start a remote fail-safe reference-removal watchdog
       ansible.builtin.shell: |
         set -euo pipefail
         nohup /bin/bash -c '
           sleep {{ checkout_missing_configmap_scenario.fault.maximum_active_seconds }}
-          kubectl --kubeconfig /etc/kubernetes/admin.conf patch \
-            deployment checkoutservice \
-            --namespace {{ online_boutique_namespace }} \
-            --type strategic --patch "$1" || true
+          "$1" || true
           kubectl --kubeconfig /etc/kubernetes/admin.conf annotate \
             deployment checkoutservice --namespace {{ online_boutique_namespace }} \
             agent-rca.dev/controlled-fault-id- || true
           kubectl --kubeconfig /etc/kubernetes/admin.conf delete \
             configmap {{ checkout_missing_configmap_lock_name }} \
             --namespace {{ online_boutique_namespace }} --ignore-not-found=true || true
-        ' _ {{ checkout_missing_configmap_cleanup_patch | to_json | quote }} \
+        ' _ {{ checkout_missing_configmap_cleanup_script | quote }} \
           >{{ checkout_missing_configmap_watchdog_log | quote }} 2>&1 </dev/null &
         echo $!
       args:
@@ -287,20 +354,7 @@
 
   always:
     - name: Remove the exact missing ConfigMap volume reference
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/kubernetes/admin.conf
-          - patch
-          - deployment
-          - checkoutservice
-          - --namespace
-          - "{{ online_boutique_namespace }}"
-          - --type
-          - strategic
-          - --patch
-          - "{{ checkout_missing_configmap_cleanup_patch | to_json }}"
+      ansible.builtin.command: "{{ checkout_missing_configmap_cleanup_script }}"
       register: checkout_missing_configmap_restore_result
       changed_when: checkout_missing_configmap_restore_result.rc == 0
       failed_when: false
@@ -360,6 +414,12 @@
     - name: Remove the missing-ConfigMap watchdog log
       ansible.builtin.file:
         path: "{{ checkout_missing_configmap_watchdog_log }}"
+        state: absent
+      changed_when: false
+
+    - name: Remove the missing-ConfigMap cleanup helper
+      ansible.builtin.file:
+        path: "{{ checkout_missing_configmap_cleanup_script }}"
         state: absent
       changed_when: false
 
