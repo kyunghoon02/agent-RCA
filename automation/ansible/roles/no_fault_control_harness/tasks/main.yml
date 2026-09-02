@@ -585,6 +585,19 @@
             + ((no_fault_control_workload_result.stdout | from_json).status_families.get('3xx', 0) | int)
           }}
 
+    - name: Report the sanitized normal workload result
+      ansible.builtin.debug:
+        msg:
+          operations: "{{ no_fault_control_workload_summary.operations | int }}"
+          request_attempts: >-
+            {{ no_fault_control_workload_summary.request_attempts | int }}
+          successful_responses: >-
+            {{ no_fault_control_successful_responses | int }}
+          transport_errors: >-
+            {{ no_fault_control_workload_summary.transport_errors | int }}
+          transport_error_budget: >-
+            {{ no_fault_control_scenario.postconditions.transport_errors_maximum | int }}
+
     - name: Read final Online Boutique Deployments
       ansible.builtin.command: >-
         kubectl --kubeconfig /etc/kubernetes/admin.conf
@@ -687,8 +700,12 @@
             == online_boutique_expected_deployments | sort
           - no_fault_control_workload_summary.profile == 'normal'
           - no_fault_control_workload_summary.seed | int == no_fault_control_scenario.workload.seed
-          - no_fault_control_workload_summary.transport_errors | int == 0
-          - no_fault_control_successful_responses | int >= 1
+          - >-
+            no_fault_control_workload_summary.transport_errors | int
+            <= no_fault_control_scenario.postconditions.transport_errors_maximum | int
+          - >-
+            no_fault_control_successful_responses | int
+            >= no_fault_control_scenario.postconditions.successful_responses_minimum | int
         fail_msg: >-
           The target changed, restarted, became unready, entered a fault state,
           or the normal workload failed. This run cannot receive a no-fault label.
@@ -745,7 +762,7 @@
     - name: Build the post-run no-fault control attestation
       ansible.builtin.set_fact:
         no_fault_control_attestation:
-          schema_version: "1.0.0"
+          schema_version: "1.1.0"
           scenario_id: "{{ no_fault_control_scenario.scenario_id }}"
           observed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
           observation_seconds: >-

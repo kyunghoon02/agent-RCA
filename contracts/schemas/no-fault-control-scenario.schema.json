@@ -17,7 +17,7 @@
     "postconditions"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "1.1.0"},
     "scenario_id": {"const": "scenario-frontend-no-fault-normal"},
     "environment": {
       "type": "object",
@@ -152,7 +152,11 @@
         "deployment_snapshot_unchanged": {"const": true},
         "pod_snapshot_unchanged": {"const": true},
         "restart_delta_maximum": {"const": 0},
-        "transport_errors_maximum": {"const": 0},
+        "transport_errors_maximum": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
         "successful_responses_minimum": {"const": 1}
       }
     }

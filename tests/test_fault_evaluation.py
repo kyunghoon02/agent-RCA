@@ -351,7 +351,7 @@ def no_fault_fixture_bundle() -> tuple[dict, dict]:
     bundle["context"]["collector_failures"] = []
     bundle["context"]["localization"]["context_completeness"] = 1.0
     bundle["control_attestation"] = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "scenario_id": "scenario-frontend-no-fault-normal",
         "observed_at": "2026-08-12T02:05:00Z",
         "observation_seconds": 900,
@@ -555,6 +555,35 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
         ] = "c" * 64
 
         with self.assertRaisesRegex(ContractViolation, "changed its Deployment"):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
+    def test_no_fault_control_allows_bounded_transport_noise(self) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        bundle["control_attestation"]["workload"]["transport_errors"] = 3
+        bundle["control_attestation"]["workload"]["successful_responses"] = 997
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="c" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(artifacts["prediction"]["outcome"], "ABSTAIN")
+
+    def test_no_fault_control_rejects_transport_noise_above_budget(self) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        bundle["control_attestation"]["workload"]["transport_errors"] = 4
+
+        with self.assertRaisesRegex(
+            ContractViolation,
+            "exceeded the bounded transport error budget",
+        ):
             build_controlled_fault_evaluation(
                 bundle,
                 scenario,

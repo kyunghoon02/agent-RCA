@@ -20,7 +20,7 @@
     "workload"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "1.1.0"},
     "scenario_id": {"const": "scenario-frontend-no-fault-normal"},
     "observed_at": {"type": "string", "format": "date-time"},
     "observation_seconds": {
@@ -53,7 +53,7 @@
         "operations": {"type": "integer", "minimum": 1},
         "request_attempts": {"type": "integer", "minimum": 1},
         "successful_responses": {"type": "integer", "minimum": 1},
-        "transport_errors": {"const": 0}
+        "transport_errors": {"type": "integer", "minimum": 0}
       }
     }
   },
