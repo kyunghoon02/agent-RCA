@@ -9,6 +9,8 @@ ANSIBLE_OBSERVABILITY_INVENTORY ?= automation/ansible/inventories/observability.
 RCA_GROUND_TRUTH ?=
 RCA_PREDICTION ?=
 EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
+EVALUATION_MATRIX_MANIFEST ?=
+EVALUATION_MATRIX_RESUME ?=
 
 .PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \
@@ -26,7 +28,9 @@ EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
 	evaluate-payment-image-pull \
 	evaluate-checkout-missing-configmap \
 	evaluate-no-fault-control \
-	deploy-three-domain smoke-krca-coverage summarize-checkout-oom
+	deploy-three-domain smoke-krca-coverage summarize-checkout-oom \
+	verify-evaluation-runtime plan-evaluation-matrix evaluate-matrix \
+	summarize-evaluation-matrix
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -192,6 +196,9 @@ ansible-syntax:
 		-i automation/ansible/inventories/observability.example.yml \
 		--syntax-check automation/ansible/playbooks/evaluate-no-fault-control.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/dev.example.yml --syntax-check \
+		automation/ansible/playbooks/verify-evaluation-runtime.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
 		-i automation/ansible/inventories/chaos-eval.example.yml \
 		-i automation/ansible/inventories/observability.example.yml \
@@ -337,3 +344,20 @@ summarize-checkout-oom:
 		--scenario-id scenario-checkoutservice-oom-chaos-mesh-change-stress \
 		--evidence-gate-policy $(EVIDENCE_GATE_POLICY) \
 		--minimum-runs 5
+
+verify-evaluation-runtime:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		automation/ansible/playbooks/verify-evaluation-runtime.yml
+
+plan-evaluation-matrix:
+	@PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py
+
+evaluate-matrix:
+	PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --execute $(if $(strip $(EVALUATION_MATRIX_RESUME)),--resume "$(EVALUATION_MATRIX_RESUME)",)
+
+summarize-evaluation-matrix:
+	@test -n "$(EVALUATION_MATRIX_MANIFEST)" || \
+		(echo "Set EVALUATION_MATRIX_MANIFEST to a private matrix manifest" >&2; exit 2)
+	PYTHONPATH=src:. .venv/bin/python tools/summarize_evaluation_matrix.py \
+		--manifest "$(EVALUATION_MATRIX_MANIFEST)"

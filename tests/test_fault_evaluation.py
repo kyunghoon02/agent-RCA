@@ -756,6 +756,23 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
             artifacts["agent_result"]["metrics"]["abstention_correctness"],
             0.0,
         )
+        self.assertEqual(
+            artifacts["agent_runtime"]["agent_status"], "GATE_REJECTED"
+        )
+        self.assertEqual(
+            artifacts["agent_runtime"]["prediction_outcome"], "FAILED"
+        )
+        self.assertEqual(
+            artifacts["agent_runtime"]["ingest_to_agent_start_ms"],
+            1238280000,
+        )
+        self.assertEqual(
+            artifacts["agent_runtime"]["ingest_to_terminal_ms"],
+            1238340000,
+        )
+        self.assertIsNone(
+            artifacts["agent_runtime"]["ingest_to_report_ms"]
+        )
 
     def test_agent_report_is_scored_separately_from_variant_a_baseline(self) -> None:
         bundle, scenario = fixture_bundle()
@@ -779,6 +796,31 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
         self.assertEqual(
             artifacts["agent_result"]["metrics"]["root_cause_top1_accuracy"],
             1.0,
+        )
+
+    def test_accepted_agent_runtime_records_end_to_end_report_latency(self) -> None:
+        bundle, scenario = fixture_bundle()
+        bundle = with_agent_report(
+            bundle, cause_id="kubernetes.container-oomkilled"
+        )
+        bundle = with_failed_agent_run(bundle)
+        bundle["incident"]["status"] = "REPORTED"
+        bundle["agent_run"]["status"] = "SUCCEEDED"
+        bundle["agent_run"]["reason_code"] = "REPORT_ACCEPTED"
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="a" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(artifacts["agent_runtime"]["report_status"], "conclusive")
+        self.assertEqual(
+            artifacts["agent_runtime"]["prediction_outcome"], "ROOT_CAUSE"
+        )
+        self.assertEqual(
+            artifacts["agent_runtime"]["ingest_to_report_ms"], 1238340000
         )
 
     def test_agent_score_uses_taxonomy_id_instead_of_summary(self) -> None:

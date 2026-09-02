@@ -37,6 +37,7 @@ automation/ansible/inventories/*.yml
 # Local working documents
 /plan.md
 /docs/
+/tmp/
 
 # Runtime or credential-bearing files
 .env

@@ -33,6 +33,23 @@ def _format_time(value: datetime) -> str:
     )
 
 
+def _parse_time(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as error:
+        raise ContractViolation("evaluation runtime timestamp is invalid") from error
+    if parsed.tzinfo is None:
+        raise ContractViolation("evaluation runtime timestamp must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _elapsed_milliseconds(start: str, end: str) -> int:
+    elapsed = round((_parse_time(end) - _parse_time(start)).total_seconds() * 1000)
+    if elapsed < 0:
+        raise ContractViolation("evaluation runtime timestamps are out of order")
+    return elapsed
+
+
 def _facts(item: Mapping[str, Any]) -> Mapping[str, Any]:
     value = item.get("facts", {})
     return value if isinstance(value, Mapping) else {}
@@ -730,6 +747,7 @@ def build_controlled_fault_evaluation(
     raw_report = bundle.get("report")
     raw_agent_run = bundle.get("agent_run")
     agent_run = None
+    report = None
     if raw_agent_run is not None:
         if not isinstance(raw_agent_run, Mapping):
             raise ContractViolation("fault evaluation Agent run must be an object")
@@ -782,4 +800,41 @@ def build_controlled_fault_evaluation(
             agent_prediction,
             evaluated_at=evaluated_at,
         )
+    if agent_run is not None:
+        report_generated_at = (
+            report["generated_at"] if report is not None else None
+        )
+        agent_runtime = {
+            "schema_version": "1.0.0",
+            "evaluation_case_id": evaluation_case_id,
+            "scenario_id": scenario["scenario_id"],
+            "incident_id": incident_id,
+            "variant_id": "C",
+            "model": agent_run["model"],
+            "agent_status": agent_run["status"],
+            "reason_code": agent_run["reason_code"],
+            "knowledge_status": agent_run["knowledge_status"],
+            "received_at": incident["created_at"],
+            "started_at": agent_run["started_at"],
+            "completed_at": agent_run["completed_at"],
+            "report_generated_at": report_generated_at,
+            "report_status": report["status"] if report is not None else None,
+            "prediction_outcome": artifacts["agent_prediction"]["outcome"],
+            "ingest_to_agent_start_ms": _elapsed_milliseconds(
+                incident["created_at"], agent_run["started_at"]
+            ),
+            "ingest_to_terminal_ms": _elapsed_milliseconds(
+                incident["created_at"], agent_run["completed_at"]
+            ),
+            "ingest_to_report_ms": (
+                _elapsed_milliseconds(incident["created_at"], report_generated_at)
+                if report_generated_at is not None
+                else None
+            ),
+            "usage": copy.deepcopy(agent_run["usage"]),
+        }
+        validate_contract(
+            "rca-evaluation-agent-runtime.schema.json", agent_runtime
+        )
+        artifacts["agent_runtime"] = agent_runtime
     return artifacts

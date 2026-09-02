@@ -1,0 +1,99 @@
+---
+- name: Require the continuous Agent evaluation runtime
+  ansible.builtin.assert:
+    that:
+      - incident_platform.agent_worker.enabled | bool
+      - incident_platform.reconciler.image_digest is match('^sha256:[a-f0-9]{64}$')
+    fail_msg: The frozen Agent evaluation runtime contract is disabled or unpinned.
+
+- name: Read the RCA runtime Deployments
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - --namespace={{ incident_platform_namespace }}
+      - get
+      - deployment
+      - "{{ incident_platform_webhook_deployment }}"
+      - "{{ incident_platform_worker_deployment }}"
+      - "{{ incident_platform_viewer_deployment }}"
+      - "{{ incident_platform_agent_worker_deployment }}"
+      - --output=json
+  register: evaluation_runtime_deployments
+  changed_when: false
+
+- name: Require the complete RCA runtime Deployment set
+  ansible.builtin.assert:
+    that:
+      - (evaluation_runtime_deployments.stdout | from_json)['items'] | length == 4
+      - >-
+        ((evaluation_runtime_deployments.stdout | from_json)['items']
+        | map(attribute='metadata.name') | list | sort)
+        == ([
+          incident_platform_webhook_deployment,
+          incident_platform_worker_deployment,
+          incident_platform_viewer_deployment,
+          incident_platform_agent_worker_deployment
+        ] | sort)
+    fail_msg: The RCA runtime Deployment set is incomplete.
+
+- name: Require Ready Deployments on the frozen runtime digest
+  ansible.builtin.assert:
+    that:
+      - >-
+        evaluation_runtime_deployment.status.readyReplicas | default(0) | int
+        == evaluation_runtime_deployment.spec.replicas | int
+      - >-
+        evaluation_runtime_deployment.status.updatedReplicas | default(0) | int
+        == evaluation_runtime_deployment.spec.replicas | int
+      - evaluation_runtime_deployment.status.unavailableReplicas | default(0) | int == 0
+      - >-
+        incident_platform.reconciler.image_digest in
+        evaluation_runtime_deployment.spec.template.spec.containers[0].image
+    fail_msg: >-
+      RCA Deployment {{ evaluation_runtime_deployment_name }} is unavailable
+      or its image digest drifted.
+  vars:
+    evaluation_runtime_deployment: >-
+      {{ (evaluation_runtime_deployments.stdout | from_json)['items']
+      | selectattr('metadata.name', 'equalto', evaluation_runtime_deployment_name)
+      | first }}
+  loop:
+    - "{{ incident_platform_webhook_deployment }}"
+    - "{{ incident_platform_worker_deployment }}"
+    - "{{ incident_platform_viewer_deployment }}"
+    - "{{ incident_platform_agent_worker_deployment }}"
+  loop_control:
+    loop_var: evaluation_runtime_deployment_name
+
+- name: Read the StateGraph reconciler runtime
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - --namespace={{ incident_platform_namespace }}
+      - get
+      - cronjob
+      - "{{ incident_platform_reconciler_cronjob }}"
+      - --output=json
+  register: evaluation_runtime_reconciler
+  changed_when: false
+
+- name: Require the active reconciler on the frozen runtime digest
+  ansible.builtin.assert:
+    that:
+      - >-
+        not ((evaluation_runtime_reconciler.stdout | from_json).spec.suspend
+        | default(false) | bool)
+      - >-
+        incident_platform.reconciler.image_digest in
+        (evaluation_runtime_reconciler.stdout
+        | from_json).spec.jobTemplate.spec.template.spec.containers[0].image
+    fail_msg: The StateGraph reconciler is suspended or its image digest drifted.
+
+- name: Report the sanitized evaluation runtime preflight
+  ansible.builtin.debug:
+    msg:
+      ready_runtime_deployments: 4
+      ready_reconciler: true
+      runtime_digest_pinned: true

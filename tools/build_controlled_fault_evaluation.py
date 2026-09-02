@@ -113,6 +113,10 @@ def main() -> int:
                 "agent_result": RUN_ROOT / f"{evaluation_case_id}.agent.result.json",
             }
         )
+    if "agent_runtime" in artifacts:
+        paths["agent_runtime"] = (
+            RUN_ROOT / f"{evaluation_case_id}.agent.runtime.json"
+        )
     existing = [str(path) for path in paths.values() if path.exists()]
     if existing:
         raise SystemExit(

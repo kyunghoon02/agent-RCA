@@ -272,6 +272,21 @@ make evaluate-payment-image-pull CONFIRM_CONTROLLED_FAULT=yes
 make evaluate-checkout-missing-configmap CONFIRM_CONTROLLED_FAULT=yes
 ```
 
+반복 평가는 고정된 4개 시나리오를 각각 5회 순차 실행한다. 먼저 mutation 없는
+계획을 확인하고, 실제 실행 때만 현재 `main` commit 전체 SHA로 승인한다. 실행 로그와
+Incident 식별자가 포함된 결과는 `evaluation/runs/private/`에만 저장되며 첫 실패에서
+중단된다.
+
+```bash
+make plan-evaluation-matrix
+CONFIRM_EVALUATION_MATRIX="$(git rev-parse HEAD)" make evaluate-matrix
+make summarize-evaluation-matrix \
+  EVALUATION_MATRIX_MANIFEST=evaluation/runs/private/matrix/<run>/manifest.json
+```
+
+실패 원인을 확인한 뒤에는 같은 확인값과
+`EVALUATION_MATRIX_RESUME=<manifest>`로 실패 회차 다음부터 재개한다.
+
 missing ConfigMap scenario는 required volume reference에서 이름만 발견하고 Kubernetes
 API로 해당 ConfigMap의 존재 여부를 다시 확인한다. ConfigMap 값과 Pod spec 원문은
 Evidence에 저장하지 않는다. 하네스와 scorer는 구현돼 있으며 live 실행 결과는 아직 없다.
