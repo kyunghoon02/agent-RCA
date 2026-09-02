@@ -550,6 +550,18 @@ class AgentInvestigationView:
         }
 
 
+def _model_evidence_payload(evidence: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return Evidence facts without exposing internal integrity identifiers."""
+
+    payload = copy.deepcopy(dict(evidence))
+    provenance = payload.get("provenance")
+    if isinstance(provenance, Mapping):
+        model_provenance = copy.deepcopy(dict(provenance))
+        model_provenance.pop("content_hash", None)
+        payload["provenance"] = model_provenance
+    return payload
+
+
 @dataclass
 class AgentToolRuntime:
     """Per-run capability boundary for the Agent's two read-only tools."""
@@ -575,7 +587,12 @@ class AgentToolRuntime:
         if item is None:
             return self._record("inspect_evidence", candidate_ref, "NOT_FOUND", {})
         self.inspected_evidence_ids.add(evidence_id)
-        return self._record("inspect_evidence", candidate_ref, "SUCCEEDED", item)
+        return self._record(
+            "inspect_evidence",
+            candidate_ref,
+            "SUCCEEDED",
+            _model_evidence_payload(item),
+        )
 
     def inspect_evidence(self, evidence_id: str) -> str:
         self.attempted_tool_calls += 1
@@ -587,7 +604,12 @@ class AgentToolRuntime:
         if item is None:
             return self._record("inspect_evidence", evidence_id, "NOT_FOUND", {})
         self.inspected_evidence_ids.add(evidence_id)
-        return self._record("inspect_evidence", evidence_id, "SUCCEEDED", item)
+        return self._record(
+            "inspect_evidence",
+            evidence_id,
+            "SUCCEEDED",
+            _model_evidence_payload(item),
+        )
 
     def inspect_reference(self, reference_document_id: str) -> str:
         self.attempted_tool_calls += 1

@@ -995,10 +995,17 @@ class AgentRCAServiceTests(unittest.TestCase):
     def test_tool_runtime_resolves_short_candidate_ref_to_exact_evidence_id(
         self,
     ) -> None:
+        content_digest = "a" * 64
         runtime = AgentToolRuntime(
             context_evidence_ids=frozenset({"ev-candidate-0001"}),
             evidence_by_id={
-                "ev-candidate-0001": {"evidence_id": "ev-candidate-0001"},
+                "ev-candidate-0001": {
+                    "evidence_id": "ev-candidate-0001",
+                    "provenance": {
+                        "provider": "fixture-provider",
+                        "content_hash": f"sha256:{content_digest}",
+                    },
+                },
             },
             reference_by_id={},
             max_tool_calls=2,
@@ -1009,6 +1016,11 @@ class AgentRCAServiceTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "SUCCEEDED")
         self.assertEqual(result["result"]["evidence_id"], "ev-candidate-0001")
+        self.assertEqual(
+            result["result"]["provenance"],
+            {"provider": "fixture-provider"},
+        )
+        self.assertNotIn(content_digest, json.dumps(result, sort_keys=True))
         self.assertEqual(runtime.inspected_evidence_ids, {"ev-candidate-0001"})
         self.assertEqual(runtime.tool_events[0]["requested_id"], "E1")
 
