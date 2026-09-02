@@ -34,7 +34,7 @@ automation/ansible/inventories/*.yml
 .ansible/
 *.retry
 
-# Local working documents
+# Local-only decision/runtime records and temporary plans
 /plan.md
 /docs/
 /tmp/

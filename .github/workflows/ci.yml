@@ -40,8 +40,8 @@ jobs:
       - name: Install development dependencies
         run: make bootstrap-dev DEV_PYTHON=python
 
-      - name: Validate contracts and run unit tests
-        run: make validate-core
+      - name: Validate documentation, contracts and unit tests
+        run: make validate-docs validate-core
 
   infrastructure:
     name: Terraform and Ansible static validation

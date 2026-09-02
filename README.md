@@ -230,6 +230,7 @@ OOM은 `exact-oom-signature` 역할의 대안이며 둘 중 하나면 충족되�
 
 ```bash
 make bootstrap-dev
+make validate-docs
 make validate-core
 ```
 
@@ -315,7 +316,6 @@ automation/          kubeadm과 platform 배포 Ansible
 config/              project scope, readiness와 RCA routing policy
 contracts/           Incident, Evidence, Graph, RCA와 Provider contract
 db/                  PostgreSQL와 opt-in pgvector migration
-docs/                architecture decision, runtime evidence와 reproduction guide
 evaluation/          preregistration, scenario와 Ground Truth isolation policy
 frontend/viewer/     read-only Incident/RCA Viewer
 infra/terraform/     GCP VPC, IAM과 Compute Engine provisioning
@@ -327,6 +327,12 @@ tools/               validation, smoke와 evaluation tool
 ```
 
 ## Documentation
+
+`README.md`만 현재 아키텍처와 구현 상태를 설명한다. `contracts/`와 `config/`는
+machine-validated 규칙의 source of truth이고, 하위 README는 해당 컴포넌트의 설치·실행
+명령만 담당한다. 진행 기록과 roadmap은 별도 Markdown으로 복제하지 않으며, 변경 시 코드와
+영향받는 contract를 같은 변경 단위에서 갱신한다. `make validate-docs`는 Git이 추적하는
+Markdown의 로컬 경로와 외부 링크를 검사한다.
 
 - [Provider Contract](contracts/providers.md)
 - [Evidence Contract](contracts/schemas/evidence-item.schema.json)

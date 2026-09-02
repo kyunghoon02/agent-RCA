@@ -12,7 +12,7 @@ EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
 EVALUATION_MATRIX_MANIFEST ?=
 EVALUATION_MATRIX_RESUME ?=
 
-.PHONY: bootstrap-dev validate-phase0 test-core validate-core smoke-agent-rca \
+.PHONY: bootstrap-dev validate-docs validate-phase0 test-core validate-core smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \
 	sync-knowledge-vectors evaluate-knowledge-retrieval evaluate-rca gcp-readiness \
 	render-online-boutique build-online-boutique-otel-images terraform-fmt terraform-validate \
@@ -35,6 +35,9 @@ EVALUATION_MATRIX_RESUME ?=
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
 	.venv/bin/python -m pip install --requirement requirements-dev.txt
+
+validate-docs:
+	$(DEV_PYTHON) tools/check_markdown_links.py
 
 validate-phase0:
 	.venv/bin/python tools/validate_phase0.py

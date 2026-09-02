@@ -188,4 +188,4 @@ root cause가 아니며 fault-RCA 정확도는 별도 controlled-fault 평가가
 
 - Jiang et al., “KRCA: An Efficient Root Cause Analysis System in Hyper-Scale
   Microservice Systems via Agentic AI,” ASE 2026,
-  <https://doi.org/10.1145/3832783.3834468>
+  <https://arxiv.org/abs/2607.01788>
