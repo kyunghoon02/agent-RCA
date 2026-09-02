@@ -59,7 +59,7 @@ cilium:
   cli_version: "v0.19.7"
 
 hubble:
-  cli_version: "v1.19.3"
+  cli_version: "v1.19.4"
 
 observability:
   namespace: observability
@@ -112,8 +112,8 @@ incident_platform:
   reconciler:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
-    image_tag: runtime-27c503e9c7b9
-    image_digest: sha256:3b458fd4f9832b53637f54c2c04b7e5d44f53cbe5b859831feb4738255039cf5
+    image_tag: runtime-3e8e38cf2f0d
+    image_digest: sha256:d44d3fa83aaf55a394f201ce0a02c17c859efa87ad072dd025c1ca52d9adf7e6
   viewer_frontend:
     node_version: 22.17.1
     image_tag: viewer-abc5599bc22d

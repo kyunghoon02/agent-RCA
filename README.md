@@ -25,6 +25,7 @@ flowchart LR
     subgraph T[Fault target domain]
         APP[Online Boutique and Chaos Mesh]
         K[Kubernetes API and Events]
+        H[Cilium and Hubble Relay]
         FW[Prometheus, Alloy and OTel forwarders]
         APP --> FW
     end
@@ -54,6 +55,7 @@ flowchart LR
     P --> CW
     L --> CW
     K --> CW
+    H -->|private bounded flow query| CW
 ```
 
 Alert 수신과 LLM 실행은 분리돼 있다. `rca_enabled=true`는 Alertmanager가 RCA 대상
@@ -91,7 +93,7 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 | Loki/Alloy | 부분 연결 | Pod UID에 귀속된 kernel memcg OOM Evidence |
 | Deployment history | 연결됨 | retained ReplicaSet 기반 image/resource 변경과 변경 부재 |
 | Tempo | telemetry 검증 연결 | trace 저장과 service graph 생성, Incident trace Provider는 미연결 |
-| Cilium/Hubble | platform 조회 가능 | flow/drop/policy-verdict Incident Provider는 미연결 |
+| Cilium/Hubble | 연결됨 | namespace·Pod root·time window로 제한한 flow/verdict/drop 집계. 원본 flow, IP와 L7 payload는 저장하지 않음 |
 | Application log | 계획 | 일반 application/container log Incident Provider는 미연결 |
 
 새 Provider도 동일한 `EvidenceDraft → EvidenceBuilder → EvidenceItem` 경계를 사용한다.
@@ -113,7 +115,8 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 - namespace, resource와 Incident time window를 벗어난 query를 거부한다.
 - write/admin tool, 자동 복구와 LLM 생성 shell 또는 `kubectl` 실행을 허용하지 않는다.
 - 원본 telemetry는 source retention에 두고 Evidence에는 필요한 요약과 provenance만 저장한다.
-- no data, retention expiry, timeout, 권한 거부와 Provider failure를 구분한다.
+- no data, timeout, 권한 거부와 Provider failure를 구분한다. source retention을 입증할 수
+  없는 no-data 결과는 완전한 성공으로 취급하지 않는다.
 - 일부 Provider가 실패해도 성공한 Evidence를 보존하고 불완전성을 Report에 표시한다.
 - root cause는 등록된 원인별 증명 조건을 만족하는 runtime Evidence 인용 없이는 확정할 수 없다.
 
@@ -207,7 +210,11 @@ OOM은 `exact-oom-signature` 역할의 대안이며 둘 중 하나면 충족되�
 - PostgreSQL, Neo4j와 local PV의 backup/restore 및 HA가 구현되지 않았다.
 - fault-target 원격 조회 credential은 제한된 RBAC의 장기 ServiceAccount token이며,
   production workload identity와 자동 rotation은 아직 구현되지 않았다.
-- Hubble flow, 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
+- 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.
+- Hubble Relay의 bounded buffer가 Incident 전체 window를 보존했는지는 현재 입증할 수 없다.
+  따라서 matching flow가 없으면 `PARTIAL`과 retention `UNKNOWN`으로 남긴다.
+- fault-target Hubble Relay는 public endpoint가 아닌 VPC 내부 제한 NodePort지만, Relay
+  구간의 mTLS는 아직 구성하지 않았다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
 - OOM과 ImagePullBackOff 외 fault matrix가 완료되지 않았다.

@@ -66,6 +66,7 @@ def config() -> IncidentWorkerRuntimeConfig:
         kubernetes_ca_file="/not-used/ca",
         prometheus_base_url="http://prometheus.observability.svc.cluster.local:9090",
         loki_base_url="http://loki-gateway.observability.svc.cluster.local",
+        hubble_server="hubble-relay.kube-system.svc.cluster.local:80",
         krca_config_path="config/online-boutique-krca.yaml",
         neo4j_uri="bolt://neo4j:7687",
         neo4j_username="neo4j",
@@ -251,6 +252,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             "INCIDENT_WORKER_TARGET_NAMESPACE": "online-boutique",
             "PROMETHEUS_BASE_URL": "http://prometheus:9090",
             "LOKI_BASE_URL": "http://loki-gateway",
+            "HUBBLE_SERVER": "hubble-relay.kube-system.svc.cluster.local:80",
             "INCIDENT_WORKER_KRCA_CONFIG": "config/online-boutique-krca.yaml",
             "NEO4J_URI": "bolt://neo4j:7687",
             "NEO4J_USERNAME": "neo4j",
@@ -377,6 +379,38 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
 
             service.collect_claimed_incident(
                 "inc-worker-kernel-oom-scope-0001",
+                scope=scope,
+                observed_at=NOW,
+            )
+
+        orchestrator = service_factory.call_args.args[1]
+        rooted_scope = orchestrator._specs[0].request_scope
+        self.assertEqual(rooted_scope.resource_names, ("frontend",))
+        self.assertEqual(rooted_scope.resource_name_prefixes, ("frontend-",))
+        self.assertEqual(rooted_scope.related_resource_kinds, ())
+        self.assertEqual(rooted_scope.max_items, 32)
+
+    def test_hubble_scope_adds_only_root_derived_prefixes(self) -> None:
+        service = ProfileAwareIncidentCollectionService(
+            IncidentLookupOnlyRepository(),
+            (CollectorSpec("hubble", StaticProvider()),),
+            object(),
+            krca_config(),
+        )
+        scope = ResourceScope(
+            namespace="online-boutique",
+            resource_names=("frontend",),
+            max_items=32,
+        )
+        with patch(
+            "tools.run_incident_worker.IncidentCollectionService"
+        ) as service_factory:
+            service_factory.return_value.collect_claimed_incident.return_value = (
+                CollectionRun(status="SUCCEEDED", executions=tuple())
+            )
+
+            service.collect_claimed_incident(
+                "inc-worker-hubble-scope-0001",
                 scope=scope,
                 observed_at=NOW,
             )

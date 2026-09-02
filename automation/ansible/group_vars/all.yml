@@ -31,9 +31,11 @@ cilium_chart_version: 1.20.1
 cilium_cli_version: v0.19.7
 cilium_cli_linux_amd64_sha256: >-
   cd15e0983bf0acc7946cd05d453d1e58376ea92dec2642e745212df2b07d8852
-hubble_cli_version: v1.19.3
+hubble_cli_version: v1.19.4
 hubble_cli_linux_amd64_sha256: >-
-  e0e555001a46921ff2501ddc874ed1f4c68ba20cdb00cf4ea8263be4395eb008
+  c7c37a5f27ed2ae2d5495c6ddbecc61cebbb841508e77af3c131e96f005ed247
+hubble_relay_service_type: ClusterIP
+hubble_relay_node_port: 31234
 
 chaos_mesh_namespace: chaos-mesh
 chaos_mesh_target_namespace: online-boutique
@@ -209,6 +211,7 @@ incident_platform_prometheus_base_url: >-
   http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090
 incident_platform_loki_base_url: >-
   http://loki-gateway.observability.svc.cluster.local
+incident_platform_hubble_server: hubble-relay.kube-system.svc.cluster.local:80
 incident_platform_webhook_service_type: >-
   {{ 'NodePort' if incident_platform_domain_mode == 'control' else 'ClusterIP' }}
 incident_platform_remote_token_mount_path: /var/run/secrets/agent-rca-target/token

@@ -189,9 +189,18 @@ summarize_flows(time_window, resource_scope, direction, verdict, flow_limit)
 find_drops(time_window, source_scope, destination_scope, reason_limit)
 ```
 
-- Cilium/Hubble의 L3/L4/L7 flow는 namespace, workload와 time window로 제한한다.
-- 원본 flow 전체를 StateGraph에 복사하지 않고 집계와 source reference만 저장한다.
-- flow 없음, Hubble retention 만료와 provider 실패를 구분한다.
+- 현재 `HubbleNetworkFlowProvider`는 trusted runtime 설정의 private Relay endpoint만
+  허용하고, 각 root Pod prefix에 대해 from/to 방향과 Incident time window를 CLI
+  argument로 고정한다. shell은 사용하지 않으며 query 수, flow 수, 출력 byte와 실행
+  시간을 제한한다.
+- 반환 flow도 timestamp, namespace와 root Pod prefix를 다시 검증하고 UUID로 중복을
+  제거한다. 원본 flow, endpoint IP, port, label, L7 URL/header/payload는 Evidence나
+  StateGraph에 복사하지 않는다.
+- Evidence에는 verdict/protocol/drop reason과 source/destination root count, first/last
+  time, truncation 여부만 집계한다. Projector는 이를 논리적 Service Entity의
+  `HUBBLE_NETWORK_FLOW_SUMMARY` event로 변환한다.
+- matching flow 없음과 provider 실패는 구분한다. 다만 현재 Relay retention coverage를
+  입증할 수 없으므로 no-data는 retention `UNKNOWN`인 `PARTIAL` 결과다.
 - Hubble evidence만으로 application root cause를 단정하지 않는다.
 
 ### DeploymentHistoryProvider

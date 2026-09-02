@@ -60,6 +60,25 @@
   changed_when: false
   failed_when: "'hubble_' not in hubble_metrics.stdout"
 
+- name: Read the Hubble Relay Service boundary
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service hubble-relay --namespace kube-system --output json
+  register: hubble_relay_service_result
+  changed_when: false
+
+- name: Require the configured Hubble Relay Service boundary
+  ansible.builtin.assert:
+    that:
+      - (hubble_relay_service_result.stdout | from_json).spec.type == hubble_relay_service_type
+      - (hubble_relay_service_result.stdout | from_json).spec.ports | length == 1
+      - (hubble_relay_service_result.stdout | from_json).spec.ports[0].port == 80
+      - >-
+        hubble_relay_service_type != 'NodePort'
+        or ((hubble_relay_service_result.stdout | from_json).spec.ports[0].nodePort
+        == hubble_relay_node_port)
+    fail_msg: The Hubble Relay exposure does not match the deployment profile.
+
 - name: Run a read-only Hubble status query
   ansible.builtin.command: hubble status --port-forward
   environment:

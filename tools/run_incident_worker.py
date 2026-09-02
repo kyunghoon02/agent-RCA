@@ -45,6 +45,7 @@ from incident_platform.postgresql import (
 )
 from incident_platform.projectors import (
     DeploymentChangeEvidenceProjector,
+    HubbleNetworkFlowEvidenceProjector,
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     LokiKernelOOMEvidenceProjector,
@@ -53,6 +54,7 @@ from incident_platform.projectors import (
 )
 from incident_platform.providers.change import DeploymentHistoryProvider
 from incident_platform.providers.http import BoundedJSONTransport
+from incident_platform.providers.hubble import HubbleCLIClient, HubbleNetworkFlowProvider
 from incident_platform.providers.kubernetes import (
     KubernetesHTTPAPI,
     KubernetesIncidentProvider,
@@ -107,6 +109,7 @@ class IncidentWorkerRuntimeConfig:
     kubernetes_ca_file: str
     prometheus_base_url: str
     loki_base_url: str
+    hubble_server: str
     krca_config_path: str
     neo4j_uri: str
     neo4j_username: str
@@ -179,6 +182,7 @@ class IncidentWorkerRuntimeConfig:
             ),
             prometheus_base_url=_required_environment("PROMETHEUS_BASE_URL"),
             loki_base_url=_required_environment("LOKI_BASE_URL"),
+            hubble_server=_required_environment("HUBBLE_SERVER"),
             krca_config_path=_required_environment("INCIDENT_WORKER_KRCA_CONFIG"),
             neo4j_uri=_required_environment("NEO4J_URI"),
             neo4j_username=_required_environment("NEO4J_USERNAME"),
@@ -343,6 +347,7 @@ class ProfileAwareIncidentCollectionService:
                 "kubernetes",
                 "prometheus-workload",
                 "loki-kernel-oom",
+                "hubble",
             }:
                 specs.append(spec)
                 continue
@@ -460,6 +465,12 @@ def build_collection_service(
         max_raw_pods=500,
         max_matches=50,
     )
+    hubble_provider = HubbleNetworkFlowProvider(
+        HubbleCLIClient(config.hubble_server),
+        cluster_id=config.cluster_id,
+        max_scoped_resources=8,
+        max_raw_flows=500,
+    )
     return ProfileAwareIncidentCollectionService(
         incident_repository,
         (
@@ -486,6 +497,13 @@ def build_collection_service(
                 loki_kernel_oom_provider,
                 timeout_seconds=config.provider_timeout_seconds,
                 max_attempts=2,
+            ),
+            CollectorSpec(
+                "hubble",
+                hubble_provider,
+                timeout_seconds=config.provider_timeout_seconds,
+                max_attempts=2,
+                lookback_seconds=900,
             ),
             CollectorSpec(
                 "deployment",
@@ -817,6 +835,7 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
         graph_repository,
         (
             DeploymentChangeEvidenceProjector(),
+            HubbleNetworkFlowEvidenceProjector(),
             KubernetesEvidenceProjector(),
             LokiKernelOOMEvidenceProjector(),
             PrometheusMetricEvidenceProjector(),

@@ -1,6 +1,7 @@
 """Read-only telemetry provider adapters."""
 
 from .change import DeploymentHistoryProvider
+from .hubble import HubbleCLIClient, HubbleNetworkFlowProvider
 from .kubernetes import (
     KubernetesHTTPAPI,
     KubernetesIncidentProvider,
@@ -23,6 +24,8 @@ from .krca_metrics import (
 
 __all__ = [
     "DeploymentHistoryProvider",
+    "HubbleCLIClient",
+    "HubbleNetworkFlowProvider",
     "KubernetesHTTPAPI",
     "KubernetesIncidentProvider",
     "KubernetesInventoryProvider",

@@ -56,6 +56,8 @@ spec:
               value: http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090
             - name: LOKI_BASE_URL
               value: http://loki-gateway.observability.svc.cluster.local
+            - name: HUBBLE_SERVER
+              value: hubble-relay.kube-system.svc.cluster.local:80
             - name: INCIDENT_WORKER_KRCA_CONFIG
               value: /app/config/online-boutique-krca.yaml
             - name: NEO4J_URI

@@ -355,7 +355,7 @@ def validate_versions_and_manifests() -> None:
             "deb_version": "1.36.4-1.1",
         },
         "cilium": {"chart_version": "1.20.1", "cli_version": "v0.19.7"},
-        "hubble": {"cli_version": "v1.19.3"},
+        "hubble": {"cli_version": "v1.19.4"},
     }
     for boundary, expected in expected_runtime_versions.items():
         if versions.get(boundary) != expected:
@@ -513,6 +513,7 @@ def validate_versions_and_manifests() -> None:
         "kubernetes_version": expected_chaos_evaluation["kubernetes_release"]["version"],
         "kubernetes_deb_version": expected_chaos_evaluation["kubernetes_release"]["deb_version"],
         "observability_domain_mode": "forwarder",
+        "hubble_relay_service_type": "NodePort",
     }:
         raise ValidationFailure(
             "Chaos evaluation profile must select Kubernetes 1.35 and telemetry forwarding"
@@ -582,6 +583,8 @@ def validate_versions_and_manifests() -> None:
         'resource "google_compute_firewall" "observability_query"',
         'resource "google_compute_firewall" "rca_control_webhook"',
         'resource "google_compute_firewall" "fault_target_kubernetes_api"',
+        'resource "google_compute_firewall" "fault_target_hubble_relay"',
+        'ports    = ["31234"]',
     }
     terraform_contract = terraform_variables + terraform_main
     missing_terraform_tokens = sorted(
@@ -661,6 +664,7 @@ def validate_versions_and_manifests() -> None:
         "KUBERNETES_API_SERVER",
         "PROMETHEUS_BASE_URL",
         "LOKI_BASE_URL",
+        "HUBBLE_SERVER",
         "remote-target-kubernetes",
     }
     missing_incident_identity_tokens = sorted(
@@ -1247,9 +1251,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-27c503e9c7b9",
+            "image_tag": "runtime-3e8e38cf2f0d",
             "image_digest": (
-                "sha256:3b458fd4f9832b53637f54c2c04b7e5d44f53cbe5b859831feb4738255039cf5"
+                "sha256:d44d3fa83aaf55a394f201ce0a02c17c859efa87ad072dd025c1ca52d9adf7e6"
             ),
         },
         "viewer_frontend": {
@@ -1524,6 +1528,8 @@ def validate_incident_platform_manifest() -> None:
         != "http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090"
         or worker_env.get("LOKI_BASE_URL", {}).get("value")
         != "http://loki-gateway.observability.svc.cluster.local"
+        or worker_env.get("HUBBLE_SERVER", {}).get("value")
+        != "hubble-relay.kube-system.svc.cluster.local:80"
         or worker_env.get("INCIDENT_WORKER_KRCA_CONFIG", {}).get("value")
         != "/app/config/online-boutique-krca.yaml"
         or worker_env.get("NEO4J_URI", {}).get("value")

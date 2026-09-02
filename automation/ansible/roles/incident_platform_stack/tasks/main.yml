@@ -470,6 +470,8 @@
                               value: {{ incident_platform_prometheus_base_url }}
                             - name: LOKI_BASE_URL
                               value: {{ incident_platform_loki_base_url }}
+                            - name: HUBBLE_SERVER
+                              value: {{ incident_platform_hubble_server }}
                             - name: KUBERNETES_API_SERVER
                               value: {{ incident_platform_target_kubernetes_api_server }}
                           {% if incident_platform_domain_mode == 'control' %}

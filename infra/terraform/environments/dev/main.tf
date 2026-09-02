@@ -331,6 +331,30 @@ resource "google_compute_firewall" "fault_target_kubernetes_api" {
   }
 }
 
+resource "google_compute_firewall" "fault_target_hubble_relay" {
+  count = var.enable_chaos_evaluation_node ? 1 : 0
+
+  name        = "${local.name_prefix}-allow-target-hubble-from-rca"
+  project     = var.project_id
+  network     = google_compute_network.main.name
+  direction   = "INGRESS"
+  priority    = 1000
+  source_tags = ["${local.name_prefix}-rca-control"]
+  target_tags = ["${local.name_prefix}-chaos-target"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["31234"]
+  }
+
+  dynamic "log_config" {
+    for_each = var.enable_firewall_logging ? [1] : []
+    content {
+      metadata = "EXCLUDE_ALL_METADATA"
+    }
+  }
+}
+
 resource "google_compute_instance" "node" {
   name         = "${local.name_prefix}-node-01"
   project      = var.project_id

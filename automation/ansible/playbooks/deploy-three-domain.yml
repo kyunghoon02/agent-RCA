@@ -49,6 +49,9 @@
         incident_platform_loki_base_url: >-
           http://{{ hostvars[groups['observability_domain'][0]].three_domain_observability_private_address
           }}:{{ observability_loki_node_port }}
+        incident_platform_hubble_server: >-
+          {{ hostvars[groups['fault_target'][0]].three_domain_target_private_address
+          }}:{{ hubble_relay_node_port }}
       no_log: true
   roles:
     - role: stategraph_verify
@@ -184,6 +187,15 @@
                     = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
                 ) AND evidence.document->>'source' = 'prometheus'
               ),
+              'hubble_evidence_count', (
+                SELECT count(*) FROM evidence_items evidence
+                WHERE evidence.incident_id IN (
+                  SELECT incident_id FROM incidents
+                  WHERE document->'alert'->'labels'->>'verification_id'
+                    = '{{ hostvars[groups['observability_domain'][0]].three_domain_verification_id }}'
+                ) AND evidence.document->>'source' = 'hubble'
+                  AND evidence.document->>'kind' = 'network-flow-summary'
+              ),
               'krca_feature_evidence_count', (
                 SELECT count(*) FROM evidence_items evidence
                 WHERE evidence.incident_id IN (
@@ -226,8 +238,9 @@
         and ((three_domain_delivery_result.stdout | trim | from_json).evidence_count | int >= 10)
         and ((three_domain_delivery_result.stdout | trim | from_json).kubernetes_pod_evidence_count | int >= 1)
         and ((three_domain_delivery_result.stdout | trim | from_json).prometheus_evidence_count | int >= 5)
+        and ((three_domain_delivery_result.stdout | trim | from_json).hubble_evidence_count | int == 1)
         and ((three_domain_delivery_result.stdout | trim | from_json).krca_feature_evidence_count | int == 0)
-        and ((three_domain_delivery_result.stdout | trim | from_json).collector_count | int == 5)
+        and ((three_domain_delivery_result.stdout | trim | from_json).collector_count | int == 6)
         and ((three_domain_delivery_result.stdout | trim | from_json).work_succeeded_count | int == 1)
         and ((three_domain_delivery_result.stdout | trim | from_json).localization_succeeded_count | int == 1)
       retries: 60
@@ -250,6 +263,7 @@
             {{ three_domain_delivery_proof.kubernetes_pod_evidence_count }}
           prometheus_evidence_count: >-
             {{ three_domain_delivery_proof.prometheus_evidence_count }}
+          hubble_evidence_count: "{{ three_domain_delivery_proof.hubble_evidence_count }}"
           krca_feature_evidence_count: >-
             {{ three_domain_delivery_proof.krca_feature_evidence_count }}
           collector_count: "{{ three_domain_delivery_proof.collector_count }}"

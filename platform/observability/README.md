@@ -40,15 +40,18 @@ accepted as complete.
 The verify command checks Pod readiness, Bound PVCs, the reviewed Service
 exposure, absence of Ingress, component readiness, Cilium/Hubble targets, and
 normalized `cluster_id` labels. `deploy-three-domain` additionally proves that
-fault-target metric series, logs, and traces exist in the receiver and that a
-central synthetic alert becomes a durable Incident with remote Evidence.
+fault-target metric series, logs, traces, and a bounded Hubble flow summary are
+available to RCA control, and that a central synthetic alert becomes a durable
+Incident with remote Evidence.
 
 ## Private access
 
 No endpoint uses a LoadBalancer, public Ingress, or open public firewall. The
 receiver exposes fixed Prometheus, Loki, and Tempo NodePorts only inside the
-VPC, restricted by source/target network tags. Grafana remains ClusterIP. From
-an SSH session on the observability VM, start a loopback-only port forward:
+VPC, restricted by source/target network tags. The fault target exposes Hubble
+Relay on a fixed private NodePort restricted to the RCA-control source tag.
+Grafana remains ClusterIP. From an SSH session on the observability VM, start a
+loopback-only port forward:
 
 ```bash
 sudo kubectl --kubeconfig /etc/kubernetes/admin.conf \

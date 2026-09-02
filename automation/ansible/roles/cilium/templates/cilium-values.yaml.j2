@@ -40,7 +40,10 @@ hubble:
         operator: Exists
         effect: NoSchedule
     service:
-      type: ClusterIP
+      type: {{ hubble_relay_service_type }}
+{% if hubble_relay_service_type == 'NodePort' %}
+      nodePort: {{ hubble_relay_node_port }}
+{% endif %}
     prometheus:
       enabled: true
       serviceMonitor:
@@ -49,6 +52,17 @@ hubble:
           release: monitoring
   ui:
     enabled: false
+  redact:
+    enabled: true
+    http:
+      urlQuery: true
+      userInfo: true
+      headers:
+        deny:
+          - Authorization
+          - Cookie
+          - Proxy-Authorization
+          - Set-Cookie
   metrics:
     enableOpenMetrics: true
     enabled:

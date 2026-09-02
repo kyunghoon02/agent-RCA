@@ -1,6 +1,7 @@
 """Evidence-to-StateGraph domain projectors."""
 
 from .deployment import DeploymentChangeEvidenceProjector
+from .hubble import HubbleNetworkFlowEvidenceProjector
 from .kubernetes import KubernetesEvidenceProjector
 from .krca import KRCAPIEdgeEvidenceProjector
 from .loki import LokiKernelOOMEvidenceProjector
@@ -11,6 +12,7 @@ from .prometheus import (
 
 __all__ = [
     "DeploymentChangeEvidenceProjector",
+    "HubbleNetworkFlowEvidenceProjector",
     "KRCAPIEdgeEvidenceProjector",
     "KubernetesEvidenceProjector",
     "LokiKernelOOMEvidenceProjector",

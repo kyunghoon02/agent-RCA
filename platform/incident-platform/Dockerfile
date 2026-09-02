@@ -21,6 +21,14 @@ COPY tools/run_incident_worker.py /app/tools/run_incident_worker.py
 COPY tools/run_agent_worker.py /app/tools/run_agent_worker.py
 COPY tools/run_incident_viewer.py /app/tools/run_incident_viewer.py
 
+ADD https://github.com/cilium/hubble/releases/download/v1.19.4/hubble-linux-amd64.tar.gz /tmp/hubble-linux-amd64.tar.gz
+RUN echo "c7c37a5f27ed2ae2d5495c6ddbecc61cebbb841508e77af3c131e96f005ed247  /tmp/hubble-linux-amd64.tar.gz" \
+      | sha256sum --check --strict \
+    && tar --extract --gzip --file /tmp/hubble-linux-amd64.tar.gz \
+      --directory /usr/local/bin hubble \
+    && chmod 0755 /usr/local/bin/hubble \
+    && rm /tmp/hubble-linux-amd64.tar.gz
+
 RUN chown -R 65532:65532 /app
 
 USER 65532:65532
