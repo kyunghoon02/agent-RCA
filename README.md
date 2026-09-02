@@ -3,6 +3,8 @@
 > Evidence-grounded infrastructure incident analysis for Kubernetes and
 > cloud-native systems.
 
+[![CI](https://github.com/kyunghoon02/agent-RCA/actions/workflows/ci.yml/badge.svg)](https://github.com/kyunghoon02/agent-RCA/actions/workflows/ci.yml)
+
 ## Problem
 
 Cloud-native 장애의 원인은 metric 하나나 log 한 줄에만 있지 않다. 배포 변경,
