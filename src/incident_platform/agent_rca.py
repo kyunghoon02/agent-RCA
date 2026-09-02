@@ -749,13 +749,14 @@ cause-specific Evidence requirements supplied in hard_rules using only its
 supporting_evidence_ids. A CONCLUSIVE root cause must use at least two distinct
 Evidence channels, where a channel is source plus kind, and must contain no
 contradicting Evidence IDs. CONCLUSIVE is forbidden when collector_failures is
-non-empty. If the cause-specific proof is complete but any collector failed or
-returned partial coverage, return PARTIAL with the proven root_cause and state
-the collection gap in limitations. If the cause-specific proof is incomplete,
-return INCONCLUSIVE with root_cause set to null. When root_cause is non-null,
-its cause_id must exactly match the rank-one hypothesis cause_id. Do not invent
-IDs, entities, facts, or tool results. Only provide remediation suggestions
-when root_cause is non-null.
+non-empty or localization.context_completeness is below the minimum supplied in
+hard_rules. If the cause-specific proof is complete but collection is partial
+or Context completeness is below that minimum, return PARTIAL with the proven
+root_cause and state the coverage gap in limitations. If the cause-specific
+proof is incomplete, return INCONCLUSIVE with root_cause set to null. When
+root_cause is non-null, its cause_id must exactly match the rank-one hypothesis
+cause_id. Do not invent IDs, entities, facts, or tool results. Only provide
+remediation suggestions when root_cause is non-null.
 When root_cause is null, remediation.suggestions must be an empty array and
 verification_conditions must name the observable Evidence needed to confirm or
 reject the leading hypotheses. Keep accepted remediation advisory. If proof is
@@ -795,7 +796,15 @@ def _agent_input(invocation: AgentInvocation) -> str:
             "conclusive_minimum_distinct_evidence_channels": (
                 invocation.policy.minimum_conclusive_evidence_channels
             ),
+            "conclusive_minimum_context_completeness": (
+                invocation.policy.minimum_conclusive_context_completeness
+            ),
             "conclusive_contradicting_evidence_ids": [],
+            "context_completeness_policy": {
+                "conclusive_forbidden_below_minimum": True,
+                "proof_complete_decision": "PARTIAL",
+                "proof_incomplete_decision": "INCONCLUSIVE",
+            },
             "collector_failure_policy": {
                 "conclusive_forbidden": True,
                 "proof_complete_decision": "PARTIAL",

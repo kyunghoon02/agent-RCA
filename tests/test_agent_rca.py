@@ -891,6 +891,20 @@ class AgentRCAServiceTests(unittest.TestCase):
             2,
         )
         self.assertEqual(
+            decoded_input["hard_rules"][
+                "conclusive_minimum_context_completeness"
+            ],
+            0.7,
+        )
+        self.assertEqual(
+            decoded_input["hard_rules"]["context_completeness_policy"],
+            {
+                "conclusive_forbidden_below_minimum": True,
+                "proof_complete_decision": "PARTIAL",
+                "proof_incomplete_decision": "INCONCLUSIVE",
+            },
+        )
+        self.assertEqual(
             decoded_input["hard_rules"]["collector_failure_policy"],
             {
                 "conclusive_forbidden": True,
