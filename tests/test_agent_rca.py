@@ -461,13 +461,15 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertTrue(logging.getLogger("openai.agents").disabled)
 
     def test_evidence_tool_accepts_only_a_bounded_batch(self) -> None:
-        evidence_ids = inspect_evidence.params_json_schema["properties"][
-            "evidence_ids"
+        candidate_refs = inspect_evidence.params_json_schema["properties"][
+            "candidate_refs"
         ]
 
-        self.assertEqual(evidence_ids["type"], "array")
-        self.assertEqual(evidence_ids["minItems"], 1)
-        self.assertEqual(evidence_ids["maxItems"], 4)
+        self.assertEqual(candidate_refs["type"], "array")
+        self.assertEqual(candidate_refs["minItems"], 1)
+        self.assertEqual(candidate_refs["maxItems"], 4)
+        self.assertEqual(candidate_refs["items"]["enum"][0], "E1")
+        self.assertEqual(candidate_refs["items"]["enum"][-1], "E12")
 
     def test_real_agent_boundary_persists_a_gated_report_and_audit(self) -> None:
         repository, incident_id, context_id = prepared_repository()
@@ -896,6 +898,17 @@ class AgentRCAServiceTests(unittest.TestCase):
                 "proof_incomplete_decision": "INCONCLUSIVE",
             },
         )
+        self.assertTrue(
+            decoded_input["hard_rules"]["evidence_tool_uses_candidate_refs"]
+        )
+        catalog = decoded_input["investigation_view"][
+            "candidate_evidence_catalog"
+        ]
+        self.assertEqual(
+            [item["candidate_ref"] for item in catalog],
+            [f"E{index}" for index in range(1, len(candidate_ids) + 1)],
+        )
+        self.assertTrue(all("evidence_id" not in item for item in catalog))
         self.assertEqual(
             decoded_input["hard_rules"]["registered_cause_evidence_requirements"]
             ["kubernetes.container-oomkilled"],
@@ -923,6 +936,26 @@ class AgentRCAServiceTests(unittest.TestCase):
 
         self.assertEqual(denied["status"], "DENIED")
         self.assertNotIn("ev-candidate-0002", runtime.inspected_evidence_ids)
+
+    def test_tool_runtime_resolves_short_candidate_ref_to_exact_evidence_id(
+        self,
+    ) -> None:
+        runtime = AgentToolRuntime(
+            context_evidence_ids=frozenset({"ev-candidate-0001"}),
+            evidence_by_id={
+                "ev-candidate-0001": {"evidence_id": "ev-candidate-0001"},
+            },
+            reference_by_id={},
+            max_tool_calls=2,
+            evidence_id_by_candidate_ref={"E1": "ev-candidate-0001"},
+        )
+
+        result = json.loads(runtime.inspect_candidate("E1"))
+
+        self.assertEqual(result["status"], "SUCCEEDED")
+        self.assertEqual(result["result"]["evidence_id"], "ev-candidate-0001")
+        self.assertEqual(runtime.inspected_evidence_ids, {"ev-candidate-0001"})
+        self.assertEqual(runtime.tool_events[0]["requested_id"], "E1")
 
     def test_candidate_budget_must_support_distinct_evidence_channels(self) -> None:
         with self.assertRaisesRegex(ValueError, "between 2 and 12"):

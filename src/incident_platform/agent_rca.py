@@ -49,6 +49,22 @@ from .root_cause_taxonomy import ROOT_CAUSE_IDS, RootCauseId
 from .stategraph import stable_graph_id
 
 
+EvidenceCandidateRef = Literal[
+    "E1",
+    "E2",
+    "E3",
+    "E4",
+    "E5",
+    "E6",
+    "E7",
+    "E8",
+    "E9",
+    "E10",
+    "E11",
+    "E12",
+]
+
+
 class DraftRootCause(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -377,6 +393,10 @@ class AgentInvestigationView:
     ) -> "AgentInvestigationView":
         candidate_ids = tuple(candidate_evidence_ids)
         candidate_set = set(candidate_ids)
+        candidate_ref_by_id = {
+            evidence_id: f"E{index}"
+            for index, evidence_id in enumerate(candidate_ids, start=1)
+        }
         evidence_by_id = {item["evidence_id"]: item for item in evidence}
         missing_candidates = candidate_set - set(evidence_by_id)
         if missing_candidates:
@@ -426,7 +446,9 @@ class AgentInvestigationView:
                     "relations": [
                         _compact_text(item, 80) for item in path["relations"][:39]
                     ],
-                    "candidate_evidence_ids": list(path_evidence_ids),
+                    "candidate_refs": [
+                        candidate_ref_by_id[item] for item in path_evidence_ids
+                    ],
                 }
             )
 
@@ -447,7 +469,7 @@ class AgentInvestigationView:
             item = evidence_by_id[evidence_id]
             catalog.append(
                 {
-                    "evidence_id": evidence_id,
+                    "candidate_ref": candidate_ref_by_id[evidence_id],
                     "source": item["source"],
                     "kind": item["kind"],
                     "observed_at": item["observed_at"],
@@ -459,7 +481,7 @@ class AgentInvestigationView:
         included_path_evidence = {
             item
             for path in compact_paths
-            for item in path["candidate_evidence_ids"]
+            for item in path["candidate_refs"]
         }
         package = {
             "frozen_context_identity": {
@@ -485,11 +507,11 @@ class AgentInvestigationView:
             "topology_paths": compact_paths,
             "topology_paths_omitted": max(0, len(relevant_paths) - len(compact_paths)),
             "candidate_evidence_catalog": catalog,
-            "candidate_evidence_without_included_path": sorted(
-                candidate_set - included_path_evidence
+            "candidate_refs_without_included_path": sorted(
+                set(candidate_ref_by_id.values()) - included_path_evidence
             ),
-            "recent_change_candidate_ids": [
-                item
+            "recent_change_candidate_refs": [
+                candidate_ref_by_id[item]
                 for item in context.get("recent_change_evidence_ids", ())
                 if item in candidate_set
             ],
@@ -536,10 +558,24 @@ class AgentToolRuntime:
     evidence_by_id: Mapping[str, Mapping[str, Any]]
     reference_by_id: Mapping[str, Mapping[str, Any]]
     max_tool_calls: int
+    evidence_id_by_candidate_ref: Mapping[str, str] = field(default_factory=dict)
     tool_events: List[Dict[str, Any]] = field(default_factory=list)
     inspected_evidence_ids: set[str] = field(default_factory=set)
     inspected_reference_ids: set[str] = field(default_factory=set)
     attempted_tool_calls: int = 0
+
+    def inspect_candidate(self, candidate_ref: str) -> str:
+        self.attempted_tool_calls += 1
+        if self.attempted_tool_calls > self.max_tool_calls:
+            return _canonical_json({"status": "BUDGET_EXHAUSTED"})
+        evidence_id = self.evidence_id_by_candidate_ref.get(candidate_ref)
+        if evidence_id is None or evidence_id not in self.context_evidence_ids:
+            return self._record("inspect_evidence", candidate_ref, "DENIED", {})
+        item = self.evidence_by_id.get(evidence_id)
+        if item is None:
+            return self._record("inspect_evidence", candidate_ref, "NOT_FOUND", {})
+        self.inspected_evidence_ids.add(evidence_id)
+        return self._record("inspect_evidence", candidate_ref, "SUCCEEDED", item)
 
     def inspect_evidence(self, evidence_id: str) -> str:
         self.attempted_tool_calls += 1
@@ -589,19 +625,22 @@ class AgentToolRuntime:
 @function_tool
 def inspect_evidence(
     context: RunContextWrapper[AgentToolRuntime],
-    evidence_ids: Annotated[List[str], Field(min_length=1, max_length=4)],
+    candidate_refs: Annotated[
+        List[EvidenceCandidateRef], Field(min_length=1, max_length=4)
+    ],
 ) -> str:
     """Read one to four normalized Evidence items from the frozen Context.
 
     Args:
-        evidence_ids: Exact Evidence IDs from the supplied catalog, in priority order.
+        candidate_refs: Short E1-E12 references from the supplied catalog. Successful
+            results contain the exact Evidence IDs to use in report citations.
     """
 
     return _canonical_json(
         {
             "results": [
-                json.loads(context.context.inspect_evidence(evidence_id))
-                for evidence_id in evidence_ids
+                json.loads(context.context.inspect_candidate(candidate_ref))
+                for candidate_ref in candidate_refs
             ]
         }
     )
@@ -702,7 +741,8 @@ Evidence or Operational Reference ID that you cite, but do not inspect every
 catalog entry. Select the smallest relevant set of complementary Evidence
 channels and stop inspecting once it is sufficient to support a conclusion or
 explain why proof is incomplete. Call inspect_evidence with one to four relevant
-IDs at a time.
+candidate_refs at a time. Use only the exact Evidence IDs returned by successful
+tool results in report citations.
 Operational References can guide interpretation but never prove current
 runtime facts. Every non-null root cause must satisfy the registered
 cause-specific Evidence requirements supplied in hard_rules using only its
@@ -742,6 +782,7 @@ def _agent_input(invocation: AgentInvocation) -> str:
         "operational_reference_catalog": reference_catalog,
         "hard_rules": {
             "inspect_before_citation": True,
+            "evidence_tool_uses_candidate_refs": True,
             "references_are_not_evidence": True,
             "read_only": True,
             "allowed_root_cause_ids": list(ROOT_CAUSE_IDS),
@@ -1045,6 +1086,10 @@ class AgentRCAService:
                     for item in knowledge.references
                 },
                 max_tool_calls=self._policy.max_tool_calls,
+                evidence_id_by_candidate_ref={
+                    f"E{index}": evidence_id
+                    for index, evidence_id in enumerate(candidate_ids, start=1)
+                },
             )
             invocation = AgentInvocation(
                 context=context,

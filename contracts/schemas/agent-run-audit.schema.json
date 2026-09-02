@@ -111,7 +111,10 @@
       "properties": {
         "sequence": {"type": "integer", "minimum": 1, "maximum": 32},
         "tool_name": {"enum": ["inspect_evidence", "inspect_reference"]},
-        "requested_id": {"type": "string", "pattern": "^(ev|ref)-[a-z0-9][a-z0-9-]{7,127}$"},
+        "requested_id": {
+          "type": "string",
+          "pattern": "^((ev|ref)-[a-z0-9][a-z0-9-]{7,127}|E([1-9]|1[0-2]))$"
+        },
         "status": {"enum": ["SUCCEEDED", "DENIED", "NOT_FOUND", "BUDGET_EXHAUSTED"]},
         "result_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
       }
