@@ -236,6 +236,24 @@ class PartialProofFakeRunner(SuccessfulFakeRunner):
         )
 
 
+class UnsupportedCompetingHypothesisFakeRunner(SuccessfulFakeRunner):
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        draft["decision"] = "INCONCLUSIVE"
+        draft["root_cause"] = None
+        draft["hypotheses"][0]["status"] = "competing"
+        draft["hypotheses"][0]["supporting_evidence_ids"] = []
+        draft["remediation"]["suggestions"] = []
+        return AgentModelRun(
+            draft,
+            model_run.llm_calls,
+            model_run.input_tokens,
+            model_run.output_tokens,
+            model_run.total_tokens,
+        )
+
+
 def prepared_repository(
     *,
     agent_enabled: bool = False,
@@ -550,6 +568,20 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertEqual(
             run.report["root_cause"]["cause_id"],
             "kubernetes.container-oomkilled",
+        )
+
+    def test_competing_hypothesis_requires_positive_supporting_evidence(self) -> None:
+        repository, incident_id, context_id = prepared_repository()
+
+        with self.assertRaisesRegex(ContractViolation, "supporting Evidence"):
+            service(repository, UnsupportedCompetingHypothesisFakeRunner()).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(audit["status"], "GATE_REJECTED")
+        self.assertEqual(
+            audit["reason_code"], "GATE_HYPOTHESIS_SUPPORT_MISSING"
         )
 
     def test_evidence_gate_requires_root_and_leading_taxonomy_alignment(self) -> None:
@@ -883,6 +915,15 @@ class AgentRCAServiceTests(unittest.TestCase):
             decoded_input["hard_rules"][
                 "root_cause_matches_rank_one_hypothesis"
             ]
+        )
+        self.assertEqual(
+            decoded_input["hard_rules"]["hypothesis_status_policy"],
+            {
+                "supported_requires_supporting_evidence": True,
+                "competing_requires_supporting_evidence": True,
+                "no_positive_cause_evidence_status": "unresolved",
+                "contradicted_status": "rejected",
+            },
         )
         self.assertEqual(
             decoded_input["hard_rules"][

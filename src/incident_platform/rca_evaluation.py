@@ -122,6 +122,7 @@ def prediction_from_agent_report(
         if (
             cause_id is not None
             and hypothesis["status"] in {"supported", "competing"}
+            and hypothesis["supporting_evidence_ids"]
             and cause_id not in ranked_cause_ids
         ):
             ranked_cause_ids.append(cause_id)

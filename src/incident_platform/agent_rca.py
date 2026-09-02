@@ -755,8 +755,12 @@ or Context completeness is below that minimum, return PARTIAL with the proven
 root_cause and state the coverage gap in limitations. If the cause-specific
 proof is incomplete, return INCONCLUSIVE with root_cause set to null. When
 root_cause is non-null, its cause_id must exactly match the rank-one hypothesis
-cause_id. Do not invent IDs, entities, facts, or tool results. Only provide
-remediation suggestions when root_cause is non-null.
+cause_id. Hypothesis status semantics are strict: supported or competing
+hypotheses require inspected positive supporting Evidence; a hypothesis with
+no positive cause-specific Evidence or only generic symptoms is unresolved,
+not competing. Rejected means inspected Evidence contradicts the hypothesis.
+Do not invent IDs, entities, facts, or tool results. Only provide remediation
+suggestions when root_cause is non-null.
 When root_cause is null, remediation.suggestions must be an empty array and
 verification_conditions must name the observable Evidence needed to confirm or
 reject the leading hypotheses. Keep accepted remediation advisory. If proof is
@@ -793,6 +797,12 @@ def _agent_input(invocation: AgentInvocation) -> str:
             },
             "unknown_hypothesis_cause_id": None,
             "root_cause_matches_rank_one_hypothesis": True,
+            "hypothesis_status_policy": {
+                "supported_requires_supporting_evidence": True,
+                "competing_requires_supporting_evidence": True,
+                "no_positive_cause_evidence_status": "unresolved",
+                "contradicted_status": "rejected",
+            },
             "conclusive_minimum_distinct_evidence_channels": (
                 invocation.policy.minimum_conclusive_evidence_channels
             ),
@@ -910,6 +920,17 @@ class EvidenceGate:
             raise EvidenceGateViolation(
                 "GATE_HYPOTHESIS_RANK_INVALID",
                 "Agent hypothesis ranks must be contiguous",
+            )
+        unsupported_hypothesis_statuses = [
+            item["rank"]
+            for item in candidate["hypotheses"]
+            if item["status"] in {"supported", "competing"}
+            and not item["supporting_evidence_ids"]
+        ]
+        if unsupported_hypothesis_statuses:
+            raise EvidenceGateViolation(
+                "GATE_HYPOTHESIS_SUPPORT_MISSING",
+                "Supported or competing Agent hypotheses require supporting Evidence",
             )
 
         root_cause = candidate["root_cause"]

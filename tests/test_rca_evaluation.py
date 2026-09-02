@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from datetime import datetime, timezone
@@ -327,6 +328,45 @@ class RCAEvaluationTests(unittest.TestCase):
             },
         )
         report["hypotheses"][0]["status"] = "unresolved"
+
+        actual = prediction_from_agent_report(
+            evaluation_case_id="eval-checkout-oom-0001",
+            scenario_id="scenario-checkout-oom-change-stress",
+            incident_id="inc-checkout-oom-0001",
+            report=report,
+            available_evidence_ids=prediction()["available_evidence_ids"],
+            completed_at=EVALUATED_AT,
+        )
+
+        self.assertEqual(actual["outcome"], "ABSTAIN")
+        self.assertEqual(actual["predicted_root_cause_ids"], [])
+
+    def test_rootless_unsupported_competing_hypotheses_map_to_abstain(self) -> None:
+        report = agent_report(
+            status="inconclusive",
+            root_cause=None,
+            remediation={
+                "suggestions": [],
+                "verification_conditions": ["Collect cause-specific Evidence."],
+            },
+        )
+        report["hypotheses"][0].update(
+            {
+                "status": "competing",
+                "supporting_evidence_ids": [],
+                "missing_evidence": ["Exact OOM signature."],
+            }
+        )
+        second = copy.deepcopy(report["hypotheses"][0])
+        second.update(
+            {
+                "rank": 2,
+                "cause_id": "kubernetes.image-pull-failure",
+                "summary": "Image pull remains unproven.",
+                "missing_evidence": ["Waiting state and matching Event."],
+            }
+        )
+        report["hypotheses"].append(second)
 
         actual = prediction_from_agent_report(
             evaluation_case_id="eval-checkout-oom-0001",
