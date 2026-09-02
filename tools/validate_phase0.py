@@ -1251,9 +1251,9 @@ def validate_incident_platform_manifest() -> None:
         "reconciler": {
             "schedule": "*/5 * * * *",
             "concurrency_policy": "Forbid",
-            "image_tag": "runtime-4d03578ff930",
+            "image_tag": "runtime-746b108a6d5f",
             "image_digest": (
-                "sha256:567f85cfc30b2a2bbad2b3a913476e92126085d5976e812a11d7e58369c5680a"
+                "sha256:b95a39e6a17de907d7695c058704eca28d8fd55e90713d8cb3903390bc9a88d3"
             ),
         },
         "viewer_frontend": {
