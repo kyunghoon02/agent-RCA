@@ -144,6 +144,11 @@ class KubernetesStateProviderTests(unittest.TestCase):
         self.assertEqual(state.facts["waiting_reason"], "ImagePullBackOff")
         self.assertNotIn("must-not-be-copied", str(state.facts))
         self.assertEqual(event.facts["message_code"], "ImagePullBackOff")
+        self.assertEqual(client.event_calls[0]["involved_object_kind"], "Pod")
+        self.assertEqual(
+            client.event_calls[0]["involved_object_uid"],
+            "7df6d266-40df-4fd6-942d-7ebc864c4061",
+        )
 
     def test_real_kubelet_backoff_event_gets_a_stable_image_pull_code(self) -> None:
         provider = KubernetesStateProvider(
@@ -236,13 +241,90 @@ class KubernetesStateProviderTests(unittest.TestCase):
             cluster_id=CLUSTER_ID,
             event_page_size=1,
             max_events=1,
+            max_raw_events=1,
         )
 
         batch = provider.collect(contract_request(INCIDENT_ID, "checkoutservice"))
 
         self.assertEqual(batch.status, "PARTIAL")
-        self.assertIn("result exceeded", batch.error)
+        self.assertIn("exceeded", batch.error)
         self.assertEqual(len(batch.items), 2)
+
+    def test_old_events_do_not_consume_the_in_window_output_limit(self) -> None:
+        old_event = warning_event()
+        old_event["metadata"] = dict(
+            old_event["metadata"], name="checkout-old-warning"
+        )
+        old_event["lastTimestamp"] = "2026-08-12T00:01:00Z"
+        old_event["metadata"]["creationTimestamp"] = "2026-08-12T00:01:00Z"
+        client = StaticKubernetesClient(
+            pod_resource(),
+            [
+                KubernetesEventPage((old_event,), continue_token="next-page"),
+                KubernetesEventPage((warning_event(),)),
+            ],
+        )
+        provider = KubernetesStateProvider(
+            client,
+            KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
+            event_page_size=1,
+            max_events=1,
+            max_raw_events=2,
+        )
+
+        batch = provider.collect(contract_request(INCIDENT_ID, "checkoutservice"))
+
+        self.assertEqual(batch.status, "SUCCEEDED")
+        self.assertEqual(len(batch.items), 2)
+        self.assertEqual(
+            batch.items[1].locator,
+            "k8s://online-boutique/Event/checkout-image-pull",
+        )
+
+    def test_repeated_event_series_are_aggregated_before_output_limit(self) -> None:
+        repeated = warning_event()
+        repeated["metadata"] = dict(
+            repeated["metadata"], name="checkout-image-pull-second"
+        )
+        repeated["count"] = 2
+        provider = KubernetesStateProvider(
+            StaticKubernetesClient(
+                pod_resource(),
+                [KubernetesEventPage((warning_event(), repeated))],
+            ),
+            KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
+            event_page_size=2,
+            max_events=1,
+            max_raw_events=2,
+        )
+
+        batch = provider.collect(contract_request(INCIDENT_ID, "checkoutservice"))
+
+        self.assertEqual(batch.status, "SUCCEEDED")
+        event = batch.items[1]
+        self.assertEqual(event.facts["count"], 5)
+        self.assertEqual(event.facts["event_series_count"], 2)
+
+    def test_event_with_different_resource_uid_is_not_admitted(self) -> None:
+        event = warning_event()
+        event["involvedObject"] = dict(
+            event["involvedObject"], uid="different-pod-uid"
+        )
+        provider = KubernetesStateProvider(
+            StaticKubernetesClient(
+                pod_resource(), [KubernetesEventPage((event,))]
+            ),
+            KubernetesResourceSpec("v1", "Pod"),
+            cluster_id=CLUSTER_ID,
+        )
+
+        batch = provider.collect(contract_request(INCIDENT_ID, "checkoutservice"))
+
+        self.assertEqual(batch.status, "PARTIAL")
+        self.assertIn("outside request scope", batch.error)
+        self.assertEqual([item.kind for item in batch.items], ["resource-state"])
 
     def test_expired_event_page_restarts_once(self) -> None:
         first_event = warning_event()
@@ -344,6 +426,8 @@ class KubernetesHTTPAPITests(unittest.TestCase):
         page = client.list_event_page(
             namespace="online-boutique",
             involved_object_name="checkoutservice",
+            involved_object_kind="Pod",
+            involved_object_uid="7df6d266-40df-4fd6-942d-7ebc864c4061",
             limit=50,
             continue_token=None,
             timeout_seconds=2,
@@ -359,7 +443,12 @@ class KubernetesHTTPAPITests(unittest.TestCase):
         event_url, _ = transport.calls[1]
         parameters = parse_qs(urlsplit(event_url).query)
         self.assertEqual(
-            parameters["fieldSelector"], ["involvedObject.name=checkoutservice"]
+            parameters["fieldSelector"],
+            [
+                "involvedObject.name=checkoutservice,"
+                "involvedObject.kind=Pod,"
+                "involvedObject.uid=7df6d266-40df-4fd6-942d-7ebc864c4061"
+            ],
         )
         self.assertEqual(resource_options["headers"]["Authorization"],
                          "Bearer service-account-test-token")

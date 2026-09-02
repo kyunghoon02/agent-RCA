@@ -44,6 +44,17 @@ def _validate_resource_name(name: str) -> None:
         raise PermanentProviderError("Kubernetes resource name is not a DNS subdomain")
 
 
+def _validate_field_selector_value(value: str, label: str) -> None:
+    if (
+        not value
+        or len(value) > 253
+        or any(character in value for character in (",", "=", "\x00", "\n", "\r"))
+    ):
+        raise PermanentProviderError(
+            f"Kubernetes {label} is not safe for a field selector"
+        )
+
+
 def _validate_base_url(value: str) -> str:
     parsed = urlsplit(value.rstrip("/"))
     if parsed.scheme != "https" or not parsed.hostname:
@@ -113,6 +124,8 @@ class KubernetesReadClient(Protocol):
         *,
         namespace: str,
         involved_object_name: str,
+        involved_object_kind: str,
+        involved_object_uid: Optional[str],
         limit: int,
         continue_token: Optional[str],
         timeout_seconds: float,
@@ -285,16 +298,27 @@ class KubernetesHTTPAPI:
         *,
         namespace: str,
         involved_object_name: str,
+        involved_object_kind: str,
+        involved_object_uid: Optional[str],
         limit: int,
         continue_token: Optional[str],
         timeout_seconds: float,
     ) -> KubernetesEventPage:
         _validate_namespace(namespace)
         _validate_resource_name(involved_object_name)
+        _validate_field_selector_value(involved_object_kind, "resource kind")
+        if involved_object_uid is not None:
+            _validate_field_selector_value(involved_object_uid, "resource UID")
         if limit <= 0:
             raise PermanentProviderError("Kubernetes Event page limit must be positive")
+        selectors = [
+            f"involvedObject.name={involved_object_name}",
+            f"involvedObject.kind={involved_object_kind}",
+        ]
+        if involved_object_uid is not None:
+            selectors.append(f"involvedObject.uid={involved_object_uid}")
         parameters = {
-            "fieldSelector": f"involvedObject.name={involved_object_name}",
+            "fieldSelector": ",".join(selectors),
             "limit": str(limit),
         }
         if continue_token:
@@ -935,9 +959,19 @@ class KubernetesStateProvider:
         include_events: bool = True,
         event_page_size: int = 50,
         max_events: int = 100,
+        max_raw_events: Optional[int] = None,
     ) -> None:
         if event_page_size <= 0 or max_events < 0:
             raise ValueError("Kubernetes Event limits are invalid")
+        effective_max_raw_events = (
+            max(max_events, event_page_size * 5)
+            if max_raw_events is None
+            else max_raw_events
+        )
+        if effective_max_raw_events < max_events or effective_max_raw_events > 5000:
+            raise ValueError(
+                "Kubernetes max_raw_events must be between max_events and 5000"
+            )
         if not cluster_id.strip():
             raise ValueError("Kubernetes cluster_id must not be empty")
         self._client = client
@@ -946,6 +980,7 @@ class KubernetesStateProvider:
         self._include_events = include_events
         self._event_page_size = event_page_size
         self._max_events = max_events
+        self._max_raw_events = effective_max_raw_events
 
     def collect(self, request: CollectionRequest) -> ProviderBatch:
         _validate_namespace(request.scope.namespace)
@@ -955,6 +990,9 @@ class KubernetesStateProvider:
         drafts = []
         partial_reasons = []
         provider_errors = []
+        event_target_uids: Dict[str, Optional[str]] = {
+            name: None for name in request.scope.resource_names
+        }
         for name in request.scope.resource_names:
             try:
                 resource = self._client.get_resource(
@@ -963,7 +1001,16 @@ class KubernetesStateProvider:
                     name=name,
                     timeout_seconds=self._remaining(deadline),
                 )
-                drafts.append(self._resource_draft(request, name, resource))
+                resource_draft = self._resource_draft(request, name, resource)
+                drafts.append(resource_draft)
+                target_uid = resource_draft.subject.get("uid")
+                event_target_uids[name] = (
+                    str(target_uid) if isinstance(target_uid, str) else None
+                )
+                if event_target_uids[name] is not None:
+                    _validate_field_selector_value(
+                        event_target_uids[name] or "", "resource UID"
+                    )
             except ProviderError as error:
                 partial_reasons.append(f"resource {name}: {error}")
                 provider_errors.append(error)
@@ -971,13 +1018,16 @@ class KubernetesStateProvider:
         if self._include_events and self._max_events:
             for name in request.scope.resource_names:
                 try:
-                    event_drafts, truncated = self._event_drafts(
-                        request, name, deadline
+                    event_drafts, event_partial_reasons = self._event_drafts(
+                        request,
+                        name,
+                        event_target_uids[name],
+                        deadline,
                     )
                     drafts.extend(event_drafts)
-                    if truncated:
+                    for partial_reason in event_partial_reasons:
                         partial_reasons.append(
-                            f"events for {name}: result exceeded {self._max_events} limit"
+                            f"events for {name}: {partial_reason}"
                         )
                 except ProviderError as error:
                     partial_reasons.append(f"events for {name}: {error}")
@@ -1227,18 +1277,20 @@ class KubernetesStateProvider:
         self,
         request: CollectionRequest,
         requested_name: str,
+        requested_uid: Optional[str],
         deadline: float,
-    ) -> Tuple[Tuple[EvidenceDraft, ...], bool]:
+    ) -> Tuple[Tuple[EvidenceDraft, ...], Tuple[str, ...]]:
         events = []
         continue_token = None
-        truncated = False
         restarted = False
-        while len(events) < self._max_events:
-            remaining_limit = self._max_events - len(events)
+        while len(events) < self._max_raw_events:
+            remaining_limit = self._max_raw_events - len(events)
             try:
                 page = self._client.list_event_page(
                     namespace=request.scope.namespace,
                     involved_object_name=requested_name,
+                    involved_object_kind=self._resource.kind,
+                    involved_object_uid=requested_uid,
                     limit=min(self._event_page_size, remaining_limit),
                     continue_token=continue_token,
                     timeout_seconds=self._remaining(deadline),
@@ -1254,33 +1306,60 @@ class KubernetesStateProvider:
             continue_token = page.continue_token
             if not continue_token:
                 break
+
+        partial_reasons = []
         if continue_token:
-            truncated = True
+            partial_reasons.append(
+                f"raw scan exceeded {self._max_raw_events} limit before complete "
+                "window coverage"
+            )
 
         start = _parse_time(request.window.start)
         end = _parse_time(request.window.end)
-        drafts = []
+        seen_event_objects = set()
+        grouped: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         for event in events:
-            event_time = self._event_time(event)
-            if event_time < start or event_time > end:
-                continue
             involved = event.get("involvedObject", {})
             metadata = event.get("metadata", {})
             if not isinstance(involved, Mapping) or not isinstance(metadata, Mapping):
                 raise PermanentProviderError("Kubernetes Event is malformed")
+            involved_kind = involved.get("kind")
+            involved_uid = involved.get("uid")
             if (
                 involved.get("name") != requested_name
+                or involved_kind != self._resource.kind
                 or metadata.get("namespace") != request.scope.namespace
+                or (requested_uid is not None and involved_uid != requested_uid)
             ):
                 raise PermanentProviderError(
                     "Kubernetes API returned an Event outside request scope"
                 )
+            if involved_uid is not None and not isinstance(involved_uid, str):
+                raise PermanentProviderError("Kubernetes Event UID is malformed")
+            event_name = metadata.get("name")
+            event_uid = metadata.get("uid")
+            if event_name is not None and not isinstance(event_name, str):
+                raise PermanentProviderError("Kubernetes Event name is malformed")
+            if event_uid is not None and not isinstance(event_uid, str):
+                raise PermanentProviderError("Kubernetes Event UID is malformed")
+            event_time = self._event_time(event)
             reason = event.get("reason")
             message = event.get("message")
             if reason is not None and not isinstance(reason, str):
                 raise PermanentProviderError("Kubernetes Event reason is malformed")
             if message is not None and not isinstance(message, str):
                 raise PermanentProviderError("Kubernetes Event message is malformed")
+            object_identity = event_uid or event_name or (
+                _format_time(event_time),
+                involved_uid,
+                reason,
+                message,
+            )
+            if object_identity in seen_event_objects:
+                continue
+            seen_event_objects.add(object_identity)
+            if event_time < start or event_time > end:
+                continue
             message_excerpt = message[:1000] if message is not None else None
             facts: Dict[str, Any] = {
                 "type": event.get("type"),
@@ -1299,40 +1378,104 @@ class KubernetesStateProvider:
             if image_pull_code is not None:
                 facts["image_pull_code"] = image_pull_code
             self._add_missing_reference(facts, message)
+            raw_count = event.get("count")
+            occurrence_count = (
+                raw_count
+                if isinstance(raw_count, int)
+                and not isinstance(raw_count, bool)
+                and raw_count > 0
+                else 1
+            )
+            facts["count"] = occurrence_count
+            facts["event_series_count"] = 1
             subject = {
                 "cluster_id": self._cluster_id,
                 "api_version": involved.get("apiVersion") or self._resource.api_version,
-                "kind": involved.get("kind") or self._resource.kind,
+                "kind": involved_kind,
                 "namespace": request.scope.namespace,
                 "name": requested_name,
-                "uid": involved.get("uid"),
+                "uid": involved_uid,
                 "exists": True,
             }
+            group_key = (
+                involved_kind,
+                involved_uid,
+                reason,
+                image_pull_code,
+                facts.get("missing_kind"),
+                facts.get("missing_name"),
+                message_excerpt,
+                facts.get("source_component"),
+            )
+            existing = grouped.get(group_key)
+            if existing is not None:
+                existing["facts"]["count"] += occurrence_count
+                existing["facts"]["event_series_count"] += 1
+                existing["facts"]["message_truncated"] = bool(
+                    existing["facts"]["message_truncated"]
+                    or facts["message_truncated"]
+                )
+                if event_time > existing["event_time"]:
+                    existing["event_time"] = event_time
+                    existing["event_name"] = event_name
+                continue
+            grouped[group_key] = {
+                "event_time": event_time,
+                "event_name": event_name,
+                "reason": reason,
+                "facts": facts,
+                "subject": subject,
+            }
+
+        ordered = sorted(
+            grouped.values(),
+            key=lambda item: (
+                item["event_time"],
+                str(item["event_name"] or ""),
+                str(item["reason"] or ""),
+            ),
+            reverse=True,
+        )
+        if len(ordered) > self._max_events:
+            partial_reasons.append(
+                f"in-window result exceeded {self._max_events} limit after aggregation"
+            )
+            ordered = ordered[: self._max_events]
+
+        selectors = [
+            f"involvedObject.name={requested_name}",
+            f"involvedObject.kind={self._resource.kind}",
+        ]
+        if requested_uid is not None:
+            selectors.append(f"involvedObject.uid={requested_uid}")
+        drafts = []
+        for item in ordered:
+            reason = item["reason"]
             drafts.append(
                 EvidenceDraft(
                     source="kubernetes",
                     kind="kubernetes-event",
-                    observed_at=_format_time(event_time),
-                    subject=subject,
+                    observed_at=_format_time(item["event_time"]),
+                    subject=item["subject"],
                     summary=(
                         f"Kubernetes Event {reason or 'Unknown'} was observed for "
                         f"{requested_name}."
                     ),
-                    facts=facts,
+                    facts=item["facts"],
                     provider="kubernetes-http-api",
                     query=(
                         "list core/v1/Event "
                         f"namespace={request.scope.namespace} "
-                        f"fieldSelector=involvedObject.name={requested_name}"
+                        f"fieldSelector={','.join(selectors)}"
                     ),
                     locator=(
                         f"k8s://{request.scope.namespace}/Event/"
-                        f"{metadata.get('name', 'unknown')}"
+                        f"{item['event_name'] or 'unknown'}"
                     ),
                     freshness="recent",
                 )
             )
-        return tuple(drafts), truncated
+        return tuple(drafts), tuple(partial_reasons)
 
     @staticmethod
     def _image_pull_code(

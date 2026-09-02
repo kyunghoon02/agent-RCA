@@ -40,7 +40,7 @@ from .deterministic import (
     DeterministicRCAEngine,
     registered_rule_evaluations,
 )
-from .errors import ContractViolation, InvalidTransition
+from .errors import ContractViolation, EvidenceGateViolation, InvalidTransition
 from .evidence import format_time
 from .knowledge import BoundedKnowledgeRetriever, KnowledgeRetrievalRun
 from .reporting import render_markdown
@@ -708,10 +708,14 @@ runtime facts. Every non-null root cause must satisfy the registered
 cause-specific Evidence requirements supplied in hard_rules using only its
 supporting_evidence_ids. A CONCLUSIVE root cause must use at least two distinct
 Evidence channels, where a channel is source plus kind, and must contain no
-contradicting Evidence IDs. When root_cause is non-null, its cause_id must
-exactly match the rank-one hypothesis cause_id. Do not invent IDs, entities,
-facts, or tool results. Only provide remediation suggestions when root_cause is
-non-null.
+contradicting Evidence IDs. CONCLUSIVE is forbidden when collector_failures is
+non-empty. If the cause-specific proof is complete but any collector failed or
+returned partial coverage, return PARTIAL with the proven root_cause and state
+the collection gap in limitations. If the cause-specific proof is incomplete,
+return INCONCLUSIVE with root_cause set to null. When root_cause is non-null,
+its cause_id must exactly match the rank-one hypothesis cause_id. Do not invent
+IDs, entities, facts, or tool results. Only provide remediation suggestions
+when root_cause is non-null.
 When root_cause is null, remediation.suggestions must be an empty array and
 verification_conditions must name the observable Evidence needed to confirm or
 reject the leading hypotheses. Keep accepted remediation advisory. If proof is
@@ -751,6 +755,11 @@ def _agent_input(invocation: AgentInvocation) -> str:
                 invocation.policy.minimum_conclusive_evidence_channels
             ),
             "conclusive_contradicting_evidence_ids": [],
+            "collector_failure_policy": {
+                "conclusive_forbidden": True,
+                "proof_complete_decision": "PARTIAL",
+                "proof_incomplete_decision": "INCONCLUSIVE",
+            },
         },
     }
     return _canonical_json(package)
@@ -778,11 +787,23 @@ class EvidenceGate:
         wall_time_ms: int,
     ) -> None:
         candidate = copy.deepcopy(dict(draft))
-        validate_contract("agent-rca-draft.schema.json", candidate)
+        try:
+            validate_contract("agent-rca-draft.schema.json", candidate)
+        except ContractViolation as error:
+            raise EvidenceGateViolation(
+                "GATE_DRAFT_CONTRACT_INVALID",
+                "Agent draft does not satisfy the frozen output contract",
+            ) from error
         if candidate["incident_id"] != context["incident_id"]:
-            raise ContractViolation("Agent draft incident_id does not match Context")
+            raise EvidenceGateViolation(
+                "GATE_INCIDENT_MISMATCH",
+                "Agent draft incident_id does not match Context",
+            )
         if candidate["context_id"] != context["context_id"]:
-            raise ContractViolation("Agent draft context_id does not match Context")
+            raise EvidenceGateViolation(
+                "GATE_CONTEXT_MISMATCH",
+                "Agent draft context_id does not match Context",
+            )
 
         entity_ids = {
             entity["entity_id"]
@@ -792,14 +813,16 @@ class EvidenceGate:
         cited_evidence, cited_references = _draft_citations(candidate)
         unknown_evidence = sorted(cited_evidence - context_evidence_ids(context))
         if unknown_evidence:
-            raise ContractViolation(
+            raise EvidenceGateViolation(
+                "GATE_UNKNOWN_EVIDENCE_CITATION",
                 f"Agent cited Evidence outside frozen Context: {unknown_evidence}"
             )
         uninspected_evidence = sorted(
             cited_evidence - tool_runtime.inspected_evidence_ids
         )
         if uninspected_evidence:
-            raise ContractViolation(
+            raise EvidenceGateViolation(
+                "GATE_UNINSPECTED_EVIDENCE_CITATION",
                 f"Agent cited Evidence without tool inspection: {uninspected_evidence}"
             )
         available_references = {
@@ -807,14 +830,16 @@ class EvidenceGate:
         }
         unknown_references = sorted(cited_references - available_references)
         if unknown_references:
-            raise ContractViolation(
+            raise EvidenceGateViolation(
+                "GATE_UNKNOWN_REFERENCE_CITATION",
                 f"Agent cited unretrieved Operational References: {unknown_references}"
             )
         uninspected_references = sorted(
             cited_references - tool_runtime.inspected_reference_ids
         )
         if uninspected_references:
-            raise ContractViolation(
+            raise EvidenceGateViolation(
+                "GATE_UNINSPECTED_REFERENCE_CITATION",
                 "Agent cited Operational References without tool inspection: "
                 f"{uninspected_references}"
             )
@@ -826,18 +851,23 @@ class EvidenceGate:
             {claim["entity_id"] for claim in claims} - entity_ids
         )
         if unknown_entities:
-            raise ContractViolation(
+            raise EvidenceGateViolation(
+                "GATE_ENTITY_OUT_OF_SCOPE",
                 f"Agent cited Entities outside frozen Context: {unknown_entities}"
             )
         ranks = [item["rank"] for item in candidate["hypotheses"]]
         if ranks != list(range(1, len(ranks) + 1)):
-            raise ContractViolation("Agent hypothesis ranks must be contiguous")
+            raise EvidenceGateViolation(
+                "GATE_HYPOTHESIS_RANK_INVALID",
+                "Agent hypothesis ranks must be contiguous",
+            )
 
         root_cause = candidate["root_cause"]
         if root_cause is not None:
             leading_cause_id = candidate["hypotheses"][0]["cause_id"]
             if leading_cause_id != root_cause["cause_id"]:
-                raise ContractViolation(
+                raise EvidenceGateViolation(
+                    "GATE_ROOT_LEADING_MISMATCH",
                     "Agent root cause taxonomy ID must match the leading hypothesis"
                 )
             supporting = set(root_cause["supporting_evidence_ids"])
@@ -851,19 +881,26 @@ class EvidenceGate:
                 missing = "; ".join(proof.missing_requirements) or (
                     "the cited Evidence does not contain the registered proof pair"
                 )
-                raise ContractViolation(
+                raise EvidenceGateViolation(
+                    "GATE_PROOF_INSUFFICIENT",
                     "Accepted Agent root cause does not satisfy its registered "
                     f"Evidence policy: {missing}"
                 )
         if candidate["decision"] == "CONCLUSIVE":
-            assert root_cause is not None
+            if root_cause is None:
+                raise EvidenceGateViolation(
+                    "GATE_CONCLUSIVE_ROOT_MISSING",
+                    "Conclusive Agent result requires a root cause",
+                )
             supporting = set(root_cause["supporting_evidence_ids"])
             if not supporting:
-                raise ContractViolation(
+                raise EvidenceGateViolation(
+                    "GATE_CONCLUSIVE_SUPPORT_MISSING",
                     "Conclusive Agent root cause requires supporting Evidence"
                 )
             if root_cause["contradicting_evidence_ids"]:
-                raise ContractViolation(
+                raise EvidenceGateViolation(
+                    "GATE_CONTRADICTING_EVIDENCE",
                     "Conclusive Agent root cause contains contradictory Evidence"
                 )
             channel_by_id = {
@@ -872,20 +909,24 @@ class EvidenceGate:
             }
             channels = {channel_by_id[item] for item in supporting}
             if len(channels) < policy.minimum_conclusive_evidence_channels:
-                raise ContractViolation(
+                raise EvidenceGateViolation(
+                    "GATE_CHANNELS_INSUFFICIENT",
                     "Conclusive Agent root cause lacks distinct Evidence channels"
                 )
             completeness = context["localization"]["context_completeness"]
             if completeness < policy.minimum_conclusive_context_completeness:
-                raise ContractViolation(
+                raise EvidenceGateViolation(
+                    "GATE_CONTEXT_INCOMPLETE",
                     "Conclusive Agent root cause has insufficient Context completeness"
                 )
             if context["collector_failures"]:
-                raise ContractViolation(
+                raise EvidenceGateViolation(
+                    "GATE_CONCLUSIVE_COLLECTOR_FAILURE",
                     "Conclusive Agent root cause is forbidden with collector failures"
                 )
         elif root_cause is None and candidate["remediation"]["suggestions"]:
-            raise ContractViolation(
+            raise EvidenceGateViolation(
+                "GATE_ROOTLESS_REMEDIATION",
                 "Agent remediation suggestions require an accepted root cause"
             )
 
@@ -895,7 +936,10 @@ class EvidenceGate:
             or model_run.output_tokens > policy.max_output_tokens
             or wall_time_ms > policy.max_wall_time_ms
         ):
-            raise ContractViolation("Agent run exceeded its investigation budget")
+            raise EvidenceGateViolation(
+                "GATE_INVESTIGATION_BUDGET_EXCEEDED",
+                "Agent run exceeded its investigation budget",
+            )
 
 
 def _draft_citations(draft: Mapping[str, Any]) -> Tuple[set[str], set[str]]:
@@ -1172,11 +1216,16 @@ class AgentRCAService:
             gate_failure = (
                 isinstance(error, ContractViolation) and model_run is not None
             )
-            if isinstance(error, MaxTurnsExceeded) or (
-                model_run is not None and "budget" in str(error).casefold()
-            ):
+            if isinstance(error, MaxTurnsExceeded):
                 status = "BUDGET_EXHAUSTED"
                 reason_code = "MODEL_BUDGET_EXCEEDED"
+            elif isinstance(error, EvidenceGateViolation):
+                status = (
+                    "BUDGET_EXHAUSTED"
+                    if error.reason_code == "GATE_INVESTIGATION_BUDGET_EXCEEDED"
+                    else "GATE_REJECTED"
+                )
+                reason_code = error.reason_code
             elif gate_failure:
                 status = "GATE_REJECTED"
                 reason_code = "EVIDENCE_GATE_REJECTED"

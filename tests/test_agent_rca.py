@@ -219,8 +219,28 @@ class ImagePullFakeRunner(SuccessfulFakeRunner):
         )
 
 
+class PartialProofFakeRunner(SuccessfulFakeRunner):
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        draft["decision"] = "PARTIAL"
+        draft["limitations"].append(
+            "One collector returned partial coverage for the incident window."
+        )
+        return AgentModelRun(
+            draft,
+            model_run.llm_calls,
+            model_run.input_tokens,
+            model_run.output_tokens,
+            model_run.total_tokens,
+        )
+
+
 def prepared_repository(
-    *, agent_enabled: bool = False, evidence_profile: str = "oom"
+    *,
+    agent_enabled: bool = False,
+    evidence_profile: str = "oom",
+    collector_failures=(),
 ) -> tuple[InMemoryIncidentRepository, str, str]:
     labels = {
         "alertname": "AgentRCAFixture",
@@ -406,7 +426,7 @@ def prepared_repository(
         "evidence_ids": [item["evidence_id"] for item in evidence],
         "recent_change_evidence_ids": [],
         "missing_evidence": [],
-        "collector_failures": [],
+        "collector_failures": list(collector_failures),
         "localization": {
             "strategy": "stategraph",
             "candidate_entities_before": 1,
@@ -481,6 +501,54 @@ class AgentRCAServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(repository.get(incident_id)["status"], "FAILED")
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(audit["status"], "GATE_REJECTED")
+        self.assertEqual(
+            audit["reason_code"], "GATE_UNKNOWN_EVIDENCE_CITATION"
+        )
+
+    def test_collector_failure_rejects_conclusive_with_specific_reason(self) -> None:
+        repository, incident_id, context_id = prepared_repository(
+            collector_failures=(
+                {
+                    "collector": "kubernetes",
+                    "error": "bounded Event coverage was partial",
+                },
+            )
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "collector failures"):
+            service(repository, SuccessfulFakeRunner()).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(audit["status"], "GATE_REJECTED")
+        self.assertEqual(
+            audit["reason_code"], "GATE_CONCLUSIVE_COLLECTOR_FAILURE"
+        )
+        self.assertNotIn("bounded Event coverage", str(audit))
+
+    def test_partial_result_accepts_proven_root_with_collector_failure(self) -> None:
+        repository, incident_id, context_id = prepared_repository(
+            collector_failures=(
+                {
+                    "collector": "kubernetes",
+                    "error": "bounded Event coverage was partial",
+                },
+            )
+        )
+
+        run = service(repository, PartialProofFakeRunner()).run(
+            incident_id, context_id=context_id, generated_at=NOW
+        )
+
+        self.assertEqual(run.incident["status"], "REPORTED")
+        self.assertEqual(run.report["status"], "partial")
+        self.assertEqual(
+            run.report["root_cause"]["cause_id"],
+            "kubernetes.container-oomkilled",
+        )
 
     def test_evidence_gate_requires_root_and_leading_taxonomy_alignment(self) -> None:
         repository, incident_id, context_id = prepared_repository()
@@ -819,6 +887,14 @@ class AgentRCAServiceTests(unittest.TestCase):
                 "conclusive_minimum_distinct_evidence_channels"
             ],
             2,
+        )
+        self.assertEqual(
+            decoded_input["hard_rules"]["collector_failure_policy"],
+            {
+                "conclusive_forbidden": True,
+                "proof_complete_decision": "PARTIAL",
+                "proof_incomplete_decision": "INCONCLUSIVE",
+            },
         )
         self.assertEqual(
             decoded_input["hard_rules"]["registered_cause_evidence_requirements"]

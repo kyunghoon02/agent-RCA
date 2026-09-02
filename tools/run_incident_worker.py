@@ -418,6 +418,7 @@ def build_collection_service(
         include_events=True,
         event_page_size=20,
         max_events=4,
+        max_raw_events=100,
     )
     pod_events = KubernetesStateProvider(
         kubernetes_client,
@@ -426,6 +427,7 @@ def build_collection_service(
         include_events=True,
         event_page_size=20,
         max_events=8,
+        max_raw_events=100,
     )
     required_configmaps = KubernetesStateProvider(
         kubernetes_client,
