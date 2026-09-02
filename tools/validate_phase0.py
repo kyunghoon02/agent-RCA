@@ -2692,6 +2692,8 @@ def validate_controlled_fault_scenarios() -> None:
         "always:",
         "Restore the exact paymentservice image",
         "Require successful exact-image automatic restoration",
+        "payment_image_pull_original_restart_count",
+        "no-increase-or-fresh-replacement",
     }
     missing_image_pull_tokens = sorted(
         token

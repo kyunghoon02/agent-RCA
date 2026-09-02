@@ -1,4 +1,4 @@
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 scenario_id: scenario-paymentservice-image-pull-change-normal
 
 environment:
@@ -14,7 +14,7 @@ target:
 baseline:
   image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice:v0.10.6
   ready_replicas: 1
-  fresh_pod_restart_count: 0
+  restart_count_policy: record-current
 
 fault:
   type: image-reference
@@ -50,4 +50,4 @@ expected:
 restoration:
   restore_exact_image: true
   ready_replicas: 1
-  fresh_pod_restart_count: 0
+  restart_count_policy: no-increase-or-fresh-replacement

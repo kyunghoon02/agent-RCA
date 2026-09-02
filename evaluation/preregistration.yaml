@@ -1,8 +1,15 @@
 schema_version: "1.6.0"
 registered_at: "2026-07-27"
-amended_at: "2026-09-01"
+amended_at: "2026-09-02"
 status: frozen-with-runtime-amendments
 amendments:
+  - reason: replace-brittle-absolute-payment-restart-zero-with-recorded-delta-after-first-repeat-matrix-preflight-failure
+    preserves:
+      - first-repeat-matrix-failure-artifacts
+      - image-pull-fault-injection
+      - root-cause-labels
+      - ground-truth-isolation
+      - primary-rca-metrics
   - reason: add-three-domain-chaos-mesh-memory-stress-runtime
     preserves:
       - research-variant-ids

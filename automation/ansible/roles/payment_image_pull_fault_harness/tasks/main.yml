@@ -8,6 +8,8 @@
       - payment_image_pull_scenario.target.namespace == online_boutique_namespace
       - payment_image_pull_scenario.target.name == 'paymentservice'
       - payment_image_pull_scenario.target.container == 'server'
+      - payment_image_pull_scenario.baseline.restart_count_policy == 'record-current'
+      - payment_image_pull_scenario.restoration.restart_count_policy == 'no-increase-or-fresh-replacement'
       - groups['fault_target'] | length == 1
       - groups['observability_domain'] | length == 1
       - groups['rca_control'] | length == 1
@@ -49,7 +51,7 @@
     payment_image_pull_watchdog_started: false
     payment_image_pull_fault_applied: false
 
-- name: Require an exact healthy image baseline before fault injection
+- name: Require a healthy recordable image baseline before fault injection
   ansible.builtin.assert:
     that:
       - payment_image_pull_original_deployment.status.readyReplicas | default(0) | int == payment_image_pull_scenario.baseline.ready_replicas
@@ -57,11 +59,16 @@
       - payment_image_pull_original_pods | length == 1
       - payment_image_pull_original_pods[0].status.phase == 'Running'
       - payment_image_pull_original_pods[0].status.containerStatuses[0].ready | bool
-      - payment_image_pull_original_pods[0].status.containerStatuses[0].restartCount | int == payment_image_pull_scenario.baseline.fresh_pod_restart_count
       - payment_image_pull_original_container.image == payment_image_pull_scenario.baseline.image
     fail_msg: >-
-      paymentservice is not at the preregistered Ready, restart-zero,
-      exact-image baseline.
+      paymentservice is not at the preregistered Ready, exact-image baseline.
+
+- name: Record the paymentservice Pod identity and cumulative restart baseline
+  ansible.builtin.set_fact:
+    payment_image_pull_original_pod_uid: >-
+      {{ payment_image_pull_original_pods[0].metadata.uid }}
+    payment_image_pull_original_restart_count: >-
+      {{ payment_image_pull_original_pods[0].status.containerStatuses[0].restartCount | int }}
 
 - name: Execute the bounded controlled image-pull experiment
   block:
@@ -357,9 +364,22 @@
           - >-
             (payment_image_pull_restored_pods_result.stdout | from_json)['items'][0].status.containerStatuses[0].ready | bool
           - >-
-            (payment_image_pull_restored_pods_result.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
-            | int == payment_image_pull_scenario.restoration.fresh_pod_restart_count
+            (
+              (payment_image_pull_restored_pods_result.stdout | from_json)['items'][0].metadata.uid
+              == payment_image_pull_original_pod_uid
+              and
+              (payment_image_pull_restored_pods_result.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
+              | int == payment_image_pull_original_restart_count | int
+            )
+            or
+            (
+              (payment_image_pull_restored_pods_result.stdout | from_json)['items'][0].metadata.uid
+              != payment_image_pull_original_pod_uid
+              and
+              (payment_image_pull_restored_pods_result.stdout | from_json)['items'][0].status.containerStatuses[0].restartCount
+              | int == 0
+            )
         fail_msg: >-
           paymentservice did not return to the preregistered exact-image,
-          Ready, restart-zero baseline; inspect the cluster before another run.
+          Ready, no-new-restart baseline; inspect the cluster before another run.
       when: payment_image_pull_fault_applied | bool

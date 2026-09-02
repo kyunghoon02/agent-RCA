@@ -17,7 +17,7 @@
     "restoration"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "1.1.0"},
     "scenario_id": {
       "type": "string",
       "pattern": "^scenario-[a-z0-9][a-z0-9-]{7,95}$"
@@ -45,13 +45,13 @@
     "baseline": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image", "ready_replicas", "fresh_pod_restart_count"],
+      "required": ["image", "ready_replicas", "restart_count_policy"],
       "properties": {
         "image": {
           "const": "us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice:v0.10.6"
         },
         "ready_replicas": {"const": 1},
-        "fresh_pod_restart_count": {"const": 0}
+        "restart_count_policy": {"const": "record-current"}
       }
     },
     "fault": {
@@ -133,11 +133,13 @@
     "restoration": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["restore_exact_image", "ready_replicas", "fresh_pod_restart_count"],
+      "required": ["restore_exact_image", "ready_replicas", "restart_count_policy"],
       "properties": {
         "restore_exact_image": {"const": true},
         "ready_replicas": {"const": 1},
-        "fresh_pod_restart_count": {"const": 0}
+        "restart_count_policy": {
+          "const": "no-increase-or-fresh-replacement"
+        }
       }
     }
   }
