@@ -149,8 +149,8 @@ control-domain Online Boutique는 삭제하지 않고 `0 replicas`로 내렸고 
 
 Chaos evaluation은 기존 v1.36 runtime을 제자리에서 내리지 않는다. Terraform의 기본값이
 꺼진 병렬 VM을 명시적으로 생성해 Kubernetes v1.35.8을 부트스트랩했고, Chaos Mesh 2.8.4는
-`online-boutique`만 대상으로 하는 namespace-scoped mode로 설치했다. `StressChaos` 기반
-checkoutservice OOM과 잘못된 paymentservice image reference를 통제 실행으로 end-to-end
+`online-boutique`만 대상으로 하는 namespace-scoped mode로 설치했다. checkoutservice
+OOM과 missing ConfigMap, paymentservice ImagePullBackOff를 통제 실행으로 end-to-end
 재현하고 자동 복구했으며, 현재 활성 fault는 0개다. fault 실행은 별도 scenario 검토와
 `CONFIRM_CONTROLLED_FAULT=yes` 승인을 요구한다.
 
@@ -164,42 +164,18 @@ PostgreSQL, Neo4j와 telemetry PVC는 각 VM disk에 묶여 있으며 `Retain`�
 Ground Truth는 Agent runtime과 격리하고, 완료된 Prediction에만 결합해 accuracy,
 Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 계산한다.
 
-| Representative scenario | Evidence focus | Status |
+| Evaluation boundary | Result | Interpretation |
 |---|---|---|
-| `frontend` no-fault normal traffic | unchanged workload snapshot, zero restart/fault/change, complete Evidence | controlled live run: Agent Variant C와 Variant A 모두 `ABSTAIN`, abstention correctness `1.0`, unsupported citation `0.0`; 900초 baseline과 post-run attestation 통과 |
-| `checkoutservice` OOMKilled | exact OOM signature, same-UID restart, resource limit | role-based scorer v3 live: 최신 Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0` |
-| `paymentservice` ImagePullBackOff | waiting state, normalized kubelet Event, same Pod UID | controlled live run: Agent Variant C와 Variant A 모두 Top-1 `1.0`, Evidence precision/recall `1.0`, unsupported citation `0.0`; exact image restore와 Ready/restart `0` 확인 |
-| NetworkPolicy regression | Hubble drop, policy verdict와 change time | 계획 |
-| Deployment regression | RED metric, trace, log와 ReplicaSet revision | 계획 |
-| Load-only saturation | latency/error, CPU·memory와 change 부재 | 계획 |
+| Historical frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 9/20, fault Top-1 4/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | Agent/Gate interface failures를 포함한 수정 전 baseline |
+| Post-correction fault runtime, 3 targeted smoke | fault Top-1 3/3, Evidence precision/recall 1.0/1.0, unsupported citation 0 | wiring regression 검증이며 반복 정확도 수치가 아님 |
+| Latest runtime, no-fault targeted smoke | `ABSTAIN` 1/1, abstention correctness 1.0, unsupported citation 0 | 900초 불변 baseline과 hypothesis/scorer 의미 검증 |
 
-이전 OOM 결과는 순간 memory metric을 필수 조건으로 사용하면 실제 kernel OOM을 놓칠 수
-있음을 보여줬다. 현재 규칙은 exact kernel signature와 same-UID restart를 필수 Evidence로
-사용하며, memory ratio는 보조 관측으로 남긴다. Agent Report schema `1.1.0`은 등록된
-`cause_id`를 보존하며, 사후 evaluator는 Report 자유 텍스트를 해석하지 않고 이 ID를
-Ground Truth와 결합한다. 실제 Agent Variant C score와 결정론적 Variant A baseline은 서로
-다른 artifact로 저장된다. restart delta의 pre-fault 기준점은 30초 central scrape 두 번을
-포함하는 65초 settle 구간 뒤에 fault를 주어 고정한다. 목표는 최소 15개 scenario를 각각
-5회 반복하는 것이며, 한 번의 성공은 그 목표를 달성한 결과가 아니다. 첫 ImagePull 실험에서
-실제 kubelet `Failed` Event의 pull 실패 message를 안정된 `ErrImagePull` code로 정규화하지
-못해 발생한 Gate rejection은 `ABSTAIN`으로 바꾸지 않고 Agent `FAILED`, Top-1 `0.0`
-artifact로 보존했다. 정규화 규칙을 보완한 뒤 새 Incident로 재실행한 결과만 성공 run으로
-기록했다.
-첫 no-fault run도 Agent `ABSTAIN`과 runtime postcondition은 통과했지만,
-`recent_change_evidence_ids`의 일반 Kubernetes state/event까지 Deployment 변경으로 해석한
-scorer 정책 때문에 score artifact 생성이 거부됐다. 이 Incident를 재분류하지 않고 남긴 뒤,
-명시적인 Deployment `NO_CHANGES` Evidence를 확인하도록 preregistration을 개정하고 새
-Incident로 재실행한 결과만 성공 evaluation으로 기록했다.
-Agent 후보 선택은 등록된 proof pair를 우선 보존하고, Gate는 Agent가 실제로 인용한
-Evidence만으로 해당 `cause_id` 조건을 다시 평가한다. 독립 관측 channel은 provider 이름이
-아니라 `source + kind`로 구분한다. Ground Truth schema `1.1.0`은 causal role마다 동등한
-대체 Evidence를 묶는다. 따라서 Kubernetes `OOMKilled` 상태와 동일 Pod UID의 Loki kernel
-OOM은 `exact-oom-signature` 역할의 대안이며 둘 중 하나면 충족되고, 순간 memory ratio 같은
-보조 관측은 causal citation 정답으로 점수화하지 않는다. 기존 flat-ID v1/v2 결과는 수정하지
-않고 역사적 artifact로 보존한다.
-
-상세 규칙은 [Evaluation Preregistration](evaluation/preregistration.yaml)과
-[KRCA Drilldown Contract](contracts/krca-drilldown.md)에 기록한다.
+실패 artifact를 성공으로 재분류하지 않고 원인을 추적해 Gate reason code, UID-bounded
+Kubernetes Event, short Evidence reference와 Context completeness decision policy를
+보완했다. 동일 latest runtime으로 4개 scenario × 5회를 다시 실행하기 전에는 개선 후
+정확도를 일반화하지 않는다. 수치, 실패 분석, 수정 경계와 재현 명령은
+[Evaluation and Reliability Record](evaluation/REPORT.md)에 기록한다. 평가 계약의 source of
+truth는 [Evaluation Preregistration](evaluation/preregistration.yaml)이다.
 
 ## Known Limitations
 
@@ -219,9 +195,9 @@ OOM은 `exact-oom-signature` 역할의 대안이며 둘 중 하나면 충족되�
   구간의 mTLS는 아직 구성하지 않았다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
-- OOM과 ImagePullBackOff 외 fault matrix가 완료되지 않았다.
 - 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
-- OOM, ImagePullBackOff와 normal-traffic no-fault control은 각각 최신 단일 실행만 scorer를 통과했으며, 반복 실행으로 재현성을 검증하지 않았다.
+- post-correction fault runtime은 등록된 fault마다 한 번, latest runtime은 no-fault control
+  한 번만 통과했다. 동일 latest runtime의 4개 scenario × 5회 반복 matrix는 아직 완료되지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start
@@ -290,7 +266,7 @@ make summarize-evaluation-matrix \
 
 missing ConfigMap scenario는 required volume reference에서 이름만 발견하고 Kubernetes
 API로 해당 ConfigMap의 존재 여부를 다시 확인한다. ConfigMap 값과 Pod spec 원문은
-Evidence에 저장하지 않는다. 하네스와 scorer는 구현돼 있으며 live 실행 결과는 아직 없다.
+Evidence에 저장하지 않는다. live harness는 fault 제거와 rollout 복구까지 검증한다.
 
 배포된 Viewer frontend와 API는 RCA control cluster의 `ClusterIP`로만 노출된다.
 Ingress, NodePort와 LoadBalancer는 만들지 않으며, browser에는 API bearer token을
@@ -328,11 +304,11 @@ tools/               validation, smoke와 evaluation tool
 
 ## Documentation
 
-`README.md`만 현재 아키텍처와 구현 상태를 설명한다. `contracts/`와 `config/`는
-machine-validated 규칙의 source of truth이고, 하위 README는 해당 컴포넌트의 설치·실행
-명령만 담당한다. 진행 기록과 roadmap은 별도 Markdown으로 복제하지 않으며, 변경 시 코드와
-영향받는 contract를 같은 변경 단위에서 갱신한다. `make validate-docs`는 Git이 추적하는
-Markdown의 로컬 경로와 외부 링크를 검사한다.
+`README.md`는 현재 아키텍처와 구현 상태를 설명하고, `evaluation/REPORT.md`는 측정 결과와
+claim boundary를 기록한다. `contracts/`와 `config/`는 machine-validated 규칙의 source of
+truth이고, 하위 README는 해당 컴포넌트의 설치·실행 명령만 담당한다. 진행 기록과 roadmap은
+별도 Markdown으로 복제하지 않으며, 변경 시 코드와 영향받는 contract를 같은 변경 단위에서
+갱신한다. `make validate-docs`는 Git이 추적하는 Markdown의 로컬 경로와 외부 링크를 검사한다.
 
 - [Provider Contract](contracts/providers.md)
 - [Evidence Contract](contracts/schemas/evidence-item.schema.json)
@@ -340,6 +316,7 @@ Markdown의 로컬 경로와 외부 링크를 검사한다.
 - [Temporal StateGraph Model](contracts/graph/stategraph-model.yaml)
 - [Viewer Contract](contracts/viewer.md)
 - [Agent RCA Runtime Scope](config/project-scope.yaml)
+- [Evaluation and Reliability Record](evaluation/REPORT.md)
 - [Evaluation Preregistration](evaluation/preregistration.yaml)
 - [GCP Infrastructure](infra/terraform/README.md)
 - [Kubernetes Bootstrap and Deployment](automation/ansible/README.md)
