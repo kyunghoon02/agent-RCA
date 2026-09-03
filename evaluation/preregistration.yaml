@@ -1,8 +1,16 @@
-schema_version: "1.7.0"
+schema_version: "1.8.0"
 registered_at: "2026-07-27"
 amended_at: "2026-09-03"
 status: frozen-with-runtime-amendments
 amendments:
+  - reason: replace-absolute-no-fault-transport-count-with-preregistered-one-percent-rate-gate-after-reconnecting-run
+    preserves:
+      - failed-reconnecting-no-fault-run-artifacts
+      - external-to-target-node-load-generator
+      - workload-profile-rate-seed-and-duration
+      - root-cause-labels
+      - ground-truth-isolation
+      - primary-rca-metrics
   - reason: replace-single-session-public-ssh-tunnel-with-bounded-reconnecting-supervisor-after-no-fault-transport-failure
     preserves:
       - failed-no-fault-run-artifacts

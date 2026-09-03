@@ -351,7 +351,7 @@ def no_fault_fixture_bundle() -> tuple[dict, dict]:
     bundle["context"]["collector_failures"] = []
     bundle["context"]["localization"]["context_completeness"] = 1.0
     bundle["control_attestation"] = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "scenario_id": "scenario-frontend-no-fault-normal",
         "observed_at": "2026-08-12T02:05:00Z",
         "observation_seconds": 900,
@@ -562,10 +562,10 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
                 evaluated_at=NOW,
             )
 
-    def test_no_fault_control_allows_bounded_transport_noise(self) -> None:
+    def test_no_fault_control_allows_boundary_response_ratios(self) -> None:
         bundle, scenario = no_fault_fixture_bundle()
-        bundle["control_attestation"]["workload"]["transport_errors"] = 3
-        bundle["control_attestation"]["workload"]["successful_responses"] = 997
+        bundle["control_attestation"]["workload"]["transport_errors"] = 10
+        bundle["control_attestation"]["workload"]["successful_responses"] = 990
 
         artifacts = build_controlled_fault_evaluation(
             bundle,
@@ -576,14 +576,43 @@ class ControlledFaultEvaluationTests(unittest.TestCase):
 
         self.assertEqual(artifacts["prediction"]["outcome"], "ABSTAIN")
 
-    def test_no_fault_control_rejects_transport_noise_above_budget(self) -> None:
+    def test_no_fault_control_rejects_transport_ratio_above_budget(self) -> None:
         bundle, scenario = no_fault_fixture_bundle()
-        bundle["control_attestation"]["workload"]["transport_errors"] = 4
+        bundle["control_attestation"]["workload"]["transport_errors"] = 11
+        bundle["control_attestation"]["workload"]["successful_responses"] = 989
 
         with self.assertRaisesRegex(
             ContractViolation,
-            "exceeded the bounded transport error budget",
+            "exceeded the bounded transport error ratio",
         ):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
+    def test_no_fault_control_rejects_success_ratio_below_slo(self) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        bundle["control_attestation"]["workload"]["successful_responses"] = 989
+
+        with self.assertRaisesRegex(
+            ContractViolation,
+            "fell below the successful response ratio",
+        ):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
+    def test_no_fault_control_rejects_impossible_workload_counts(self) -> None:
+        bundle, scenario = no_fault_fixture_bundle()
+        bundle["control_attestation"]["workload"]["transport_errors"] = 1
+        bundle["control_attestation"]["workload"]["successful_responses"] = 1000
+
+        with self.assertRaisesRegex(ContractViolation, "exceed request attempts"):
             build_controlled_fault_evaluation(
                 bundle,
                 scenario,

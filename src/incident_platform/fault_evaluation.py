@@ -626,17 +626,34 @@ def build_controlled_fault_evaluation(
             raise ContractViolation(
                 "no-fault control changed its Deployment or Pod snapshot"
             )
-        if int(attestation["workload"]["transport_errors"]) > int(
-            scenario["postconditions"]["transport_errors_maximum"]
+        request_attempts = int(attestation["workload"]["request_attempts"])
+        successful_responses = int(
+            attestation["workload"]["successful_responses"]
+        )
+        transport_errors = int(attestation["workload"]["transport_errors"])
+        if successful_responses + transport_errors > request_attempts:
+            raise ContractViolation(
+                "no-fault control workload counts exceed request attempts"
+            )
+        transport_error_ratio = transport_errors / request_attempts
+        if transport_error_ratio > float(
+            scenario["postconditions"]["transport_error_ratio_maximum"]
         ):
             raise ContractViolation(
-                "no-fault control exceeded the bounded transport error budget"
+                "no-fault control exceeded the bounded transport error ratio"
             )
-        if int(attestation["workload"]["successful_responses"]) < int(
+        if successful_responses < int(
             scenario["postconditions"]["successful_responses_minimum"]
         ):
             raise ContractViolation(
                 "no-fault control did not produce enough successful responses"
+            )
+        successful_response_ratio = successful_responses / request_attempts
+        if successful_response_ratio < float(
+            scenario["postconditions"]["successful_response_ratio_minimum"]
+        ):
+            raise ContractViolation(
+                "no-fault control fell below the successful response ratio"
             )
         non_applicable = all(
             evaluation.status == "NOT_APPLICABLE"

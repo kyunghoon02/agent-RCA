@@ -617,8 +617,24 @@
             {{ no_fault_control_workload_summary.transport_errors | int }}
           transport_error_types: >-
             {{ no_fault_control_workload_summary.transport_error_types | default({}) }}
-          transport_error_budget: >-
-            {{ no_fault_control_scenario.postconditions.transport_errors_maximum | int }}
+          successful_response_ratio: >-
+            {{
+              (
+                no_fault_control_successful_responses | float
+                / no_fault_control_workload_summary.request_attempts | float
+              ) | round(6)
+            }}
+          successful_response_ratio_minimum: >-
+            {{ no_fault_control_scenario.postconditions.successful_response_ratio_minimum }}
+          transport_error_ratio: >-
+            {{
+              (
+                no_fault_control_workload_summary.transport_errors | float
+                / no_fault_control_workload_summary.request_attempts | float
+              ) | round(6)
+            }}
+          transport_error_ratio_maximum: >-
+            {{ no_fault_control_scenario.postconditions.transport_error_ratio_maximum }}
 
     - name: Read final Online Boutique Deployments
       ansible.builtin.command: >-
@@ -723,11 +739,20 @@
           - no_fault_control_workload_summary.profile == 'normal'
           - no_fault_control_workload_summary.seed | int == no_fault_control_scenario.workload.seed
           - >-
-            no_fault_control_workload_summary.transport_errors | int
-            <= no_fault_control_scenario.postconditions.transport_errors_maximum | int
-          - >-
             no_fault_control_successful_responses | int
             >= no_fault_control_scenario.postconditions.successful_responses_minimum | int
+          - >-
+            (
+              no_fault_control_successful_responses | float
+              / no_fault_control_workload_summary.request_attempts | float
+            )
+            >= no_fault_control_scenario.postconditions.successful_response_ratio_minimum | float
+          - >-
+            (
+              no_fault_control_workload_summary.transport_errors | float
+              / no_fault_control_workload_summary.request_attempts | float
+            )
+            <= no_fault_control_scenario.postconditions.transport_error_ratio_maximum | float
         fail_msg: >-
           The target changed, restarted, became unready, entered a fault state,
           or the normal workload failed. This run cannot receive a no-fault label.
@@ -784,7 +809,7 @@
     - name: Build the post-run no-fault control attestation
       ansible.builtin.set_fact:
         no_fault_control_attestation:
-          schema_version: "1.1.0"
+          schema_version: "1.2.0"
           scenario_id: "{{ no_fault_control_scenario.scenario_id }}"
           observed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
           observation_seconds: >-

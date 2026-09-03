@@ -2802,6 +2802,17 @@ def validate_controlled_fault_scenarios() -> None:
     )
     if no_fault["change"] != {"type": "none"}:
         raise ValidationFailure("no-fault control applies a runtime change")
+    if no_fault["postconditions"] != {
+        "all_workloads_ready": True,
+        "active_fault_count": 0,
+        "deployment_snapshot_unchanged": True,
+        "pod_snapshot_unchanged": True,
+        "restart_delta_maximum": 0,
+        "successful_responses_minimum": 1,
+        "successful_response_ratio_minimum": 0.99,
+        "transport_error_ratio_maximum": 0.01,
+    }:
+        raise ValidationFailure("no-fault postcondition SLO changed")
     if no_fault["expected"] != {
         "outcome": "ABSTAIN",
         "root_cause_ids": [],
