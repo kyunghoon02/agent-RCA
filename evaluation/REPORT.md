@@ -179,20 +179,49 @@ checkoutservice resource와 paymentservice image가 기준값으로 복구된 �
 1회, 같은 reference environment에서 얻은 결과이므로 알려지지 않은 원인이나 실제 장애
 모집단의 정확도를 추정하는 수치로 해석하지 않는다.
 
+## Holdout v1 Temporal Replication
+
+최초 Holdout 결과를 Agent 수정에 사용하지 않고 같은 날 뒤 시점에 동일 scenario 12개를
+clean `main`에서 다시 순차 실행했다. scenario digest와 pinned runtime은 최초 실행과 같았고,
+retry, resume, prompt, Provider, Evidence Gate와 taxonomy 변경은 없었다. 이 실행은 더 이상
+미관측 holdout이 아니므로 최초 Holdout 정확도에 합치지 않고 시간적 재현성 기록으로만 남긴다.
+
+| Family | Harness | Expected outcome | Top-1 / abstention | Evidence P/R | Unsupported citation | Mean ingest-to-report | Tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| checkoutservice OOMKilled | 3/3 | 3/3 `ROOT_CAUSE` | Top-1 3/3 | 1.0 / 1.0 | 0/3 | 22.00 s | 46,176 |
+| paymentservice ImagePullBackOff | 3/3 | 3/3 `ROOT_CAUSE` | Top-1 3/3 | 1.0 / 1.0 | 0/3 | 32.67 s | 48,343 |
+| checkoutservice missing ConfigMap | 3/3 | 2/3 `ROOT_CAUSE`; 1 `FAILED` | Top-1 2/3 | 1.0 / 1.0 | 0/3 | 21.50 s on 2 reports | 44,383 |
+| frontend no-fault control | 3/3 | 3/3 `ABSTAIN` | abstain 3/3 | not applicable | 0/3 | 22.33 s | 44,847 |
+| **Overall** | **12/12** | **11/12** | **fault Top-1 8/9; no-fault abstain 3/3** | **1.0 / 1.0 on 9 faults** | **0/12** | **24.91 s on 11 reports** | **183,749** |
+
+전체 사용량은 LLM 24회와 bounded read-only tool 32회였다. 모든 12개 run이 terminal
+상태에 도달한 평균 시간은 24.75초였다. frozen model rate card가 없어 비용은 계산하지
+않았다. 종료 후 12개 Deployment Ready, 활성 Chaos 객체 0, fault lock 0,
+controlled-fault annotation 0과 변경 resource/image의 exact rollback을 확인했다.
+
+불일치 1건은 missing ConfigMap variant에서 발생했다. Agent는 Ground Truth 역할과 일치하는
+Evidence 두 개를 검사·인용해 Evidence precision/recall은 1.0/1.0이었지만, 최종 draft가
+`agent-rca-draft.schema.json`을 만족하지 않아 Evidence Gate가
+`GATE_DRAFT_CONTRACT_INVALID`로 fail-closed했다. root cause Report는 저장되지 않았고 실패를
+재실행하거나 성공으로 재분류하지 않았다. 현재 감사 record는 원본 model draft와 schema
+validation path를 보존하지 않으므로 어느 field가 위반됐는지는 사후 특정할 수 없다.
+
 ## Claim Boundary and Next Gate
 
 현재 말할 수 있는 것은 “고정된 한 runtime과 한 3-domain reference environment에서,
-등록 regression 20회와 별도 Holdout surface variant 12회가 모두 기대 outcome을 냈고,
-unsupported citation은 없었다”까지다. 이는 이전 45% baseline 이후 Agent/Gate 계약 수정이
-등록 regression set과 같은 세 원인군의 미사용 surface variation에서 효과가 있었음을
-보여주지만, production 정확도나 알려지지 않은 장애에 대한 일반화 성능을 뜻하지 않는다.
+등록 regression 20/20과 별도 최초 Holdout surface variant 12/12가 기대 outcome을 냈지만,
+동일 Holdout temporal replication은 11/12였고 unsupported citation은 두 Holdout 모두
+없었다”까지다. 이는 같은 Evidence를 사용해도 LLM output contract의 비결정성이 전체
+신뢰도를 제한할 수 있음을 보여준다. production 정확도나 알려지지 않은 장애에 대한
+일반화 성능을 뜻하지 않는다.
 
 현재 CI는 regression과 Holdout matrix 계약, runner, scorer와 safety policy를 core test로
 검증한다. 실제 fault suite는 private runtime과 명시적 승인이 필요하므로 CI에서 자동
-실행하지 않고 수동 release gate로 유지한다. 다음 신뢰도 gate는 Agent를 조정하지 않은 채
-동결된 Holdout을 다른 시점에 독립 재현하고 그 결과를 replication으로 별도 보고하는 것이다.
-새 fault, multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 preregistration과
-수치 경계를 사용하며 현재 결과와 합치지 않는다.
+실행하지 않고 수동 release gate로 유지한다. 다음 신뢰도 gate는 원본 draft를 저장하지
+않으면서 schema keyword와 JSON Pointer만 감사하는 privacy-safe contract failure telemetry를
+추가하고, strict structured output 경계를 별도 preregistration에서 검증하는 것이다. 새 fault,
+multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 preregistration과 수치 경계를
+사용하며 현재 결과와 합치지 않는다.
 
 ## Reproduce
 
