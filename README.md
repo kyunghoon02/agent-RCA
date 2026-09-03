@@ -172,6 +172,7 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 | Corrected frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 20/20, fault Top-1 15/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | 동일 runtime의 등록 regression set 결과이며 production 일반화 수치가 아님 |
 | Holdout v1, 4 families × 3 variants | harness 12/12, expected outcome 12/12, fault Top-1 9/9, no-fault `ABSTAIN` 3/3, unsupported citation 0 | 등록된 같은 원인 taxonomy의 미사용 surface variant 결과이며 regression 수치와 합치지 않음 |
 | Holdout v1 temporal replication | harness 12/12, expected outcome 11/12, fault Top-1 8/9, no-fault `ABSTAIN` 3/3, unsupported citation 0 | missing ConfigMap 1건의 LLM draft가 output schema를 위반해 Evidence Gate가 fail-closed한 독립 재실행 결과 |
+| Strict structured-output check, 4 scenarios × 2 | `REPORT_ACCEPTED` 8/8, model failure 0, draft contract rejection 0, expected outcome 8/8, unsupported citation 0 | 알려진 scenario를 재사용한 작은 표본의 output-contract 검증이며 정확도·일반화 수치가 아님 |
 
 실패 artifact를 성공으로 재분류하지 않고 원인을 추적해 Gate reason code, UID-bounded
 Kubernetes Event, short Evidence reference와 Context completeness decision policy를

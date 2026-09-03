@@ -231,6 +231,28 @@ contract의 작은 표본 반복 검증이지 새 사례 정확도나 일반화 
 multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 preregistration과 수치 경계를
 사용하며 현재 결과와 합치지 않는다.
 
+## Structured Output v2 Runtime Result
+
+2026-09-03에 clean `main`과 pinned runtime에서 사전 등록한 8회를 순차 실행했다. 실행 중
+retry, resume, Agent prompt, Provider, Evidence Gate와 taxonomy 변경은 없었다.
+
+| Boundary | Observed result |
+|---|---:|
+| Completed and scored | 8/8 |
+| Agent terminal reason | `REPORT_ACCEPTED` 8/8 |
+| Model execution failure | 0/8 |
+| Draft contract rejection | 0/8 |
+| Unsupported Evidence citation | 0/8 |
+| Secondary expected outcome | 8/8; fault Top-1 6/6, no-fault `ABSTAIN` 2/2 |
+| Mean ingest-to-report | 25.00 s |
+| Usage | LLM 17회, read-only tool 24회, 131,429 tokens |
+
+frozen model rate card가 없어 비용은 계산하지 않았다. 평가 종료 후 fault target Deployment
+12개가 모두 Available이고, 활성 Chaos 객체, fault lock과 controlled-fault marker가 모두
+0개임을 별도 확인했다. 이 결과는 strict structured output과 독립 Evidence Gate 조합이
+등록된 네 시나리오에서 두 번씩 재현됐다는 작은 표본 증거다. production reliability,
+미관측 원인 정확도 또는 통계적 일반화를 뜻하지 않는다.
+
 ## Reproduce
 
 ```bash
