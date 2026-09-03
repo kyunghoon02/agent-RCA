@@ -193,11 +193,16 @@ def _summarize_group(
 ) -> dict[str, Any]:
     prediction_outcomes: dict[str, int] = {}
     agent_statuses: dict[str, int] = {}
+    agent_reason_codes: dict[str, int] = {}
     for record in records:
         outcome = str(record["prediction"]["outcome"])
         prediction_outcomes[outcome] = prediction_outcomes.get(outcome, 0) + 1
         status = str(record["runtime"]["agent_status"])
         agent_statuses[status] = agent_statuses.get(status, 0) + 1
+        reason_code = str(record["runtime"]["reason_code"])
+        agent_reason_codes[reason_code] = (
+            agent_reason_codes.get(reason_code, 0) + 1
+        )
 
     metric_summaries: dict[str, Any] = {}
     for metric_name in METRIC_NAMES:
@@ -272,6 +277,7 @@ def _summarize_group(
         ),
         "prediction_outcomes": prediction_outcomes,
         "agent_statuses": agent_statuses,
+        "agent_reason_codes": agent_reason_codes,
         "metrics": metric_summaries,
         "latency_ms": latencies,
         "usage": usage,
@@ -364,6 +370,12 @@ def build_summary(
         == configured_by_id[record["attempt"]["scenario_id"]]["expected_outcome"]
         for record in records
     )
+    agent_reason_codes: dict[str, int] = {}
+    for record in records:
+        reason_code = str(record["runtime"]["reason_code"])
+        agent_reason_codes[reason_code] = (
+            agent_reason_codes.get(reason_code, 0) + 1
+        )
 
     summary = {
         "schema_version": "1.0.0",
@@ -382,6 +394,7 @@ def build_summary(
         "expected_outcome_rate": (
             round(expected_outcome_matches / len(records), 6) if records else None
         ),
+        "agent_reason_codes": agent_reason_codes,
         "confidence_interval": "deterministic-bootstrap-95-10000-resamples",
         "cost": {
             "status": "NOT_CALCULATED",

@@ -26,6 +26,7 @@ from typing import (
 
 from agents import (
     Agent,
+    AgentOutputSchema,
     MaxTurnsExceeded,
     ModelSettings,
     RunConfig,
@@ -65,6 +66,19 @@ EvidenceCandidateRef = Literal[
     "E12",
 ]
 
+_INCIDENT_ID_PATTERN = r"^inc-[a-z0-9][a-z0-9-]{7,63}$"
+_CONTEXT_ID_PATTERN = r"^ctx-[a-z0-9][a-z0-9-]{7,63}$"
+_ENTITY_ID_PATTERN = r"^ent-[a-z0-9][a-z0-9-]{7,127}$"
+_EVIDENCE_ID_PATTERN = r"^ev-[a-z0-9][a-z0-9-]{7,63}$"
+_REFERENCE_ID_PATTERN = r"^ref-[a-z0-9][a-z0-9-]{7,63}$"
+
+AgentIncidentId = Annotated[str, Field(pattern=_INCIDENT_ID_PATTERN)]
+AgentContextId = Annotated[str, Field(pattern=_CONTEXT_ID_PATTERN)]
+AgentEntityId = Annotated[str, Field(pattern=_ENTITY_ID_PATTERN)]
+AgentEvidenceId = Annotated[str, Field(pattern=_EVIDENCE_ID_PATTERN)]
+AgentReferenceId = Annotated[str, Field(pattern=_REFERENCE_ID_PATTERN)]
+AgentBoundedText = Annotated[str, Field(min_length=1, max_length=1000)]
+
 
 class DraftRootCause(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -73,10 +87,10 @@ class DraftRootCause(BaseModel):
         description="Registered root-cause taxonomy ID supported by runtime Evidence."
     )
     summary: str = Field(min_length=1, max_length=2000)
-    entity_id: str
-    supporting_evidence_ids: List[str]
-    contradicting_evidence_ids: List[str]
-    reference_document_ids: List[str]
+    entity_id: AgentEntityId
+    supporting_evidence_ids: List[AgentEvidenceId] = Field(max_length=100)
+    contradicting_evidence_ids: List[AgentEvidenceId] = Field(max_length=100)
+    reference_document_ids: List[AgentReferenceId] = Field(max_length=20)
 
 
 class DraftHypothesis(BaseModel):
@@ -90,26 +104,28 @@ class DraftHypothesis(BaseModel):
         )
     )
     summary: str = Field(min_length=1, max_length=2000)
-    entity_id: str
+    entity_id: AgentEntityId
     confidence: float = Field(ge=0, le=1)
     status: Literal["supported", "competing", "rejected", "unresolved"]
-    supporting_evidence_ids: List[str]
-    contradicting_evidence_ids: List[str]
-    reference_document_ids: List[str]
-    missing_evidence: List[str]
+    supporting_evidence_ids: List[AgentEvidenceId] = Field(max_length=100)
+    contradicting_evidence_ids: List[AgentEvidenceId] = Field(max_length=100)
+    reference_document_ids: List[AgentReferenceId] = Field(max_length=20)
+    missing_evidence: List[AgentBoundedText] = Field(max_length=20)
 
 
 class DraftRemediation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    suggestions: List[str] = Field(
+    suggestions: List[AgentBoundedText] = Field(
+        max_length=10,
         description=(
             "Advisory remediation suggestions. This must be an empty array when "
             "root_cause is null."
         )
     )
-    verification_conditions: List[str] = Field(
+    verification_conditions: List[AgentBoundedText] = Field(
         min_length=1,
+        max_length=10,
         description=(
             "Observable conditions that verify an accepted remediation or, when "
             "root_cause is null, the additional evidence needed to confirm or "
@@ -124,8 +140,8 @@ class AgentRCADraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["1.1.0"]
-    incident_id: str
-    context_id: str
+    incident_id: AgentIncidentId
+    context_id: AgentContextId
     decision: Literal["CONCLUSIVE", "INCONCLUSIVE", "PARTIAL"] = Field(
         description=(
             "Use CONCLUSIVE only for a runtime-Evidence-supported root cause; use "
@@ -141,7 +157,7 @@ class AgentRCADraft(BaseModel):
     )
     hypotheses: List[DraftHypothesis] = Field(min_length=1, max_length=5)
     remediation: DraftRemediation
-    limitations: List[str]
+    limitations: List[AgentBoundedText] = Field(max_length=20)
     read_only: Literal[True]
 
 
@@ -719,6 +735,13 @@ class OpenAIAgentsSDKRunner:
         # contains frozen operational Context, so disable this logger and rely
         # on the platform's content-free Agent Run audit instead.
         logging.getLogger("openai.agents").disabled = True
+        # Keep the API boundary explicit: the model is constrained by the SDK's
+        # strict structured-output schema before the independent Evidence Gate
+        # validates semantic rules and citations against frozen runtime data.
+        self.output_schema = AgentOutputSchema(
+            AgentRCADraft,
+            strict_json_schema=True,
+        )
 
     def run(self, invocation: AgentInvocation) -> AgentModelRun:
         agent = Agent[AgentToolRuntime](
@@ -726,7 +749,7 @@ class OpenAIAgentsSDKRunner:
             model=self.model_name,
             instructions=_AGENT_INSTRUCTIONS,
             tools=[inspect_evidence, inspect_reference],
-            output_type=AgentRCADraft,
+            output_type=self.output_schema,
             model_settings=ModelSettings(
                 max_tokens=invocation.policy.max_output_tokens,
                 parallel_tool_calls=False,

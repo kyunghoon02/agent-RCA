@@ -2909,6 +2909,52 @@ def validate_controlled_fault_scenarios() -> None:
     ):
         raise ValidationFailure("holdout v1 preregistration or isolation changed")
 
+    structured_output_preregistration = load_yaml_documents(
+        ROOT / "evaluation" / "structured-output-v1-preregistration.yaml"
+    )[0]
+    structured_boundary = structured_output_preregistration.get(
+        "implementation_boundary", {}
+    )
+    structured_execution = structured_output_preregistration.get("execution", {})
+    structured_acceptance = structured_output_preregistration.get("acceptance", {})
+    if (
+        structured_output_preregistration.get("schema_version") != "1.0.0"
+        or structured_output_preregistration.get("evaluation_id")
+        != "structured-output-reliability-v1"
+        or structured_output_preregistration.get("status")
+        != "frozen-unexecuted"
+        or structured_output_preregistration.get("purpose", {}).get(
+            "accuracy_or_generalization_claim_allowed"
+        )
+        is not False
+        or structured_output_preregistration.get("reuse_disclosure", {}).get(
+            "known_scenarios_reused"
+        )
+        is not True
+        or structured_output_preregistration.get("reuse_disclosure", {}).get(
+            "combine_with_holdout_accuracy"
+        )
+        is not False
+        or structured_execution.get("planned_attempts") != 20
+        or structured_execution.get("repetitions_per_scenario") != 5
+        or structured_execution.get("max_parallel") != 1
+        or structured_acceptance.get("model_execution_failure_count") != 0
+        or structured_acceptance.get("draft_contract_rejection_count") != 0
+        or structured_acceptance.get("unsupported_evidence_citation_rate") != 0
+        or structured_acceptance.get("evidence_gate_bypass_allowed") is not False
+        or structured_boundary.get("sdk_strict_json_schema") is not True
+        or structured_boundary.get("evidence_gate_remains_independent") is not True
+        or not re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(structured_boundary.get("agent_runtime_sha256", "")),
+        )
+        or not re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(structured_boundary.get("frozen_draft_contract_sha256", "")),
+        )
+    ):
+        raise ValidationFailure("structured-output v1 preregistration changed")
+
     holdout_matrix = load_yaml_documents(
         ROOT / "evaluation" / "holdout-v1-matrix.yaml"
     )[0]
@@ -2988,6 +3034,7 @@ def main() -> None:
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- the development-only fault scenarios and no-fault control gates are valid")
     print("- holdout v1 isolation, variants, and scenario digests are frozen")
+    print("- structured-output v1 reliability boundaries are preregistered")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 
 

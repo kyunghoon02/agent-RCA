@@ -1,0 +1,77 @@
+schema_version: "1.0.0"
+evaluation_id: structured-output-reliability-v1
+registered_at: "2026-09-03"
+status: frozen-unexecuted
+
+purpose:
+  question: >-
+    Does the explicit OpenAI Agents SDK strict structured-output boundary
+    eliminate model draft contract failures across twenty registered Agent RCA
+    regression attempts while preserving the independent Evidence Gate?
+  primary_claim: structured-output-contract-reliability
+  accuracy_or_generalization_claim_allowed: false
+
+reuse_disclosure:
+  source_matrix: evaluation/matrix.yaml
+  source_matrix_id: focused-four-scenario-v1
+  known_scenarios_reused: true
+  reason: isolate temporal output-contract reliability from unseen-case accuracy
+  combine_with_holdout_accuracy: false
+
+implementation_boundary:
+  agent_runtime_path: src/incident_platform/agent_rca.py
+  agent_runtime_sha256: 8ce12c7f2cbc33705c88bd88a95399c8fe897ee90de6f0f9b54c7ecc559f2290
+  frozen_draft_contract_path: contracts/schemas/agent-rca-draft.schema.json
+  frozen_draft_contract_sha256: 793ce8b6bb143df30958938e96b681d00aac5871d002562d7173f36e8c61d2ad
+  agents_sdk_version: 0.8.4
+  openai_sdk_version: 2.44.0
+  sdk_strict_json_schema: true
+  evidence_gate_remains_independent: true
+  unsupported_contract_keywords_enforced_after_model_output:
+    - uniqueItems
+    - allOf
+    - if
+    - then
+
+execution:
+  planned_attempts: 20
+  unique_scenarios: 4
+  repetitions_per_scenario: 5
+  max_parallel: 1
+  schedule: rotated-round-robin
+  failure_policy: stop-and-preserve
+  require_clean_worktree: true
+  require_head_matches_origin_main: true
+  explicit_confirmation_variable: CONFIRM_EVALUATION_MATRIX
+  runtime_image_source: platform/versions.yaml
+  plan_command: make plan-evaluation-matrix
+  execute_command: make evaluate-matrix
+  summarize_command: make summarize-evaluation-matrix
+
+primary_metrics:
+  - model_execution_failure_count
+  - draft_contract_rejection_count
+  - unsupported_evidence_citation_rate
+
+secondary_regression_metrics:
+  - expected_outcome_rate
+  - root_cause_top1_accuracy
+  - abstention_correctness
+
+acceptance:
+  completed_attempts: 20
+  scored_attempts: 20
+  model_execution_failure_count: 0
+  draft_contract_rejection_count: 0
+  unsupported_evidence_citation_rate: 0
+  evidence_gate_bypass_allowed: false
+
+post_result_policy:
+  publish_every_attempt: true
+  publish_failures: true
+  publish_harness_failures_separately: true
+  repair_or_retry_failed_model_draft: false
+  change_thresholds_after_first_attempt: false
+  rerun_after_agent_or_gate_change_under_same_id: false
+  required_action_after_agent_or_gate_change: register-structured-output-v2
+  production_reliability_claim_allowed: false

@@ -6,6 +6,7 @@ import json
 import logging
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 from agents import MaxTurnsExceeded
 
@@ -507,6 +508,101 @@ class AgentRCAServiceTests(unittest.TestCase):
         OpenAIAgentsSDKRunner("fake-agent-model")
 
         self.assertTrue(logging.getLogger("openai.agents").disabled)
+
+    def test_sdk_runner_uses_explicit_strict_contract_aligned_output_schema(
+        self,
+    ) -> None:
+        output_schema = OpenAIAgentsSDKRunner("fake-agent-model").output_schema
+        generated = output_schema.json_schema()
+        frozen = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "contracts/schemas/agent-rca-draft.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertTrue(output_schema.is_strict_json_schema())
+        self.assertEqual(
+            generated["properties"]["incident_id"]["pattern"],
+            frozen["properties"]["incident_id"]["pattern"],
+        )
+        self.assertEqual(
+            generated["properties"]["context_id"]["pattern"],
+            frozen["properties"]["context_id"]["pattern"],
+        )
+        self.assertEqual(
+            generated["properties"]["hypotheses"]["minItems"],
+            frozen["properties"]["hypotheses"]["minItems"],
+        )
+        self.assertEqual(
+            generated["properties"]["hypotheses"]["maxItems"],
+            frozen["properties"]["hypotheses"]["maxItems"],
+        )
+        self.assertEqual(
+            generated["properties"]["limitations"]["maxItems"],
+            frozen["properties"]["limitations"]["maxItems"],
+        )
+
+        generated_root = generated["$defs"]["DraftRootCause"]["properties"]
+        generated_hypothesis = generated["$defs"]["DraftHypothesis"][
+            "properties"
+        ]
+        generated_remediation = generated["$defs"]["DraftRemediation"][
+            "properties"
+        ]
+        frozen_root = frozen["$defs"]["rootCause"]["properties"]
+        frozen_hypothesis = frozen["$defs"]["hypothesis"]["properties"]
+        frozen_remediation = frozen["$defs"]["remediation"]["properties"]
+
+        self.assertEqual(
+            generated_root["entity_id"]["pattern"],
+            frozen_root["entity_id"]["pattern"],
+        )
+        self.assertEqual(
+            generated_hypothesis["entity_id"]["pattern"],
+            frozen_hypothesis["entity_id"]["pattern"],
+        )
+        for property_name in (
+            "supporting_evidence_ids",
+            "contradicting_evidence_ids",
+        ):
+            self.assertEqual(
+                generated_root[property_name]["maxItems"],
+                frozen["$defs"]["evidenceIds"]["maxItems"],
+            )
+            self.assertEqual(
+                generated_root[property_name]["items"]["pattern"],
+                frozen["$defs"]["evidenceIds"]["items"]["pattern"],
+            )
+            self.assertEqual(
+                generated_hypothesis[property_name]["maxItems"],
+                frozen["$defs"]["evidenceIds"]["maxItems"],
+            )
+        self.assertEqual(
+            generated_root["reference_document_ids"]["maxItems"],
+            frozen["$defs"]["referenceIds"]["maxItems"],
+        )
+        self.assertEqual(
+            generated_hypothesis["missing_evidence"]["maxItems"],
+            frozen_hypothesis["missing_evidence"]["maxItems"],
+        )
+        self.assertEqual(
+            generated_remediation["suggestions"]["maxItems"],
+            frozen_remediation["suggestions"]["maxItems"],
+        )
+        self.assertEqual(
+            generated_remediation["verification_conditions"]["maxItems"],
+            frozen_remediation["verification_conditions"]["maxItems"],
+        )
+        # Conditional semantics and uniqueness are intentionally enforced by
+        # the frozen contract/Evidence Gate because the API strict subset does
+        # not support the contract's allOf/if/then or uniqueItems keywords.
+        self.assertNotIn("allOf", generated)
+        self.assertIn("allOf", frozen)
+        self.assertNotIn(
+            "uniqueItems", generated_root["supporting_evidence_ids"]
+        )
+        self.assertTrue(frozen["$defs"]["evidenceIds"]["uniqueItems"])
 
     def test_evidence_tool_accepts_only_a_bounded_batch(self) -> None:
         candidate_refs = inspect_evidence.params_json_schema["properties"][

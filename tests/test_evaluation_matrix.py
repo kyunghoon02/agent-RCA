@@ -139,6 +139,7 @@ class EvaluationMatrixTests(unittest.TestCase):
                     "result": {"metrics": metrics},
                     "runtime": {
                         "agent_status": "SUCCEEDED",
+                        "reason_code": "REPORT_ACCEPTED",
                         "ingest_to_agent_start_ms": 7000,
                         "ingest_to_terminal_ms": 23000,
                         "ingest_to_report_ms": 24000,
@@ -211,6 +212,7 @@ class EvaluationMatrixTests(unittest.TestCase):
                     "result": {"metrics": {name: 1.0 for name in METRIC_NAMES}},
                     "runtime": {
                         "agent_status": "SUCCEEDED",
+                        "reason_code": "REPORT_ACCEPTED",
                         "ingest_to_agent_start_ms": 1000,
                         "ingest_to_terminal_ms": 3000,
                         "ingest_to_report_ms": 3000,
@@ -240,6 +242,7 @@ class EvaluationMatrixTests(unittest.TestCase):
         serialized = json.dumps(summary)
 
         self.assertEqual(summary["expected_outcome_matches"], 12)
+        self.assertEqual(summary["agent_reason_codes"], {"REPORT_ACCEPTED": 12})
         self.assertEqual(len(summary["families"]), 4)
         self.assertTrue(
             all(family["scored_runs"] == 3 for family in summary["families"])

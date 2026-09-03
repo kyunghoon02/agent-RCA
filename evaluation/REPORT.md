@@ -221,8 +221,12 @@ instance/schema JSON Pointer, keyword와 오류 개수만 audit와 Viewer에 저
 현재 CI는 regression과 Holdout matrix 계약, runner, scorer와 safety policy를 core test로
 검증한다. 실제 fault suite는 private runtime과 명시적 승인이 필요하므로 CI에서 자동
 실행하지 않고 수동 release gate로 유지한다. privacy-safe contract failure telemetry는
-구현·배포했으며, 다음 신뢰도 gate는 strict structured output 경계를 별도 preregistration에서
-검증하는 것이다. 새 fault,
+구현·배포했다. SDK strict structured output은 명시적으로 고정했고 API가 지원하는 ID pattern과
+array bound를 frozen draft contract에 맞췄다. `uniqueItems`와 조건부 의미 규칙은 API schema에
+넣지 않고 독립 Evidence Gate가 계속 검증한다. 이 경계의 temporal reliability는
+`structured-output-v1-preregistration.yaml`에 기존 4개 regression scenario 20회 재사용으로
+사전 등록했으며 아직 실행하지 않았다. 이는 output contract 신뢰도 평가이지 새 사례 정확도나
+일반화 평가가 아니다. 새 fault,
 multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 preregistration과 수치 경계를
 사용하며 현재 결과와 합치지 않는다.
 
@@ -230,6 +234,11 @@ multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 prereg
 
 ```bash
 make validate-core
+make plan-structured-output-evaluation
+CONFIRM_EVALUATION_MATRIX="$(git rev-parse HEAD)" \
+  make evaluate-structured-output-evaluation
+make score-structured-output-evaluation \
+  EVALUATION_MATRIX_MANIFEST=evaluation/runs/private/matrix/<run>/manifest.json
 make plan-evaluation-matrix
 CONFIRM_EVALUATION_MATRIX="$(git rev-parse HEAD)" make evaluate-matrix
 make summarize-evaluation-matrix \

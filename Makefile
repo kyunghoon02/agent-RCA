@@ -35,6 +35,8 @@ NO_FAULT_CONTROL_SCENARIO_PATH ?= evaluation/scenarios/frontend-no-fault-normal.
 	evaluate-no-fault-control \
 	deploy-three-domain smoke-krca-coverage summarize-checkout-oom \
 	verify-evaluation-runtime plan-evaluation-matrix evaluate-matrix \
+	verify-structured-output-boundary plan-structured-output-evaluation \
+	evaluate-structured-output-evaluation score-structured-output-evaluation \
 	plan-holdout-matrix evaluate-holdout-matrix summarize-evaluation-matrix
 
 bootstrap-dev:
@@ -367,6 +369,21 @@ plan-evaluation-matrix:
 
 evaluate-matrix:
 	PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --execute $(if $(strip $(EVALUATION_MATRIX_RESUME)),--resume "$(EVALUATION_MATRIX_RESUME)",)
+
+verify-structured-output-boundary:
+	@PYTHONPATH=src:. .venv/bin/python tools/verify_structured_output_evaluation.py
+
+plan-structured-output-evaluation: verify-structured-output-boundary
+	@PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py
+
+evaluate-structured-output-evaluation: verify-structured-output-boundary
+	PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --execute $(if $(strip $(EVALUATION_MATRIX_RESUME)),--resume "$(EVALUATION_MATRIX_RESUME)",)
+
+score-structured-output-evaluation:
+	@test -n "$(EVALUATION_MATRIX_MANIFEST)" || \
+		(echo "Set EVALUATION_MATRIX_MANIFEST to a private matrix manifest" >&2; exit 2)
+	PYTHONPATH=src:. .venv/bin/python tools/verify_structured_output_evaluation.py \
+		--manifest "$(EVALUATION_MATRIX_MANIFEST)"
 
 plan-holdout-matrix:
 	@PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --matrix holdout-v1
