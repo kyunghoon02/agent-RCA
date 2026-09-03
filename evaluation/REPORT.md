@@ -107,23 +107,51 @@ control을 실행한 결과는 다음과 같다.
 Deployment와 Pod identity, restart snapshot은 900초 전후 동일했고, workload 종료와 lock,
 tunnel, watchdog cleanup 후 모든 workload가 Ready인 것을 확인했다.
 
+## Corrected Repeated Matrix
+
+2026-09-03에 entity-bound Agent runtime을 고정하고, 동일 source commit에서 네 scenario를
+각각 5회씩 새로 실행했다. 이 matrix는 이전 20회 결과를 재채점하거나 중간 회차를
+재개한 것이 아니라, 수정된 runtime으로 처음부터 수행한 독립 실행이다.
+
+| Scenario | Harness | Expected outcome | Top-1 / abstention | Evidence P/R | Unsupported citation | Median ingest-to-report | Tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| checkoutservice OOMKilled | 5/5 | 5/5 `ROOT_CAUSE` | Top-1 5/5 | 1.0 / 1.0 | 0/5 | 22 s | 77,404 |
+| paymentservice ImagePullBackOff | 5/5 | 5/5 `ROOT_CAUSE` | Top-1 5/5 | 1.0 / 1.0 | 0/5 | 21 s | 80,677 |
+| checkoutservice missing ConfigMap | 5/5 | 5/5 `ROOT_CAUSE` | Top-1 5/5 | 1.0 / 1.0 | 0/5 | 22 s | 72,927 |
+| frontend no-fault control | 5/5 | 5/5 `ABSTAIN` | abstain 5/5 | not applicable | 0/5 | 23 s | 83,992 |
+| **Overall** | **20/20** | **20/20** | **fault Top-1 15/15; no-fault abstain 5/5** | **1.0 / 1.0 on 15 faults** | **0/20** | **23.25 s mean** | **315,000** |
+
+전체 사용량은 LLM 41회와 read-only tool 58회였다. frozen model rate card가 없어 비용은
+계산하지 않았다. 각 scenario의 deterministic bootstrap interval은 관측된 성공률에 대해
+1.0–1.0, unsupported citation rate에 대해 0.0–0.0이었지만, scenario당 표본이 5개뿐인
+동일 환경 반복이므로 이를 실제 장애 모집단에 대한 좁은 신뢰구간으로 해석하지 않는다.
+
+fresh matrix 전에 두 preflight failure도 성공 결과와 분리해 보존했다. 첫 no-fault 실패는
+애플리케이션이 아니라 장시간 controller-to-target SSH tunnel의 전송 오류 때문이었다.
+target-local 대조 조회로 경계를 분리한 뒤 reconnecting supervisor를 추가했고, workload
+시간에 종속된 절대 오류 개수 대신 사전 등록한 성공률 99% 이상, transport error rate 1%
+이하 조건으로 availability gate를 고정했다. 다음 no-fault는 workload와 abstention은
+정상이었지만 `GATE_ENTITY_OUT_OF_SCOPE`로 fail-closed 됐다. 모델이 보는 정확한 Entity ID
+allowlist와 Gate가 검사하는 catalog를 일치시킨 뒤에만 새 20회를 시작했다. 실패 Report를
+자동 수정하거나 Gate 조건을 낮추지는 않았다.
+
+matrix 종료 후 12개 Online Boutique Deployment가 모두 Ready이고, fault lock과 활성
+StressChaos가 없으며 checkoutservice와 paymentservice가 원래 replica 상태로 복구된 것을
+별도 확인했다.
+
 ## Claim Boundary and Next Gate
 
-현재 말할 수 있는 것은 “세 등록 fault가 post-correction targeted smoke에서 각각
-통과했고, latest runtime no-fault control은 올바르게 abstain했으며, unsupported citation은
-없었다”까지다. fault 세 건과 no-fault 한 건이 모두 동일 latest image의 반복 표본은
-아니다. 이를 100% 정확도나 production 일반화로 표현해서는 안 된다. 다음 신뢰도 gate는
-동일 latest commit/runtime으로 다음 20회를 새로 실행하는 것이다.
+현재 말할 수 있는 것은 “고정된 한 runtime과 한 3-domain reference environment에서,
+등록된 단일 원인 fault 세 종류 15회와 no-fault 5회가 모두 기대 outcome을 냈고,
+unsupported citation은 없었다”까지다. 이는 이전 45% baseline 이후 Agent/Gate 계약 수정이
+등록 regression set에서 효과가 있었음을 보여주지만, production 정확도나 알려지지 않은
+장애에 대한 일반화 성능을 뜻하지 않는다.
 
-- OOMKilled 5회
-- ImagePullBackOff 5회
-- missing ConfigMap 5회
-- no-fault control 5회
-
-그 결과에서 fault Top-1, no-fault abstention, Gate rejection reason 분포, Evidence
-precision/recall, end-to-end latency와 token 사용량을 다시 집계한다. corrected 20-run이
-완료되기 전에는 historical 45%와 targeted 3/3을 하나의 전후 정확도 수치로 비교하지
-않는다.
+현재 CI는 matrix 계약, runner, scorer와 safety policy를 core test로 검증한다. 실제 fault를
+주입하는 20회 suite는 private runtime과 명시적 승인이 필요하므로 CI에서 자동 실행하지 않고
+수동 release gate로 유지한다. 다음 신뢰도 gate는 범위를 넓히기 전에 이 regression set을
+동일 조건에서 다시 재현하는 것이다. 별도 사전 등록과 독립 실행 없이 새 fault,
+multi-factor 원인, 다른 cluster topology에 대한 수치를 현재 20회와 합치지 않는다.
 
 ## Reproduce
 

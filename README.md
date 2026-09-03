@@ -169,11 +169,13 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 | Historical frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 9/20, fault Top-1 4/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | Agent/Gate interface failures를 포함한 수정 전 baseline |
 | Post-correction fault runtime, 3 targeted smoke | fault Top-1 3/3, Evidence precision/recall 1.0/1.0, unsupported citation 0 | wiring regression 검증이며 반복 정확도 수치가 아님 |
 | Latest runtime, no-fault targeted smoke | `ABSTAIN` 1/1, abstention correctness 1.0, unsupported citation 0 | 900초 불변 baseline과 hypothesis/scorer 의미 검증 |
+| Corrected frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 20/20, fault Top-1 15/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | 동일 runtime의 등록 regression set 결과이며 production 일반화 수치가 아님 |
 
 실패 artifact를 성공으로 재분류하지 않고 원인을 추적해 Gate reason code, UID-bounded
 Kubernetes Event, short Evidence reference와 Context completeness decision policy를
-보완했다. 동일 latest runtime으로 4개 scenario × 5회를 다시 실행하기 전에는 개선 후
-정확도를 일반화하지 않는다. 수치, 실패 분석, 수정 경계와 재현 명령은
+보완했다. 수정 후 20회는 동일 runtime에서 처음부터 새로 실행했으며, 종료 후 모든 target
+workload의 Ready 상태와 fault cleanup도 확인했다. 이 결과는 등록된 단일 원인 fault 세 종류와
+no-fault 한 종류에만 적용한다. 수치, 실패 분석, 수정 경계와 재현 명령은
 [Evaluation and Reliability Record](evaluation/REPORT.md)에 기록한다. 평가 계약의 source of
 truth는 [Evaluation Preregistration](evaluation/preregistration.yaml)이다.
 
@@ -196,8 +198,8 @@ truth는 [Evaluation Preregistration](evaluation/preregistration.yaml)이다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
 - 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
-- post-correction fault runtime은 등록된 fault마다 한 번, latest runtime은 no-fault control
-  한 번만 통과했다. 동일 latest runtime의 4개 scenario × 5회 반복 matrix는 아직 완료되지 않았다.
+- 수정 후 반복 matrix는 한 reference environment의 등록 scenario당 5개 표본이다. 알려지지
+  않은 장애, multi-factor 원인, 다른 cluster topology와 production 정확도는 검증하지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start
