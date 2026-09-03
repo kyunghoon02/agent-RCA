@@ -911,6 +911,18 @@ class AgentRCAServiceTests(unittest.TestCase):
                 "kubernetes.missing-configmap",
             ],
         )
+        self.assertEqual(
+            decoded_input["hard_rules"]["allowed_claim_entity_ids"],
+            sorted(
+                item["entity_id"]
+                for item in decoded_input["investigation_view"]["entity_catalog"]
+            ),
+        )
+        self.assertTrue(
+            decoded_input["hard_rules"][
+                "claim_entity_id_must_come_from_entity_catalog"
+            ]
+        )
         self.assertTrue(
             decoded_input["hard_rules"][
                 "root_cause_matches_rank_one_hypothesis"

@@ -783,6 +783,9 @@ no positive cause-specific Evidence or only generic symptoms is unresolved,
 not competing. Rejected means inspected Evidence contradicts the hypothesis.
 Do not invent IDs, entities, facts, or tool results. Only provide remediation
 suggestions when root_cause is non-null.
+Every root-cause or hypothesis entity_id must exactly match one value in
+hard_rules.allowed_claim_entity_ids. Never derive or synthesize an entity_id
+from an Evidence subject, Kubernetes UID, name, or external reference.
 When root_cause is null, remediation.suggestions must be an empty array and
 verification_conditions must name the observable Evidence needed to confirm or
 reject the leading hypotheses. Keep accepted remediation advisory. If proof is
@@ -801,6 +804,12 @@ def _agent_input(invocation: AgentInvocation) -> str:
         }
         for item in invocation.references
     ]
+    allowed_claim_entity_ids = sorted(
+        {
+            item["entity_id"]
+            for item in invocation.investigation_view.package["entity_catalog"]
+        }
+    )
     package = {
         "task": "Produce an Evidence-gated RCA draft for this Incident.",
         "investigation_view": copy.deepcopy(
@@ -813,6 +822,8 @@ def _agent_input(invocation: AgentInvocation) -> str:
             "references_are_not_evidence": True,
             "read_only": True,
             "allowed_root_cause_ids": list(ROOT_CAUSE_IDS),
+            "allowed_claim_entity_ids": allowed_claim_entity_ids,
+            "claim_entity_id_must_come_from_entity_catalog": True,
             "registered_cause_evidence_requirements": {
                 cause_id: list(requirements)
                 for cause_id, requirements in ROOT_CAUSE_EVIDENCE_REQUIREMENTS.items()
@@ -867,6 +878,7 @@ class EvidenceGate:
         policy: AgentRCAPolicy,
         model_run: AgentModelRun,
         wall_time_ms: int,
+        investigation_view: AgentInvestigationView,
     ) -> None:
         candidate = copy.deepcopy(dict(draft))
         try:
@@ -889,8 +901,7 @@ class EvidenceGate:
 
         entity_ids = {
             entity["entity_id"]
-            for path in context["state_paths"]
-            for entity in path["entities"]
+            for entity in investigation_view.package["entity_catalog"]
         }
         cited_evidence, cited_references = _draft_citations(candidate)
         unknown_evidence = sorted(cited_evidence - context_evidence_ids(context))
@@ -1162,6 +1173,7 @@ class AgentRCAService:
                 policy=self._policy,
                 model_run=model_run,
                 wall_time_ms=elapsed_ms,
+                investigation_view=investigation_view,
             )
             completed_at = datetime.now(timezone.utc)
             audit = self._build_audit(
@@ -1368,6 +1380,11 @@ class AgentRCAService:
             for path in context["state_paths"]
             for entity in path["entities"]
         }
+        source_entity = context["source_entity"]
+        if "entity_id" in source_entity:
+            entities.setdefault(
+                source_entity["entity_id"], copy.deepcopy(dict(source_entity))
+            )
         root = draft["root_cause"]
         root_cause = None
         if root is not None:
