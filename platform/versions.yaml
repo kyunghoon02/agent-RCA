@@ -113,7 +113,7 @@ incident_platform:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
     image_tag: runtime-6d01f76694f5
-    image_digest: sha256:3e390ea60c09cdae3b499fd580c6af12a3a27fc30833f8120bed8743d9583aa1
+    image_digest: sha256:5a2306d393ef39bd28d9e01097f0426512359ecdad7e721ccd9f5b970b57546c
   viewer_frontend:
     node_version: 22.17.1
     image_tag: viewer-abc5599bc22d
