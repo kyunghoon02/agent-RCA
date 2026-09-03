@@ -12,6 +12,7 @@ EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
 EVALUATION_MATRIX_MANIFEST ?=
 EVALUATION_MATRIX_RESUME ?=
 HOLDOUT_EVALUATION_MATRIX_RESUME ?=
+STRUCTURED_OUTPUT_EVALUATION_RESUME ?=
 CHECKOUT_OOM_SCENARIO_PATH ?= evaluation/scenarios/checkoutservice-oom.yaml
 PAYMENT_IMAGE_PULL_SCENARIO_PATH ?= evaluation/scenarios/paymentservice-image-pull.yaml
 CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH ?= evaluation/scenarios/checkoutservice-missing-configmap.yaml
@@ -374,10 +375,10 @@ verify-structured-output-boundary:
 	@PYTHONPATH=src:. .venv/bin/python tools/verify_structured_output_evaluation.py
 
 plan-structured-output-evaluation: verify-structured-output-boundary
-	@PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py
+	@PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --matrix structured-output-v2
 
 evaluate-structured-output-evaluation: verify-structured-output-boundary
-	PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --execute $(if $(strip $(EVALUATION_MATRIX_RESUME)),--resume "$(EVALUATION_MATRIX_RESUME)",)
+	PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --matrix structured-output-v2 --execute $(if $(strip $(STRUCTURED_OUTPUT_EVALUATION_RESUME)),--resume "$(STRUCTURED_OUTPUT_EVALUATION_RESUME)",)
 
 score-structured-output-evaluation:
 	@test -n "$(EVALUATION_MATRIX_MANIFEST)" || \

@@ -68,6 +68,21 @@ class EvaluationMatrixTests(unittest.TestCase):
                     resume=None,
                 )
 
+    def test_structured_output_matrix_is_two_rotated_passes(self) -> None:
+        matrix = load_matrix("structured-output-v2")
+        schedule = build_schedule(matrix)
+
+        self.assertEqual(matrix["repetitions_per_scenario"], 2)
+        self.assertEqual(len(schedule), 8)
+        for scenario_id in ALLOWED_SCENARIOS:
+            self.assertEqual(
+                sum(item["scenario_id"] == scenario_id for item in schedule),
+                2,
+            )
+        self.assertEqual(
+            schedule[4]["scenario_id"], matrix["scenarios"][1]["scenario_id"]
+        )
+
     def test_holdout_matrix_freezes_twelve_unique_single_run_variants(self) -> None:
         matrix = load_matrix("holdout-v1")
         schedule = build_schedule(matrix)

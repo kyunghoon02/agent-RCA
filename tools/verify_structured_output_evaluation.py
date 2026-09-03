@@ -24,7 +24,7 @@ from tools.summarize_evaluation_matrix import build_summary, load_matrix_records
 
 ROOT = Path(__file__).resolve().parents[1]
 PREREGISTRATION_PATH = (
-    ROOT / "evaluation" / "structured-output-v1-preregistration.yaml"
+    ROOT / "evaluation" / "structured-output-v2-preregistration.yaml"
 )
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -38,39 +38,42 @@ def _load_preregistration() -> Mapping[str, Any]:
         raise MatrixError("structured-output preregistration must be one object")
     if (
         value.get("schema_version") != "1.0.0"
-        or value.get("evaluation_id") != "structured-output-reliability-v1"
+        or value.get("evaluation_id") != "structured-output-reliability-v2"
         or value.get("status") != "frozen-unexecuted"
     ):
         raise MatrixError("structured-output preregistration identity changed")
     if value.get("reuse_disclosure") != {
-        "source_matrix": "evaluation/matrix.yaml",
-        "source_matrix_id": "focused-four-scenario-v1",
+        "source_matrix": "evaluation/structured-output-v2-matrix.yaml",
+        "source_matrix_id": "structured-output-reliability-v2",
+        "source_matrix_sha256": (
+            "236baf25491c9033f73c439c925d1767ffda0a0dc10729ad33c94e9a1aaea4d1"
+        ),
         "known_scenarios_reused": True,
         "reason": (
-            "isolate temporal output-contract reliability from unseen-case accuracy"
+            "reduce runtime while retaining two temporal passes per registered case"
         ),
         "combine_with_holdout_accuracy": False,
     }:
         raise MatrixError("structured-output reuse disclosure changed")
     if value.get("execution") != {
-        "planned_attempts": 20,
+        "planned_attempts": 8,
         "unique_scenarios": 4,
-        "repetitions_per_scenario": 5,
+        "repetitions_per_scenario": 2,
         "max_parallel": 1,
         "schedule": "rotated-round-robin",
         "failure_policy": "stop-and-preserve",
         "require_clean_worktree": True,
         "require_head_matches_origin_main": True,
-        "explicit_confirmation_variable": "CONFIRM_EVALUATION_MATRIX",
+        "explicit_confirmation_variable": "CONFIRM_STRUCTURED_OUTPUT_EVALUATION",
         "runtime_image_source": "platform/versions.yaml",
-        "plan_command": "make plan-evaluation-matrix",
-        "execute_command": "make evaluate-matrix",
+        "plan_command": "make plan-structured-output-evaluation",
+        "execute_command": "make evaluate-structured-output-evaluation",
         "summarize_command": "make summarize-evaluation-matrix",
     }:
         raise MatrixError("structured-output execution boundary changed")
     if value.get("acceptance") != {
-        "completed_attempts": 20,
-        "scored_attempts": 20,
+        "completed_attempts": 8,
+        "scored_attempts": 8,
         "model_execution_failure_count": 0,
         "draft_contract_rejection_count": 0,
         "unsupported_evidence_citation_rate": 0,
@@ -109,6 +112,13 @@ def _contains_keyword(value: Any, keyword: str) -> bool:
 
 
 def verify_current_boundary(registration: Mapping[str, Any]) -> Mapping[str, Any]:
+    reuse = registration["reuse_disclosure"]
+    matrix_path = (ROOT / str(reuse["source_matrix"])).resolve()
+    if (
+        not matrix_path.is_file()
+        or _sha256(matrix_path.read_bytes()) != reuse["source_matrix_sha256"]
+    ):
+        raise MatrixError("structured-output matrix changed after preregistration")
     boundary = registration.get("implementation_boundary", {})
     for path_key, digest_key in (
         ("agent_runtime_path", "agent_runtime_sha256"),
@@ -171,7 +181,7 @@ def evaluate_completed_run(
     registration: Mapping[str, Any], manifest_path: str
 ) -> Mapping[str, Any]:
     manifest, records = load_matrix_records(manifest_path, allow_incomplete=False)
-    matrix = load_matrix("regression-v1")
+    matrix = load_matrix("structured-output-v2")
     if manifest.get("matrix_id") != registration["reuse_disclosure"][
         "source_matrix_id"
     ]:

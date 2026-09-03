@@ -2909,8 +2909,28 @@ def validate_controlled_fault_scenarios() -> None:
     ):
         raise ValidationFailure("holdout v1 preregistration or isolation changed")
 
-    structured_output_preregistration = load_yaml_documents(
+    structured_output_v1_preregistration = load_yaml_documents(
         ROOT / "evaluation" / "structured-output-v1-preregistration.yaml"
+    )[0]
+    if (
+        structured_output_v1_preregistration.get("evaluation_id")
+        != "structured-output-reliability-v1"
+        or structured_output_v1_preregistration.get("status")
+        != "closed-incomplete"
+        or structured_output_v1_preregistration.get("closure")
+        != {
+            "closed_at": "2026-09-03",
+            "reason": "operator-reduced-duration-before-completing-the-matrix",
+            "completed_attempts": 3,
+            "interrupted_attempt": 4,
+            "result_claim_allowed": False,
+            "partial_results_used_for_threshold_selection": False,
+        }
+    ):
+        raise ValidationFailure("structured-output v1 closure changed")
+
+    structured_output_preregistration = load_yaml_documents(
+        ROOT / "evaluation" / "structured-output-v2-preregistration.yaml"
     )[0]
     structured_boundary = structured_output_preregistration.get(
         "implementation_boundary", {}
@@ -2920,7 +2940,7 @@ def validate_controlled_fault_scenarios() -> None:
     if (
         structured_output_preregistration.get("schema_version") != "1.0.0"
         or structured_output_preregistration.get("evaluation_id")
-        != "structured-output-reliability-v1"
+        != "structured-output-reliability-v2"
         or structured_output_preregistration.get("status")
         != "frozen-unexecuted"
         or structured_output_preregistration.get("purpose", {}).get(
@@ -2935,8 +2955,8 @@ def validate_controlled_fault_scenarios() -> None:
             "combine_with_holdout_accuracy"
         )
         is not False
-        or structured_execution.get("planned_attempts") != 20
-        or structured_execution.get("repetitions_per_scenario") != 5
+        or structured_execution.get("planned_attempts") != 8
+        or structured_execution.get("repetitions_per_scenario") != 2
         or structured_execution.get("max_parallel") != 1
         or structured_acceptance.get("model_execution_failure_count") != 0
         or structured_acceptance.get("draft_contract_rejection_count") != 0
@@ -2953,7 +2973,20 @@ def validate_controlled_fault_scenarios() -> None:
             str(structured_boundary.get("frozen_draft_contract_sha256", "")),
         )
     ):
-        raise ValidationFailure("structured-output v1 preregistration changed")
+        raise ValidationFailure("structured-output v2 preregistration changed")
+
+    structured_matrix_path = ROOT / "evaluation" / "structured-output-v2-matrix.yaml"
+    structured_matrix = load_yaml_documents(structured_matrix_path)[0]
+    if (
+        structured_matrix.get("matrix_id") != "structured-output-reliability-v2"
+        or structured_matrix.get("repetitions_per_scenario") != 2
+        or len(structured_matrix.get("scenarios", [])) != 4
+        or hashlib.sha256(structured_matrix_path.read_bytes()).hexdigest()
+        != structured_output_preregistration.get("reuse_disclosure", {}).get(
+            "source_matrix_sha256"
+        )
+    ):
+        raise ValidationFailure("structured-output v2 matrix changed")
 
     holdout_matrix = load_yaml_documents(
         ROOT / "evaluation" / "holdout-v1-matrix.yaml"
@@ -3034,7 +3067,7 @@ def main() -> None:
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- the development-only fault scenarios and no-fault control gates are valid")
     print("- holdout v1 isolation, variants, and scenario digests are frozen")
-    print("- structured-output v1 reliability boundaries are preregistered")
+    print("- structured-output v1 closure and shorter v2 boundaries are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 
 

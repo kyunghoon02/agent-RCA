@@ -23,15 +23,22 @@ from incident_platform.errors import ContractViolation
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / "evaluation" / "matrix.yaml"
 HOLDOUT_MATRIX_PATH = ROOT / "evaluation" / "holdout-v1-matrix.yaml"
+STRUCTURED_OUTPUT_MATRIX_PATH = (
+    ROOT / "evaluation" / "structured-output-v2-matrix.yaml"
+)
 PREREGISTRATION_PATH = ROOT / "evaluation" / "preregistration.yaml"
 HOLDOUT_PREREGISTRATION_PATH = (
     ROOT / "evaluation" / "holdout-v1-preregistration.yaml"
+)
+STRUCTURED_OUTPUT_PREREGISTRATION_PATH = (
+    ROOT / "evaluation" / "structured-output-v2-preregistration.yaml"
 )
 VERSIONS_PATH = ROOT / "platform" / "versions.yaml"
 PRIVATE_RUN_ROOT = ROOT / "evaluation" / "runs" / "private"
 PRIVATE_MATRIX_ROOT = PRIVATE_RUN_ROOT / "matrix"
 CONFIRMATION_VARIABLE = "CONFIRM_EVALUATION_MATRIX"
 HOLDOUT_CONFIRMATION_VARIABLE = "CONFIRM_HOLDOUT_EVALUATION_MATRIX"
+STRUCTURED_OUTPUT_CONFIRMATION_VARIABLE = "CONFIRM_STRUCTURED_OUTPUT_EVALUATION"
 DEFAULT_MATRIX_NAME = "regression-v1"
 
 REGISTERED_MATRICES = {
@@ -46,6 +53,12 @@ REGISTERED_MATRICES = {
         "matrix_id": "focused-holdout-v1",
         "schema_version": "1.1.0",
         "confirmation_variable": HOLDOUT_CONFIRMATION_VARIABLE,
+    },
+    "structured-output-v2": {
+        "path": STRUCTURED_OUTPUT_MATRIX_PATH,
+        "matrix_id": "structured-output-reliability-v2",
+        "schema_version": "1.0.0",
+        "confirmation_variable": STRUCTURED_OUTPUT_CONFIRMATION_VARIABLE,
     },
 }
 
@@ -202,6 +215,60 @@ def _validate_regression_matrix(matrix: Mapping[str, Any]) -> None:
         seen.add(scenario_id)
     if seen != set(ALLOWED_SCENARIOS):
         raise MatrixError("evaluation matrix does not match the frozen scenario set")
+
+
+def _validate_structured_output_matrix(matrix: Mapping[str, Any]) -> None:
+    preregistration = _load_yaml(STRUCTURED_OUTPUT_PREREGISTRATION_PATH)
+    matrix_content = STRUCTURED_OUTPUT_MATRIX_PATH.read_bytes()
+    reuse = preregistration.get("reuse_disclosure", {})
+    execution = preregistration.get("execution", {})
+    if (
+        preregistration.get("schema_version") != "1.0.0"
+        or preregistration.get("evaluation_id") != matrix["matrix_id"]
+        or preregistration.get("status") != "frozen-unexecuted"
+        or reuse.get("source_matrix")
+        != "evaluation/structured-output-v2-matrix.yaml"
+        or reuse.get("source_matrix_id") != matrix["matrix_id"]
+        or reuse.get("source_matrix_sha256")
+        != hashlib.sha256(matrix_content).hexdigest()
+        or reuse.get("known_scenarios_reused") is not True
+        or reuse.get("combine_with_holdout_accuracy") is not False
+        or execution.get("planned_attempts") != 8
+        or execution.get("unique_scenarios") != 4
+        or execution.get("repetitions_per_scenario") != 2
+        or execution.get("explicit_confirmation_variable")
+        != STRUCTURED_OUTPUT_CONFIRMATION_VARIABLE
+    ):
+        raise MatrixError("structured-output v2 preregistration changed")
+    if matrix["repetitions_per_scenario"] != 2:
+        raise MatrixError("structured-output matrix must repeat each scenario twice")
+
+    scenarios = matrix["scenarios"]
+    if not isinstance(scenarios, list) or len(scenarios) != len(ALLOWED_SCENARIOS):
+        raise MatrixError("structured-output matrix must contain four scenarios")
+    required_scenario = {
+        "scenario_id",
+        "scenario_path",
+        "make_target",
+        "confirmation_variable",
+        "expected_outcome",
+    }
+    seen: set[str] = set()
+    for scenario in scenarios:
+        if not isinstance(scenario, dict) or set(scenario) != required_scenario:
+            raise MatrixError("structured-output matrix scenario is invalid")
+        scenario_id = scenario["scenario_id"]
+        boundary = ALLOWED_SCENARIOS.get(scenario_id)
+        if boundary is None or scenario_id in seen:
+            raise MatrixError("structured-output scenario is unregistered or duplicated")
+        if {key: scenario[key] for key in boundary} != boundary:
+            raise MatrixError("structured-output scenario boundary was modified")
+        scenario_document = _load_yaml(ROOT / scenario["scenario_path"])
+        if scenario_document.get("scenario_id") != scenario_id:
+            raise MatrixError("structured-output scenario_id differs from its file")
+        seen.add(scenario_id)
+    if seen != set(ALLOWED_SCENARIOS):
+        raise MatrixError("structured-output scenario set is incomplete")
 
 
 def _validate_holdout_preregistration(matrix: Mapping[str, Any]) -> None:
@@ -488,8 +555,10 @@ def load_matrix(matrix_name: str = DEFAULT_MATRIX_NAME) -> Mapping[str, Any]:
     _validate_execution_policy(matrix)
     if matrix_name == DEFAULT_MATRIX_NAME:
         _validate_regression_matrix(matrix)
-    else:
+    elif matrix_name == "holdout-v1":
         _validate_holdout_matrix(matrix)
+    else:
+        _validate_structured_output_matrix(matrix)
     return matrix
 
 

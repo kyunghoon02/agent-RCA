@@ -1,0 +1,32 @@
+schema_version: "1.0.0"
+matrix_id: structured-output-reliability-v2
+repetitions_per_scenario: 2
+
+execution:
+  schedule: rotated-round-robin
+  max_parallel: 1
+  failure_policy: stop-and-preserve
+  require_clean_worktree: true
+  require_head_matches_origin_main: true
+
+scenarios:
+  - scenario_id: scenario-checkoutservice-oom-chaos-mesh-change-stress
+    scenario_path: evaluation/scenarios/checkoutservice-oom.yaml
+    make_target: evaluate-checkout-oom
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-paymentservice-image-pull-change-normal
+    scenario_path: evaluation/scenarios/paymentservice-image-pull.yaml
+    make_target: evaluate-payment-image-pull
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-checkoutservice-missing-configmap-normal
+    scenario_path: evaluation/scenarios/checkoutservice-missing-configmap.yaml
+    make_target: evaluate-checkout-missing-configmap
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-frontend-no-fault-normal
+    scenario_path: evaluation/scenarios/frontend-no-fault-normal.yaml
+    make_target: evaluate-no-fault-control
+    confirmation_variable: CONFIRM_NO_FAULT_CONTROL
+    expected_outcome: ABSTAIN

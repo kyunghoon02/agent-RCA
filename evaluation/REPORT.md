@@ -224,9 +224,10 @@ instance/schema JSON Pointer, keyword와 오류 개수만 audit와 Viewer에 저
 구현·배포했다. SDK strict structured output은 명시적으로 고정했고 API가 지원하는 ID pattern과
 array bound를 frozen draft contract에 맞췄다. `uniqueItems`와 조건부 의미 규칙은 API schema에
 넣지 않고 독립 Evidence Gate가 계속 검증한다. 이 경계의 temporal reliability는
-`structured-output-v1-preregistration.yaml`에 기존 4개 regression scenario 20회 재사용으로
-사전 등록했으며 아직 실행하지 않았다. 이는 output contract 신뢰도 평가이지 새 사례 정확도나
-일반화 평가가 아니다. 새 fault,
+`structured-output-v1-preregistration.yaml`의 20회 계획은 3회 완료 후 운영자 요청으로
+중단했으며 결과값을 주장하지 않는다. 후속 `structured-output-v2-preregistration.yaml`은
+기존 4개 regression scenario를 2회씩 총 8회 재사용하도록 실행 전에 고정했다. 이는 output
+contract의 작은 표본 반복 검증이지 새 사례 정확도나 일반화 평가가 아니다. 새 fault,
 multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 preregistration과 수치 경계를
 사용하며 현재 결과와 합치지 않는다.
 
@@ -235,7 +236,7 @@ multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 prereg
 ```bash
 make validate-core
 make plan-structured-output-evaluation
-CONFIRM_EVALUATION_MATRIX="$(git rev-parse HEAD)" \
+CONFIRM_STRUCTURED_OUTPUT_EVALUATION="$(git rev-parse HEAD)" \
   make evaluate-structured-output-evaluation
 make score-structured-output-evaluation \
   EVALUATION_MATRIX_MANIFEST=evaluation/runs/private/matrix/<run>/manifest.json
