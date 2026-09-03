@@ -38,7 +38,8 @@ IncidentRepository/PostgreSQL
 - redaction/hash/provenance가 검증된 Evidence 최대 500개
 - Frozen Context 최대 50개
 - JSON/Markdown RCA Report 최대 50개
-- content-free Agent Run audit 최대 50개
+- content-free Agent Run audit 최대 50개. 새 draft schema 실패는 원본 draft, 잘못된 값과
+  validation message 없이 schema 이름, instance/schema JSON Pointer, keyword와 오류 개수만 포함
 - Incident lifecycle audit 최대 1,000개
 - 합성 timeline 최대 2,000개
 
@@ -53,6 +54,11 @@ Report generation을 시간순으로 합친다.
 값은 노출하지 않는다. 이 field가 없는 과거 payload는 pass를 알 수 없는 것으로 취급하며
 retry가 분리되었다고 표시하지 않는다. Evidence 원문 source로 추가 조회하거나 raw Secret,
 Agent prompt/reasoning trace 또는 Ground Truth를 반환하지 않는다.
+
+`GATE_DRAFT_CONTRACT_INVALID`인 새 Agent Run은 같은 제한된 contract failure 좌표를
+상세 payload와 `AGENT_RUN_COMPLETED` timeline event에 노출한다. 이 정보는 어떤 계약 위치에서
+fail-closed했는지 진단하기 위한 metadata이며 model content는 아니다. 이 필드가 없는 과거
+Agent Run은 사후에 원본 field를 추정하지 않는다.
 
 ## Work 상태
 

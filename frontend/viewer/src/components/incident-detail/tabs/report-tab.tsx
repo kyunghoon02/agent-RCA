@@ -435,6 +435,20 @@ function ReportUnavailable({
             Agent run <code className="font-mono">{failedRun.agent_run_id}</code> ended as{" "}
             <strong>{failedRun.status}</strong> ({failedRun.reason_code}). No conclusion was
             stored.
+            {failedRun.contract_failure && (
+              <>
+                <span className="mt-2 block font-mono text-xs">
+                  {failedRun.contract_failure.schema_name} · instance{" "}
+                  {failedRun.contract_failure.instance_pointer || "<root>"} · keyword{" "}
+                  {failedRun.contract_failure.keyword} · schema{" "}
+                  {failedRun.contract_failure.schema_pointer || "<root>"} ·{" "}
+                  {failedRun.contract_failure.error_count} error(s)
+                </span>
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  The raw model draft, invalid value, and validation message were not stored.
+                </span>
+              </>
+            )}
           </>
         }
       />

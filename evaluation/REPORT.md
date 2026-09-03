@@ -203,8 +203,11 @@ controlled-fault annotation 0과 변경 resource/image의 exact rollback을 확�
 Evidence 두 개를 검사·인용해 Evidence precision/recall은 1.0/1.0이었지만, 최종 draft가
 `agent-rca-draft.schema.json`을 만족하지 않아 Evidence Gate가
 `GATE_DRAFT_CONTRACT_INVALID`로 fail-closed했다. root cause Report는 저장되지 않았고 실패를
-재실행하거나 성공으로 재분류하지 않았다. 현재 감사 record는 원본 model draft와 schema
-validation path를 보존하지 않으므로 어느 field가 위반됐는지는 사후 특정할 수 없다.
+재실행하거나 성공으로 재분류하지 않았다. 당시 감사 record는 원본 model draft와 schema
+validation path를 보존하지 않아 어느 field가 위반됐는지는 사후 특정할 수 없다. 이후 runtime은
+새 contract failure에 한해 원본 draft, 잘못된 값과 validation message 없이 schema 이름,
+instance/schema JSON Pointer, keyword와 오류 개수만 audit와 Viewer에 저장하도록 보강했다.
+이 변경으로 과거 실패 원인이 복원되거나 해당 11/12 결과가 바뀌지는 않는다.
 
 ## Claim Boundary and Next Gate
 
@@ -217,9 +220,9 @@ validation path를 보존하지 않으므로 어느 field가 위반됐는지는 
 
 현재 CI는 regression과 Holdout matrix 계약, runner, scorer와 safety policy를 core test로
 검증한다. 실제 fault suite는 private runtime과 명시적 승인이 필요하므로 CI에서 자동
-실행하지 않고 수동 release gate로 유지한다. 다음 신뢰도 gate는 원본 draft를 저장하지
-않으면서 schema keyword와 JSON Pointer만 감사하는 privacy-safe contract failure telemetry를
-추가하고, strict structured output 경계를 별도 preregistration에서 검증하는 것이다. 새 fault,
+실행하지 않고 수동 release gate로 유지한다. privacy-safe contract failure telemetry는
+구현·배포했으며, 다음 신뢰도 gate는 strict structured output 경계를 별도 preregistration에서
+검증하는 것이다. 새 fault,
 multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 preregistration과 수치 경계를
 사용하며 현재 결과와 합치지 않는다.
 

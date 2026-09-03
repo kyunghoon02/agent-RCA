@@ -209,8 +209,9 @@ truth는 regression용 [Evaluation Preregistration](evaluation/preregistration.y
   한 번 실행한 결과다. 알려지지 않은 장애, multi-factor 원인, 다른 cluster topology와
   production 정확도는 검증하지 않았다.
 - temporal replication에서 Evidence 선택은 정확했지만 LLM draft schema 위반 1건이
-  fail-closed됐다. 감사 record는 원본 draft를 보존하지 않아 어떤 JSON field가 위반됐는지
-  사후 구분할 수 없다.
+  fail-closed됐다. 당시 감사 record에는 validation 좌표가 없어 그 과거 실패 field는 사후
+  구분할 수 없다. 현재 새 실패는 원본 draft나 값을 저장하지 않고 JSON/schema Pointer와
+  keyword만 audit와 Viewer에 남긴다. strict structured output 경계 평가는 아직 남아 있다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start

@@ -1,5 +1,9 @@
 """Domain errors raised by the incident core."""
 
+from __future__ import annotations
+
+from typing import Any, Mapping, Optional
+
 
 class IncidentPlatformError(RuntimeError):
     """Base class for incident-platform domain failures."""
@@ -16,6 +20,17 @@ class InvalidTransition(IncidentPlatformError):
 class ContractViolation(IncidentPlatformError):
     """A runtime object does not satisfy a frozen JSON contract."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        validation_detail: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.validation_detail = (
+            dict(validation_detail) if validation_detail is not None else None
+        )
+
 
 class EvidenceGateViolation(ContractViolation):
     """A safe, machine-readable Evidence Gate rejection.
@@ -24,8 +39,14 @@ class EvidenceGateViolation(ContractViolation):
     remains an exception detail and must not be copied into persisted audits.
     """
 
-    def __init__(self, reason_code: str, message: str) -> None:
-        super().__init__(message)
+    def __init__(
+        self,
+        reason_code: str,
+        message: str,
+        *,
+        validation_detail: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        super().__init__(message, validation_detail=validation_detail)
         self.reason_code = reason_code
 
 

@@ -152,18 +152,22 @@ export function buildTimeline(record: FixtureRecord): TimelineEvent[] {
     });
   }
   for (const run of record.agentRuns) {
+    const details: Record<string, unknown> = {
+      agent_run_id: run.agent_run_id,
+      status: run.status,
+      reason_code: run.reason_code,
+      model: run.model,
+      usage: { ...run.usage },
+    };
+    if (run.contract_failure) {
+      details.contract_failure = { ...run.contract_failure };
+    }
     events.push({
       occurred_at: run.completed_at,
       stage: "ANALYSIS",
       event_type: "AGENT_RUN_COMPLETED",
       evidence_ids: run.cited_evidence_ids.slice(0, 100),
-      details: {
-        agent_run_id: run.agent_run_id,
-        status: run.status,
-        reason_code: run.reason_code,
-        model: run.model,
-        usage: { ...run.usage },
-      },
+      details,
     });
   }
   for (const bundle of record.reports) {

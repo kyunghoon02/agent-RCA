@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
@@ -49,7 +49,10 @@ def validate_contract(schema_name: str, instance: Any) -> None:
         registry=registry,
         format_checker=FormatChecker(),
     )
-    errors = sorted(validator.iter_errors(instance), key=lambda item: list(item.path))
+    errors = sorted(
+        validator.iter_errors(instance),
+        key=lambda item: tuple(str(part) for part in item.absolute_path),
+    )
     if not errors:
         return
 
@@ -57,4 +60,24 @@ def validate_contract(schema_name: str, instance: Any) -> None:
         f"{'/'.join(str(part) for part in error.path) or '<root>'}: {error.message}"
         for error in errors
     )
-    raise ContractViolation(f"{schema_name} validation failed: {details}")
+    first = errors[0]
+    validation_detail = {
+        "schema_name": schema_name,
+        "instance_pointer": _json_pointer(first.absolute_path),
+        "schema_pointer": _json_pointer(first.absolute_schema_path),
+        "keyword": str(first.validator or "unknown")[:64],
+        "error_count": len(errors),
+    }
+    raise ContractViolation(
+        f"{schema_name} validation failed: {details}",
+        validation_detail=validation_detail,
+    )
+
+
+def _json_pointer(parts: Iterable[Any]) -> str:
+    """Return an RFC 6901 pointer without copying the referenced value."""
+
+    encoded = (
+        str(part).replace("~", "~0").replace("/", "~1") for part in parts
+    )
+    return "".join(f"/{part}" for part in encoded)

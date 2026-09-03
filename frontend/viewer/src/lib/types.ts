@@ -304,6 +304,14 @@ export type AgentRunStatus =
   | "MODEL_FAILED"
   | "BUDGET_EXHAUSTED";
 
+export interface AgentContractFailure {
+  schema_name: "agent-rca-draft.schema.json";
+  instance_pointer: string;
+  schema_pointer: string;
+  keyword: string;
+  error_count: number;
+}
+
 /** contracts/schemas/agent-run-audit.schema.json — content-free by contract. */
 export interface AgentRunAudit {
   schema_version: "1.0.0";
@@ -318,7 +326,27 @@ export interface AgentRunAudit {
     | "REPORT_ACCEPTED"
     | "EVIDENCE_GATE_REJECTED"
     | "MODEL_EXECUTION_FAILED"
-    | "MODEL_BUDGET_EXCEEDED";
+    | "MODEL_BUDGET_EXCEEDED"
+    | "GATE_DRAFT_CONTRACT_INVALID"
+    | "GATE_INCIDENT_MISMATCH"
+    | "GATE_CONTEXT_MISMATCH"
+    | "GATE_UNKNOWN_EVIDENCE_CITATION"
+    | "GATE_UNINSPECTED_EVIDENCE_CITATION"
+    | "GATE_UNKNOWN_REFERENCE_CITATION"
+    | "GATE_UNINSPECTED_REFERENCE_CITATION"
+    | "GATE_ENTITY_OUT_OF_SCOPE"
+    | "GATE_HYPOTHESIS_RANK_INVALID"
+    | "GATE_HYPOTHESIS_SUPPORT_MISSING"
+    | "GATE_ROOT_LEADING_MISMATCH"
+    | "GATE_PROOF_INSUFFICIENT"
+    | "GATE_CONCLUSIVE_ROOT_MISSING"
+    | "GATE_CONCLUSIVE_SUPPORT_MISSING"
+    | "GATE_CONTRADICTING_EVIDENCE"
+    | "GATE_CHANNELS_INSUFFICIENT"
+    | "GATE_CONTEXT_INCOMPLETE"
+    | "GATE_CONCLUSIVE_COLLECTOR_FAILURE"
+    | "GATE_ROOTLESS_REMEDIATION"
+    | "GATE_INVESTIGATION_BUDGET_EXCEEDED";
   started_at: string;
   completed_at: string;
   budget: {
@@ -348,6 +376,7 @@ export interface AgentRunAudit {
   inspected_reference_document_ids: string[];
   cited_evidence_ids: string[];
   cited_reference_document_ids: string[];
+  contract_failure?: AgentContractFailure;
 }
 
 export const TIMELINE_STAGES = [

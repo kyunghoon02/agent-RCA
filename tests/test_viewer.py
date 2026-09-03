@@ -11,6 +11,7 @@ from incident_platform.knowledge import BoundedKnowledgeRetriever
 from incident_platform.viewer import IncidentViewerQueryService, ViewerQueryPolicy
 
 from test_agent_rca import (
+    InvalidConfidenceFakeRunner,
     NOW,
     StaticKnowledgeRepository,
     SuccessfulFakeRunner,
@@ -153,6 +154,34 @@ class IncidentViewerQueryServiceTests(unittest.TestCase):
             sorted(item["occurred_at"] for item in detail["timeline"]),
         )
         self.assertFalse(any(detail["truncated"].values()))
+
+    def test_detail_exposes_safe_contract_failure_without_model_value(self) -> None:
+        repository, incident_id, context_id = prepared_repository()
+        with self.assertRaisesRegex(
+            ContractViolation, "frozen output contract"
+        ):
+            AgentRCAService(
+                repository,
+                BoundedKnowledgeRetriever(StaticKnowledgeRepository()),
+                InvalidConfidenceFakeRunner(),
+            ).run(incident_id, context_id=context_id, generated_at=NOW)
+
+        detail = IncidentViewerQueryService(repository).get_incident_detail(
+            incident_id
+        )
+
+        failure = detail["agent_runs"][0]["contract_failure"]
+        self.assertEqual(failure["instance_pointer"], "/hypotheses/0/confidence")
+        self.assertEqual(failure["keyword"], "maximum")
+        agent_event = next(
+            item
+            for item in detail["timeline"]
+            if item["event_type"] == "AGENT_RUN_COMPLETED"
+        )
+        self.assertEqual(agent_event["details"]["contract_failure"], failure)
+        serialized = json.dumps(detail, sort_keys=True)
+        self.assertNotIn("1.25", serialized)
+        self.assertNotIn("greater than the maximum", serialized)
 
     def test_list_supports_filters_search_and_keyset_cursor(self) -> None:
         repository, main_id, _ = prepared_repository()

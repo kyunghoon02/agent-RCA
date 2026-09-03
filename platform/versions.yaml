@@ -112,12 +112,12 @@ incident_platform:
   reconciler:
     schedule: "*/5 * * * *"
     concurrency_policy: Forbid
-    image_tag: runtime-00e018114583
-    image_digest: sha256:8d5d2bdda242207bd1640ae15910541d9b964f0339aa2890ecddb35f3b4b3d36
+    image_tag: runtime-25a2bff9d0c4
+    image_digest: sha256:6536e70e1fc7be2656ef7844f55f057ad44175022127632c6f4dacb138038071
   viewer_frontend:
     node_version: 22.17.1
-    image_tag: viewer-abc5599bc22d
-    image_digest: sha256:74f17740679e5a88250cd8a1f8d5b9e33a26f7a062dac501a9f4406af13054db
+    image_tag: viewer-9349e81b48ac
+    image_digest: sha256:0b3fc1bbd9b944729f24e3d7ff59880de2024bd01e6564f9f7b0d86d5b6fe33f
     service_type: ClusterIP
     port: 3100
   webhook:

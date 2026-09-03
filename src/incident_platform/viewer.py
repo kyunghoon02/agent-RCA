@@ -348,19 +348,24 @@ class IncidentViewerQueryService:
                 }
             )
         for run in agent_runs:
+            details = {
+                "agent_run_id": run["agent_run_id"],
+                "status": run["status"],
+                "reason_code": run["reason_code"],
+                "model": run["model"],
+                "usage": copy.deepcopy(dict(run["usage"])),
+            }
+            if run.get("contract_failure") is not None:
+                details["contract_failure"] = copy.deepcopy(
+                    dict(run["contract_failure"])
+                )
             events.append(
                 {
                     "occurred_at": run["completed_at"],
                     "stage": "ANALYSIS",
                     "event_type": "AGENT_RUN_COMPLETED",
                     "evidence_ids": list(run["cited_evidence_ids"][:100]),
-                    "details": {
-                        "agent_run_id": run["agent_run_id"],
-                        "status": run["status"],
-                        "reason_code": run["reason_code"],
-                        "model": run["model"],
-                        "usage": copy.deepcopy(dict(run["usage"])),
-                    },
+                    "details": details,
                 }
             )
         for report, _ in reports:

@@ -204,6 +204,36 @@ class UnsupportedCauseEvidenceFakeRunner(SuccessfulFakeRunner):
         )
 
 
+class InvalidConfidenceFakeRunner(SuccessfulFakeRunner):
+    """Return a draft with a value that must never be persisted in the audit."""
+
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        draft["hypotheses"][0]["confidence"] = 1.25
+        return AgentModelRun(
+            draft,
+            model_run.llm_calls,
+            model_run.input_tokens,
+            model_run.output_tokens,
+            model_run.total_tokens,
+        )
+
+
+class MissingDraftFieldsFakeRunner(SuccessfulFakeRunner):
+    """Return a structurally incomplete draft after bounded tool inspection."""
+
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        return AgentModelRun(
+            {"schema_version": "1.1.0"},
+            model_run.llm_calls,
+            model_run.input_tokens,
+            model_run.output_tokens,
+            model_run.total_tokens,
+        )
+
+
 class ImagePullFakeRunner(SuccessfulFakeRunner):
     def run(self, invocation: AgentInvocation) -> AgentModelRun:
         model_run = super().run(invocation)
@@ -499,6 +529,7 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertEqual(run.incident["status"], "REPORTED")
         self.assertEqual(run.report["status"], "conclusive")
         self.assertEqual(run.audit["status"], "SUCCEEDED")
+        self.assertNotIn("contract_failure", run.audit)
         self.assertEqual(len(run.audit["candidate_evidence_ids"]), 2)
         self.assertEqual(run.audit["budget"]["max_evidence_candidates"], 8)
         self.assertEqual(run.audit["input_projection"]["candidate_evidence"], 2)
@@ -511,6 +542,58 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertEqual(
             repository.get_agent_run(run.audit["agent_run_id"]), run.audit
         )
+
+    def test_invalid_draft_audit_records_only_safe_contract_coordinates(
+        self,
+    ) -> None:
+        repository, incident_id, context_id = prepared_repository()
+
+        with self.assertRaisesRegex(
+            ContractViolation, "frozen output contract"
+        ):
+            service(repository, InvalidConfidenceFakeRunner()).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(audit["status"], "GATE_REJECTED")
+        self.assertEqual(
+            audit["reason_code"], "GATE_DRAFT_CONTRACT_INVALID"
+        )
+        self.assertEqual(
+            audit["contract_failure"],
+            {
+                "schema_name": "agent-rca-draft.schema.json",
+                "instance_pointer": "/hypotheses/0/confidence",
+                "schema_pointer": (
+                    "/properties/hypotheses/items/properties/confidence/maximum"
+                ),
+                "keyword": "maximum",
+                "error_count": 1,
+            },
+        )
+        serialized = json.dumps(audit, sort_keys=True)
+        self.assertNotIn("1.25", serialized)
+        self.assertNotIn("greater than the maximum", serialized)
+
+    def test_structurally_invalid_draft_still_persists_failure_audit(self) -> None:
+        repository, incident_id, context_id = prepared_repository()
+
+        with self.assertRaisesRegex(
+            ContractViolation, "frozen output contract"
+        ):
+            service(repository, MissingDraftFieldsFakeRunner()).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(
+            audit["reason_code"], "GATE_DRAFT_CONTRACT_INVALID"
+        )
+        self.assertEqual(audit["contract_failure"]["instance_pointer"], "")
+        self.assertEqual(audit["contract_failure"]["keyword"], "required")
+        self.assertEqual(audit["cited_evidence_ids"], [])
+        self.assertEqual(audit["cited_reference_document_ids"], [])
 
     def test_evidence_gate_rejects_an_invented_evidence_id(self) -> None:
         repository, incident_id, context_id = prepared_repository()

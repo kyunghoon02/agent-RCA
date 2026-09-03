@@ -126,6 +126,39 @@ describe("Report unavailable states", () => {
       screen.getByText("No Report — the Incident ended as PARTIAL"),
     ).toBeInTheDocument();
   });
+
+  it("shows privacy-safe draft contract coordinates for a rejected run", async () => {
+    const { detail, work } = await load("inc-frontend-0003");
+    const failedRun = {
+      ...detail.agent_runs[0],
+      status: "GATE_REJECTED" as const,
+      reason_code: "GATE_DRAFT_CONTRACT_INVALID" as const,
+      contract_failure: {
+        schema_name: "agent-rca-draft.schema.json" as const,
+        instance_pointer: "/hypotheses/0/confidence",
+        schema_pointer: "/properties/hypotheses/items/properties/confidence/maximum",
+        keyword: "maximum",
+        error_count: 1,
+      },
+    };
+
+    render(
+      <ReportTab
+        incident={{ ...detail.incident, status: "FAILED" }}
+        reports={[]}
+        agentRuns={[failedRun]}
+        work={work}
+        onFocusEvidence={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/GATE_DRAFT_CONTRACT_INVALID/)).toBeInTheDocument();
+    expect(screen.getByText(/instance \/hypotheses\/0\/confidence/)).toBeInTheDocument();
+    expect(screen.getByText(/keyword maximum/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/raw model draft, invalid value, and validation message were not stored/i),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("Conclusive report", () => {

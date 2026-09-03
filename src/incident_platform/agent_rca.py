@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
@@ -887,6 +888,7 @@ class EvidenceGate:
             raise EvidenceGateViolation(
                 "GATE_DRAFT_CONTRACT_INVALID",
                 "Agent draft does not satisfy the frozen output contract",
+                validation_detail=error.validation_detail,
             ) from error
         if candidate["incident_id"] != context["incident_id"]:
             raise EvidenceGateViolation(
@@ -1056,6 +1058,49 @@ def _draft_citations(draft: Mapping[str, Any]) -> Tuple[set[str], set[str]]:
         evidence_ids.update(claim["supporting_evidence_ids"])
         evidence_ids.update(claim["contradicting_evidence_ids"])
         reference_ids.update(claim["reference_document_ids"])
+    return evidence_ids, reference_ids
+
+
+_EVIDENCE_ID_PATTERN = re.compile(r"^ev-[a-z0-9][a-z0-9-]{7,63}$")
+_REFERENCE_ID_PATTERN = re.compile(r"^ref-[a-z0-9][a-z0-9-]{7,63}$")
+
+
+def _failure_audit_citations(
+    draft: Mapping[str, Any],
+) -> Tuple[set[str], set[str]]:
+    """Extract only contract-valid IDs from a potentially malformed draft."""
+
+    claims: List[Mapping[str, Any]] = []
+    hypotheses = draft.get("hypotheses")
+    if isinstance(hypotheses, list):
+        claims.extend(item for item in hypotheses if isinstance(item, Mapping))
+    root_cause = draft.get("root_cause")
+    if isinstance(root_cause, Mapping):
+        claims.append(root_cause)
+
+    evidence_ids: set[str] = set()
+    reference_ids: set[str] = set()
+    for claim in claims:
+        for field_name in (
+            "supporting_evidence_ids",
+            "contradicting_evidence_ids",
+        ):
+            values = claim.get(field_name)
+            if isinstance(values, list):
+                evidence_ids.update(
+                    value
+                    for value in values
+                    if isinstance(value, str)
+                    and _EVIDENCE_ID_PATTERN.fullmatch(value)
+                )
+        values = claim.get("reference_document_ids")
+        if isinstance(values, list):
+            reference_ids.update(
+                value
+                for value in values
+                if isinstance(value, str)
+                and _REFERENCE_ID_PATTERN.fullmatch(value)
+            )
     return evidence_ids, reference_ids
 
 
@@ -1261,8 +1306,15 @@ class AgentRCAService:
         status: str,
         reason_code: str,
         investigation_view: AgentInvestigationView,
+        contract_failure: Optional[Mapping[str, Any]] = None,
+        tolerate_invalid_draft: bool = False,
     ) -> Dict[str, Any]:
-        cited_evidence, cited_references = _draft_citations(model_run.draft)
+        citation_extractor = (
+            _failure_audit_citations
+            if tolerate_invalid_draft
+            else _draft_citations
+        )
+        cited_evidence, cited_references = citation_extractor(model_run.draft)
         identity = {
             "context_id": context["context_id"],
             "knowledge_audit_id": knowledge.audit["audit_id"],
@@ -1305,6 +1357,8 @@ class AgentRCAService:
             "cited_evidence_ids": sorted(cited_evidence),
             "cited_reference_document_ids": sorted(cited_references),
         }
+        if contract_failure is not None:
+            audit["contract_failure"] = copy.deepcopy(dict(contract_failure))
         validate_contract("agent-run-audit.schema.json", audit)
         return audit
 
@@ -1363,6 +1417,13 @@ class AgentRCAService:
                 status=status,
                 reason_code=reason_code,
                 investigation_view=investigation_view,
+                contract_failure=(
+                    error.validation_detail
+                    if isinstance(error, EvidenceGateViolation)
+                    and error.reason_code == "GATE_DRAFT_CONTRACT_INVALID"
+                    else None
+                ),
+                tolerate_invalid_draft=True,
             )
             self._repository.store_agent_run(audit)
         except Exception:
