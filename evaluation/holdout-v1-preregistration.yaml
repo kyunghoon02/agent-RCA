@@ -1,0 +1,95 @@
+schema_version: "1.0.0"
+holdout_id: focused-holdout-v1
+registered_at: "2026-09-03"
+status: frozen-unexecuted
+
+purpose:
+  question: >-
+    Does the corrected bounded Agent generalize across unseen surface variants
+    of the same three registered single-cause families without increasing
+    false-positive diagnosis on no-fault controls?
+  source_regression_matrix: evaluation/matrix.yaml
+  source_regression_result: corrected-four-scenario-v1-20-runs
+
+isolation:
+  agent_runtime_receives_scenario_manifest: false
+  agent_runtime_receives_ground_truth: false
+  ground_truth_join: post-run-only
+  holdout_variants_used_for_agent_correction: false
+  prompt_examples_overlap_allowed: false
+  cause_revealing_alert_metadata_allowed: false
+
+scope:
+  new_root_cause_ids_allowed: false
+  new_providers_allowed: false
+  new_evidence_gate_rules_allowed: false
+  registered_root_cause_ids:
+    - kubernetes.container-oomkilled
+    - kubernetes.image-pull-failure
+    - kubernetes.missing-configmap
+  families:
+    - family_id: kubernetes.container-oomkilled
+      variants: 3
+      varied_dimensions:
+        - memory-limit
+        - stress-duration
+        - workload-rate
+        - workload-seed
+        - observation-window
+    - family_id: kubernetes.image-pull-failure
+      variants: 3
+      varied_dimensions:
+        - invalid-image-reference
+        - observation-window
+    - family_id: kubernetes.missing-configmap
+      variants: 3
+      varied_dimensions:
+        - required-configmap-name
+        - volume-name
+        - mount-path
+        - observation-window
+    - family_id: no-fault
+      variants: 3
+      varied_dimensions:
+        - workload-rate
+        - workload-seed
+        - baseline-window
+
+execution:
+  matrix_path: evaluation/holdout-v1-matrix.yaml
+  unique_scenarios: 12
+  repetitions_per_scenario: 1
+  max_parallel: 1
+  schedule: rotated-round-robin
+  failure_policy: stop-and-preserve
+  require_clean_worktree: true
+  require_head_matches_origin_main: true
+  explicit_confirmation_variable: CONFIRM_HOLDOUT_EVALUATION_MATRIX
+  scenario_sha256_required: true
+  agent_runtime_policy: reuse-pinned-corrected-regression-image-without-agent-code-change
+  agent_runtime_image_source: platform/versions.yaml
+
+primary_metrics:
+  - root_cause_top1_accuracy
+  - root_cause_top3_recall
+  - evidence_precision
+  - evidence_recall
+  - unsupported_evidence_citation_rate
+  - abstention_correctness
+
+acceptance_reporting:
+  fault_top1_denominator: 9
+  no_fault_abstention_denominator: 3
+  publish_every_attempt: true
+  publish_failures: true
+  publish_harness_failures_separately: true
+  unsupported_evidence_citations_must_be_zero: true
+  cost_status_without_frozen_rate_card: NOT_CALCULATED
+  production_generalization_claim_allowed: false
+
+post_result_policy:
+  change_thresholds_after_first_attempt: false
+  repair_agent_output: false
+  continue_v1_after_agent_prompt_or_gate_change: false
+  required_action_after_agent_prompt_or_gate_change: register-holdout-v2
+  combine_with_regression_v1_accuracy: false

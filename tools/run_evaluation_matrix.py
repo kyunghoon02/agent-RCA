@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Plan or execute the frozen four-scenario evaluation matrix safely."""
+"""Plan or execute a registered evaluation matrix safely."""
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -15,14 +16,38 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from incident_platform.contracts import validate_contract
+from incident_platform.errors import ContractViolation
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / "evaluation" / "matrix.yaml"
+HOLDOUT_MATRIX_PATH = ROOT / "evaluation" / "holdout-v1-matrix.yaml"
 PREREGISTRATION_PATH = ROOT / "evaluation" / "preregistration.yaml"
+HOLDOUT_PREREGISTRATION_PATH = (
+    ROOT / "evaluation" / "holdout-v1-preregistration.yaml"
+)
 VERSIONS_PATH = ROOT / "platform" / "versions.yaml"
 PRIVATE_RUN_ROOT = ROOT / "evaluation" / "runs" / "private"
 PRIVATE_MATRIX_ROOT = PRIVATE_RUN_ROOT / "matrix"
 CONFIRMATION_VARIABLE = "CONFIRM_EVALUATION_MATRIX"
+HOLDOUT_CONFIRMATION_VARIABLE = "CONFIRM_HOLDOUT_EVALUATION_MATRIX"
+DEFAULT_MATRIX_NAME = "regression-v1"
+
+REGISTERED_MATRICES = {
+    DEFAULT_MATRIX_NAME: {
+        "path": MATRIX_PATH,
+        "matrix_id": "focused-four-scenario-v1",
+        "schema_version": "1.0.0",
+        "confirmation_variable": CONFIRMATION_VARIABLE,
+    },
+    "holdout-v1": {
+        "path": HOLDOUT_MATRIX_PATH,
+        "matrix_id": "focused-holdout-v1",
+        "schema_version": "1.1.0",
+        "confirmation_variable": HOLDOUT_CONFIRMATION_VARIABLE,
+    },
+}
 
 ALLOWED_SCENARIOS = {
     "scenario-checkoutservice-oom-chaos-mesh-change-stress": {
@@ -46,6 +71,41 @@ ALLOWED_SCENARIOS = {
     "scenario-frontend-no-fault-normal": {
         "scenario_path": "evaluation/scenarios/frontend-no-fault-normal.yaml",
         "make_target": "evaluate-no-fault-control",
+        "confirmation_variable": "CONFIRM_NO_FAULT_CONTROL",
+        "expected_outcome": "ABSTAIN",
+    },
+}
+
+HOLDOUT_FAMILIES = {
+    "kubernetes.container-oomkilled": {
+        "scenario_prefix": "scenario-holdout-v1-checkout-oom-",
+        "schema": "holdout-controlled-oom-scenario.schema.json",
+        "make_target": "evaluate-checkout-oom",
+        "scenario_path_variable": "CHECKOUT_OOM_SCENARIO_PATH",
+        "confirmation_variable": "CONFIRM_CONTROLLED_FAULT",
+        "expected_outcome": "ROOT_CAUSE",
+    },
+    "kubernetes.image-pull-failure": {
+        "scenario_prefix": "scenario-holdout-v1-payment-image-pull-",
+        "schema": "holdout-controlled-image-pull-scenario.schema.json",
+        "make_target": "evaluate-payment-image-pull",
+        "scenario_path_variable": "PAYMENT_IMAGE_PULL_SCENARIO_PATH",
+        "confirmation_variable": "CONFIRM_CONTROLLED_FAULT",
+        "expected_outcome": "ROOT_CAUSE",
+    },
+    "kubernetes.missing-configmap": {
+        "scenario_prefix": "scenario-holdout-v1-checkout-missing-configmap-",
+        "schema": "holdout-controlled-missing-configmap-scenario.schema.json",
+        "make_target": "evaluate-checkout-missing-configmap",
+        "scenario_path_variable": "CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH",
+        "confirmation_variable": "CONFIRM_CONTROLLED_FAULT",
+        "expected_outcome": "ROOT_CAUSE",
+    },
+    "no-fault": {
+        "scenario_prefix": "scenario-holdout-v1-frontend-no-fault-",
+        "schema": "holdout-no-fault-control-scenario.schema.json",
+        "make_target": "evaluate-no-fault-control",
+        "scenario_path_variable": "NO_FAULT_CONTROL_SCENARIO_PATH",
         "confirmation_variable": "CONFIRM_NO_FAULT_CONTROL",
         "expected_outcome": "ABSTAIN",
     },
@@ -76,28 +136,25 @@ def _load_yaml(path: Path) -> Mapping[str, Any]:
     return value
 
 
-def load_matrix() -> Mapping[str, Any]:
-    matrix = _load_yaml(MATRIX_PATH)
-    required_top = {
-        "schema_version",
-        "matrix_id",
-        "repetitions_per_scenario",
-        "execution",
-        "scenarios",
-    }
-    if set(matrix) != required_top or matrix["schema_version"] != "1.0.0":
-        raise MatrixError("evaluation matrix has an unsupported structure")
-    if matrix["matrix_id"] != "focused-four-scenario-v1":
-        raise MatrixError("evaluation matrix_id is not frozen")
+def _matrix_registration(matrix_name: str) -> Mapping[str, Any]:
+    try:
+        return REGISTERED_MATRICES[matrix_name]
+    except KeyError as error:
+        raise MatrixError("evaluation matrix name is not registered") from error
 
-    preregistration = _load_yaml(PREREGISTRATION_PATH)
-    registered_repetitions = preregistration.get("dataset", {}).get(
-        "runtime_repetitions_per_scenario"
-    )
-    repetitions = matrix["repetitions_per_scenario"]
-    if repetitions != 5 or repetitions != registered_repetitions:
-        raise MatrixError("matrix repetitions differ from preregistration")
 
+def matrix_name_from_id(matrix_id: object) -> str:
+    matches = [
+        name
+        for name, registration in REGISTERED_MATRICES.items()
+        if registration["matrix_id"] == matrix_id
+    ]
+    if len(matches) != 1:
+        raise MatrixError("matrix manifest has an unregistered matrix_id")
+    return matches[0]
+
+
+def _validate_execution_policy(matrix: Mapping[str, Any]) -> None:
     execution = matrix["execution"]
     if not isinstance(execution, dict) or execution != {
         "schedule": "rotated-round-robin",
@@ -107,6 +164,16 @@ def load_matrix() -> Mapping[str, Any]:
         "require_head_matches_origin_main": True,
     }:
         raise MatrixError("evaluation matrix execution policy is not frozen")
+
+
+def _validate_regression_matrix(matrix: Mapping[str, Any]) -> None:
+    preregistration = _load_yaml(PREREGISTRATION_PATH)
+    registered_repetitions = preregistration.get("dataset", {}).get(
+        "runtime_repetitions_per_scenario"
+    )
+    repetitions = matrix["repetitions_per_scenario"]
+    if repetitions != 5 or repetitions != registered_repetitions:
+        raise MatrixError("matrix repetitions differ from preregistration")
 
     scenarios = matrix["scenarios"]
     if not isinstance(scenarios, list) or len(scenarios) != len(ALLOWED_SCENARIOS):
@@ -135,6 +202,294 @@ def load_matrix() -> Mapping[str, Any]:
         seen.add(scenario_id)
     if seen != set(ALLOWED_SCENARIOS):
         raise MatrixError("evaluation matrix does not match the frozen scenario set")
+
+
+def _validate_holdout_preregistration(matrix: Mapping[str, Any]) -> None:
+    preregistration = _load_yaml(HOLDOUT_PREREGISTRATION_PATH)
+    if (
+        preregistration.get("schema_version") != "1.0.0"
+        or preregistration.get("holdout_id") != matrix["matrix_id"]
+        or preregistration.get("status") != "frozen-unexecuted"
+    ):
+        raise MatrixError("holdout preregistration identity is not frozen")
+    if preregistration.get("isolation") != {
+        "agent_runtime_receives_scenario_manifest": False,
+        "agent_runtime_receives_ground_truth": False,
+        "ground_truth_join": "post-run-only",
+        "holdout_variants_used_for_agent_correction": False,
+        "prompt_examples_overlap_allowed": False,
+        "cause_revealing_alert_metadata_allowed": False,
+    }:
+        raise MatrixError("holdout Agent and Ground Truth isolation changed")
+
+    scope = preregistration.get("scope", {})
+    expected_families = [
+        {
+            "family_id": "kubernetes.container-oomkilled",
+            "variants": 3,
+            "varied_dimensions": [
+                "memory-limit",
+                "stress-duration",
+                "workload-rate",
+                "workload-seed",
+                "observation-window",
+            ],
+        },
+        {
+            "family_id": "kubernetes.image-pull-failure",
+            "variants": 3,
+            "varied_dimensions": [
+                "invalid-image-reference",
+                "observation-window",
+            ],
+        },
+        {
+            "family_id": "kubernetes.missing-configmap",
+            "variants": 3,
+            "varied_dimensions": [
+                "required-configmap-name",
+                "volume-name",
+                "mount-path",
+                "observation-window",
+            ],
+        },
+        {
+            "family_id": "no-fault",
+            "variants": 3,
+            "varied_dimensions": [
+                "workload-rate",
+                "workload-seed",
+                "baseline-window",
+            ],
+        },
+    ]
+    if (
+        scope.get("new_root_cause_ids_allowed") is not False
+        or scope.get("new_providers_allowed") is not False
+        or scope.get("new_evidence_gate_rules_allowed") is not False
+        or scope.get("registered_root_cause_ids")
+        != [
+            "kubernetes.container-oomkilled",
+            "kubernetes.image-pull-failure",
+            "kubernetes.missing-configmap",
+        ]
+        or scope.get("families") != expected_families
+    ):
+        raise MatrixError("holdout cause, Provider, or family scope changed")
+
+    execution = preregistration.get("execution", {})
+    if execution != {
+        "matrix_path": "evaluation/holdout-v1-matrix.yaml",
+        "unique_scenarios": 12,
+        "repetitions_per_scenario": 1,
+        "max_parallel": 1,
+        "schedule": "rotated-round-robin",
+        "failure_policy": "stop-and-preserve",
+        "require_clean_worktree": True,
+        "require_head_matches_origin_main": True,
+        "explicit_confirmation_variable": HOLDOUT_CONFIRMATION_VARIABLE,
+        "scenario_sha256_required": True,
+        "agent_runtime_policy": (
+            "reuse-pinned-corrected-regression-image-without-agent-code-change"
+        ),
+        "agent_runtime_image_source": "platform/versions.yaml",
+    }:
+        raise MatrixError("holdout execution preregistration changed")
+    if preregistration.get("post_result_policy") != {
+        "change_thresholds_after_first_attempt": False,
+        "repair_agent_output": False,
+        "continue_v1_after_agent_prompt_or_gate_change": False,
+        "required_action_after_agent_prompt_or_gate_change": "register-holdout-v2",
+        "combine_with_regression_v1_accuracy": False,
+    }:
+        raise MatrixError("holdout post-result policy changed")
+    if preregistration.get("primary_metrics") != [
+        "root_cause_top1_accuracy",
+        "root_cause_top3_recall",
+        "evidence_precision",
+        "evidence_recall",
+        "unsupported_evidence_citation_rate",
+        "abstention_correctness",
+    ] or preregistration.get("acceptance_reporting") != {
+        "fault_top1_denominator": 9,
+        "no_fault_abstention_denominator": 3,
+        "publish_every_attempt": True,
+        "publish_failures": True,
+        "publish_harness_failures_separately": True,
+        "unsupported_evidence_citations_must_be_zero": True,
+        "cost_status_without_frozen_rate_card": "NOT_CALCULATED",
+        "production_generalization_claim_allowed": False,
+    }:
+        raise MatrixError("holdout scoring and reporting boundary changed")
+
+
+def _validate_holdout_matrix(matrix: Mapping[str, Any]) -> None:
+    _validate_holdout_preregistration(matrix)
+    if matrix["repetitions_per_scenario"] != 1:
+        raise MatrixError("holdout matrix scenarios must each run exactly once")
+    scenarios = matrix["scenarios"]
+    if not isinstance(scenarios, list) or len(scenarios) != 12:
+        raise MatrixError("holdout matrix must contain exactly twelve scenarios")
+    required_scenario = {
+        "scenario_id",
+        "scenario_family",
+        "variant_id",
+        "scenario_path",
+        "scenario_sha256",
+        "make_target",
+        "scenario_path_variable",
+        "confirmation_variable",
+        "expected_outcome",
+    }
+    seen_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    variants_by_family = {family: set() for family in HOLDOUT_FAMILIES}
+    documents_by_family: dict[str, list[Mapping[str, Any]]] = {
+        family: [] for family in HOLDOUT_FAMILIES
+    }
+    alert_names: set[str] = set()
+    holdout_root = (ROOT / "evaluation" / "scenarios" / "holdout-v1").resolve()
+    for scenario in scenarios:
+        if not isinstance(scenario, dict) or set(scenario) != required_scenario:
+            raise MatrixError("holdout matrix scenario structure is invalid")
+        family = scenario["scenario_family"]
+        boundary = HOLDOUT_FAMILIES.get(family)
+        if boundary is None:
+            raise MatrixError("holdout matrix contains an unregistered family")
+        variant = scenario["variant_id"]
+        if variant not in {"a", "b", "c"}:
+            raise MatrixError("holdout variant_id must be a, b, or c")
+        scenario_id = scenario["scenario_id"]
+        if scenario_id != f"{boundary['scenario_prefix']}{variant}":
+            raise MatrixError("holdout scenario_id does not match family and variant")
+        for key in (
+            "make_target",
+            "scenario_path_variable",
+            "confirmation_variable",
+            "expected_outcome",
+        ):
+            if scenario[key] != boundary[key]:
+                raise MatrixError("holdout scenario execution boundary was modified")
+        try:
+            scenario_path = (ROOT / scenario["scenario_path"]).resolve(strict=True)
+            scenario_path.relative_to(holdout_root)
+        except (OSError, ValueError) as error:
+            raise MatrixError("holdout scenario path escapes its frozen root") from error
+        if scenario_id in seen_ids or scenario["scenario_path"] in seen_paths:
+            raise MatrixError("holdout scenario id or path is duplicated")
+        content = scenario_path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != scenario["scenario_sha256"]:
+            raise MatrixError("holdout scenario content differs from its frozen digest")
+        scenario_document = _load_yaml(scenario_path)
+        if scenario_document.get("scenario_id") != scenario_id:
+            raise MatrixError("holdout scenario_id does not match its file")
+        try:
+            validate_contract(str(boundary["schema"]), scenario_document)
+        except ContractViolation as error:
+            raise MatrixError("holdout scenario contract validation failed") from error
+        if family == "kubernetes.missing-configmap" and (
+            scenario_document["fault"]["configmap_name"]
+            != scenario_document["expected"]["evidence_predicates"][
+                "configmap_name"
+            ]
+        ):
+            raise MatrixError("holdout ConfigMap predicate differs from the injection")
+        if family == "no-fault" and (
+            scenario_document["workload"]["maximum_duration_seconds"]
+            <= scenario_document["workload"]["baseline_seconds"]
+        ):
+            raise MatrixError("holdout no-fault watchdog does not exceed its baseline")
+        alert_metadata = " ".join(
+            str(scenario_document["alert"][key])
+            for key in (
+                "name",
+                "summary",
+                "generator_url",
+                "verification_prefix",
+            )
+        ).lower()
+        alert_metadata = f"{alert_metadata} {scenario_document['workload']['synthetic_marker']}"
+        if any(
+            term in alert_metadata
+            for term in ("oom", "image", "pull", "missing", "configmap", "no-fault")
+        ):
+            raise MatrixError("holdout alert metadata reveals its expected cause")
+        alert_name = str(scenario_document["alert"]["name"])
+        if alert_name in alert_names:
+            raise MatrixError("holdout alert names must be unique neutral case IDs")
+        seen_ids.add(scenario_id)
+        seen_paths.add(scenario["scenario_path"])
+        variants_by_family[family].add(variant)
+        documents_by_family[family].append(scenario_document)
+        alert_names.add(alert_name)
+    if any(variants != {"a", "b", "c"} for variants in variants_by_family.values()):
+        raise MatrixError("holdout matrix must freeze variants a, b, and c per family")
+
+    varied_values = {
+        "kubernetes.container-oomkilled": [
+            (
+                document["fault"]["resources"]["limits"]["memory"],
+                document["fault"]["chaos_mesh"]["duration_seconds"],
+                document["workload"]["requests_per_second"],
+                document["workload"]["seed"],
+                document["fault"]["observation_seconds"],
+            )
+            for document in documents_by_family["kubernetes.container-oomkilled"]
+        ],
+        "kubernetes.image-pull-failure": [
+            (
+                document["fault"]["image"],
+                document["fault"]["observation_seconds"],
+            )
+            for document in documents_by_family["kubernetes.image-pull-failure"]
+        ],
+        "kubernetes.missing-configmap": [
+            (
+                document["fault"]["configmap_name"],
+                document["fault"]["volume_name"],
+                document["fault"]["mount_path"],
+                document["fault"]["observation_seconds"],
+            )
+            for document in documents_by_family["kubernetes.missing-configmap"]
+        ],
+        "no-fault": [
+            (
+                document["workload"]["requests_per_second"],
+                document["workload"]["seed"],
+                document["workload"]["baseline_seconds"],
+            )
+            for document in documents_by_family["no-fault"]
+        ],
+    }
+    if any(
+        len({values[index] for values in family_values}) != 3
+        for family_values in varied_values.values()
+        for index in range(len(family_values[0]))
+    ):
+        raise MatrixError("holdout declared variation dimensions are not distinct")
+
+
+def load_matrix(matrix_name: str = DEFAULT_MATRIX_NAME) -> Mapping[str, Any]:
+    registration = _matrix_registration(matrix_name)
+    matrix = _load_yaml(Path(registration["path"]))
+    required_top = {
+        "schema_version",
+        "matrix_id",
+        "repetitions_per_scenario",
+        "execution",
+        "scenarios",
+    }
+    if set(matrix) != required_top or matrix["schema_version"] != registration[
+        "schema_version"
+    ]:
+        raise MatrixError("evaluation matrix has an unsupported structure")
+    if matrix["matrix_id"] != registration["matrix_id"]:
+        raise MatrixError("evaluation matrix_id is not frozen")
+    _validate_execution_policy(matrix)
+    if matrix_name == DEFAULT_MATRIX_NAME:
+        _validate_regression_matrix(matrix)
+    else:
+        _validate_holdout_matrix(matrix)
     return matrix
 
 
@@ -147,16 +502,24 @@ def build_schedule(matrix: Mapping[str, Any]) -> list[dict[str, Any]]:
         rotated = scenarios[offset:] + scenarios[:offset]
         for scenario in rotated:
             attempt_number += 1
-            schedule.append(
-                {
-                    "attempt": attempt_number,
-                    "repetition": repetition,
-                    "scenario_id": scenario["scenario_id"],
-                    "make_target": scenario["make_target"],
-                    "expected_outcome": scenario["expected_outcome"],
-                    "confirmation_variable": scenario["confirmation_variable"],
-                }
-            )
+            planned = {
+                "attempt": attempt_number,
+                "repetition": repetition,
+                "scenario_id": scenario["scenario_id"],
+                "make_target": scenario["make_target"],
+                "expected_outcome": scenario["expected_outcome"],
+                "confirmation_variable": scenario["confirmation_variable"],
+            }
+            for key in (
+                "scenario_family",
+                "variant_id",
+                "scenario_path",
+                "scenario_sha256",
+                "scenario_path_variable",
+            ):
+                if key in scenario:
+                    planned[key] = scenario[key]
+            schedule.append(planned)
     return schedule
 
 
@@ -241,9 +604,10 @@ def _new_artifact(
     return None
 
 
-def _run_id(now: datetime, source_commit: str) -> str:
+def _run_id(now: datetime, source_commit: str, matrix_id: str) -> str:
     timestamp = now.strftime("%Y%m%dT%H%M%SZ")
-    return f"matrix-{timestamp}-{source_commit[:8]}"
+    prefix = "matrix" if matrix_id == "focused-four-scenario-v1" else matrix_id
+    return f"{prefix}-{timestamp}-{source_commit[:8]}"
 
 
 def _manifest_path_for_resume(value: str) -> Path:
@@ -274,9 +638,14 @@ def execute_matrix(
     resume: str | None,
 ) -> Path:
     source = _source_snapshot(require_clean=True)
-    if os.environ.get(CONFIRMATION_VARIABLE) != source["source_commit"]:
+    confirmation_variable = str(
+        _matrix_registration(matrix_name_from_id(matrix["matrix_id"]))[
+            "confirmation_variable"
+        ]
+    )
+    if os.environ.get(confirmation_variable) != source["source_commit"]:
         raise MatrixError(
-            f"set {CONFIRMATION_VARIABLE} to the full current HEAD commit"
+            f"set {confirmation_variable} to the full current HEAD commit"
         )
 
     PRIVATE_MATRIX_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -307,7 +676,9 @@ def execute_matrix(
             manifest["resumed_at"] = _format_time(_utc_now())
         else:
             started_at = _utc_now()
-            run_id = _run_id(started_at, source["source_commit"])
+            run_id = _run_id(
+                started_at, source["source_commit"], str(matrix["matrix_id"])
+            )
             run_directory = PRIVATE_MATRIX_ROOT / run_id
             try:
                 run_directory.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -376,6 +747,10 @@ def execute_matrix(
             before_runtime = set(PRIVATE_RUN_ROOT.glob("*.agent.runtime.json"))
             environment = os.environ.copy()
             environment[str(planned["confirmation_variable"])] = "yes"
+            if "scenario_path_variable" in planned:
+                environment[str(planned["scenario_path_variable"])] = str(
+                    planned["scenario_path"]
+                )
             return_code: int | None = None
             error_code: str | None = None
             descriptor = os.open(
@@ -463,7 +838,13 @@ def execute_matrix(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Plan or execute the frozen four-scenario evaluation matrix."
+        description="Plan or execute a registered evaluation matrix."
+    )
+    parser.add_argument(
+        "--matrix",
+        choices=tuple(REGISTERED_MATRICES),
+        default=DEFAULT_MATRIX_NAME,
+        help="registered matrix to plan or execute",
     )
     parser.add_argument(
         "--execute",
@@ -482,7 +863,7 @@ def main() -> int:
     try:
         if arguments.resume and not arguments.execute:
             raise MatrixError("--resume requires --execute")
-        matrix = load_matrix()
+        matrix = load_matrix(arguments.matrix)
         schedule = build_schedule(matrix)
         source = _source_snapshot(require_clean=False)
         if not arguments.execute:

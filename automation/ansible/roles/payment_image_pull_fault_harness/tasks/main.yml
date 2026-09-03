@@ -1,4 +1,19 @@
 ---
+- name: Require a registered payment image-pull scenario
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/validate_evaluation_scenario.py
+      - --scenario
+      - "{{ payment_image_pull_scenario_path }}"
+      - --family
+      - kubernetes.image-pull-failure
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Require explicit controlled image-pull authorization
   ansible.builtin.assert:
     that:
@@ -44,7 +59,8 @@
       | selectattr('name', 'equalto', payment_image_pull_scenario.target.container)
       | first }}
     payment_image_pull_id: >-
-      payment-image-pull-{{ ansible_facts.date_time.epoch }}
+      {{ payment_image_pull_scenario.alert.verification_prefix
+      | default('payment-image-pull') }}-{{ ansible_facts.date_time.epoch }}
     payment_image_pull_lock_name: agent-rca-payment-image-pull-lock
     payment_image_pull_watchdog_log: /tmp/agent-rca-payment-image-pull-watchdog.log
     payment_image_pull_lock_created: false
@@ -247,14 +263,18 @@
       vars:
         controlled_fault_runtime:
           run_id: "{{ payment_image_pull_id }}"
-          scenario_path: evaluation/scenarios/paymentservice-image-pull.yaml
+          scenario_path: "{{ payment_image_pull_scenario_path }}"
           alert:
             name: "{{ payment_image_pull_scenario.alert.name }}"
             service: "{{ payment_image_pull_scenario.alert.service }}"
             rca_enabled: "{{ payment_image_pull_scenario.alert.rca_enabled }}"
             agent_rca_enabled: "{{ payment_image_pull_scenario.alert.agent_rca_enabled }}"
-          summary: Controlled paymentservice image pull evaluation
-          generator_url: https://prometheus.invalid/controlled-payment-image-pull
+          summary: >-
+            {{ payment_image_pull_scenario.alert.summary
+            | default('Controlled paymentservice image pull evaluation') }}
+          generator_url: >-
+            {{ payment_image_pull_scenario.alert.generator_url
+            | default('https://prometheus.invalid/controlled-payment-image-pull') }}
 
   always:
     - name: Restore the exact paymentservice image
@@ -295,8 +315,12 @@
         tasks_from: resolve-alert
       vars:
         controlled_fault_runtime:
-          summary: Controlled paymentservice image pull evaluation
-          generator_url: https://prometheus.invalid/controlled-payment-image-pull
+          summary: >-
+            {{ payment_image_pull_scenario.alert.summary
+            | default('Controlled paymentservice image pull evaluation') }}
+          generator_url: >-
+            {{ payment_image_pull_scenario.alert.generator_url
+            | default('https://prometheus.invalid/controlled-payment-image-pull') }}
 
     - name: Stop the exact-image restoration watchdog
       ansible.builtin.shell: |

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:holdout-no-fault-control-scenario",
+  "title": "Holdout No-fault Control Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "change",
+    "workload",
+    "alert",
+    "expected",
+    "postconditions"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-holdout-v1-frontend-no-fault-[abc]$"
+    },
+    "environment": {
+      "const": {"class": "development", "single_node_allowed": true}
+    },
+    "target": {
+      "const": {
+        "namespace": "online-boutique",
+        "kind": "Deployment",
+        "name": "frontend",
+        "container": "server"
+      }
+    },
+    "baseline": {
+      "const": {
+        "all_workloads_ready": true,
+        "no_active_faults": true,
+        "preserve_deployment_snapshot": true,
+        "preserve_pod_snapshot": true,
+        "restart_delta_maximum": 0
+      }
+    },
+    "change": {"const": {"type": "none"}},
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runner",
+        "profile",
+        "seed",
+        "requests_per_second",
+        "baseline_seconds",
+        "maximum_duration_seconds",
+        "synthetic_marker"
+      ],
+      "properties": {
+        "runner": {"const": "external-controller"},
+        "profile": {"const": "normal"},
+        "seed": {"enum": [145, 245, 345]},
+        "requests_per_second": {"enum": [1, 3, 5]},
+        "baseline_seconds": {"enum": [900, 1020, 1140]},
+        "maximum_duration_seconds": {"enum": [1020, 1140, 1200]},
+        "synthetic_marker": {
+          "type": "string",
+          "pattern": "^agent-rca-holdout-v1-case-(04|07|10)$"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "service",
+        "severity",
+        "summary",
+        "generator_url",
+        "verification_prefix",
+        "rca_enabled",
+        "agent_rca_enabled"
+      ],
+      "properties": {
+        "name": {"type": "string", "pattern": "^AgentRCAHoldoutV1Case(04|07|10)$"},
+        "service": {"const": "frontend"},
+        "severity": {"const": "critical"},
+        "summary": {"const": "Synthetic service health evaluation"},
+        "generator_url": {"const": "https://prometheus.invalid/holdout-v1"},
+        "verification_prefix": {
+          "type": "string",
+          "pattern": "^holdout-v1-case-(04|07|10)$"
+        },
+        "rca_enabled": {"const": "true"},
+        "agent_rca_enabled": {"const": "true"}
+      }
+    },
+    "expected": {
+      "const": {
+        "outcome": "ABSTAIN",
+        "root_cause_ids": [],
+        "deterministic_rules_not_applicable": true,
+        "detected_deployment_changes_maximum": 0,
+        "deployment_no_change_evidence_minimum": 1,
+        "collector_failures_maximum": 0,
+        "minimum_context_completeness": 0.7
+      }
+    },
+    "postconditions": {
+      "const": {
+        "all_workloads_ready": true,
+        "active_fault_count": 0,
+        "deployment_snapshot_unchanged": true,
+        "pod_snapshot_unchanged": true,
+        "restart_delta_maximum": 0,
+        "successful_responses_minimum": 1,
+        "successful_response_ratio_minimum": 0.99,
+        "transport_error_ratio_maximum": 0.01
+      }
+    }
+  }
+}

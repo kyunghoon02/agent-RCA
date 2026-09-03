@@ -1,4 +1,19 @@
 ---
+- name: Require a registered checkout missing-ConfigMap scenario
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/validate_evaluation_scenario.py
+      - --scenario
+      - "{{ checkout_missing_configmap_scenario_path }}"
+      - --family
+      - kubernetes.missing-configmap
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Require explicit controlled missing-ConfigMap authorization
   ansible.builtin.assert:
     that:
@@ -62,7 +77,8 @@
       | selectattr('name', 'equalto', checkout_missing_configmap_scenario.target.container)
       | first }}
     checkout_missing_configmap_id: >-
-      checkout-missing-configmap-{{ ansible_facts.date_time.epoch }}
+      {{ checkout_missing_configmap_scenario.alert.verification_prefix
+      | default('checkout-missing-configmap') }}-{{ ansible_facts.date_time.epoch }}
     checkout_missing_configmap_lock_name: agent-rca-missing-configmap-lock
     checkout_missing_configmap_watchdog_log: /tmp/agent-rca-missing-configmap-watchdog.log
     checkout_missing_configmap_cleanup_script: /tmp/agent-rca-missing-configmap-cleanup.sh
@@ -343,14 +359,18 @@
       vars:
         controlled_fault_runtime:
           run_id: "{{ checkout_missing_configmap_id }}"
-          scenario_path: evaluation/scenarios/checkoutservice-missing-configmap.yaml
+          scenario_path: "{{ checkout_missing_configmap_scenario_path }}"
           alert:
             name: "{{ checkout_missing_configmap_scenario.alert.name }}"
             service: "{{ checkout_missing_configmap_scenario.alert.service }}"
             rca_enabled: "{{ checkout_missing_configmap_scenario.alert.rca_enabled }}"
             agent_rca_enabled: "{{ checkout_missing_configmap_scenario.alert.agent_rca_enabled }}"
-          summary: Controlled checkoutservice missing ConfigMap evaluation
-          generator_url: https://prometheus.invalid/controlled-missing-configmap
+          summary: >-
+            {{ checkout_missing_configmap_scenario.alert.summary
+            | default('Controlled checkoutservice missing ConfigMap evaluation') }}
+          generator_url: >-
+            {{ checkout_missing_configmap_scenario.alert.generator_url
+            | default('https://prometheus.invalid/controlled-missing-configmap') }}
 
   always:
     - name: Remove the exact missing ConfigMap volume reference
@@ -387,8 +407,12 @@
         tasks_from: resolve-alert
       vars:
         controlled_fault_runtime:
-          summary: Controlled checkoutservice missing ConfigMap evaluation
-          generator_url: https://prometheus.invalid/controlled-missing-configmap
+          summary: >-
+            {{ checkout_missing_configmap_scenario.alert.summary
+            | default('Controlled checkoutservice missing ConfigMap evaluation') }}
+          generator_url: >-
+            {{ checkout_missing_configmap_scenario.alert.generator_url
+            | default('https://prometheus.invalid/controlled-missing-configmap') }}
 
     - name: Stop the missing-ConfigMap restoration watchdog
       ansible.builtin.shell: |

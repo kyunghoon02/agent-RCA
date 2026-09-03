@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:holdout-controlled-oom-scenario",
+  "title": "Holdout Controlled OOM Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "fault",
+    "workload",
+    "alert",
+    "expected",
+    "restoration"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-holdout-v1-checkout-oom-[abc]$"
+    },
+    "environment": {
+      "const": {"class": "development", "single_node_allowed": true}
+    },
+    "target": {
+      "const": {
+        "namespace": "online-boutique",
+        "kind": "Deployment",
+        "name": "checkoutservice",
+        "container": "server"
+      }
+    },
+    "baseline": {
+      "const": {
+        "requests": {"cpu": "100m", "memory": "64Mi"},
+        "limits": {"cpu": "200m", "memory": "128Mi"}
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "resources",
+        "chaos_mesh",
+        "observation_seconds",
+        "pre_injection_metric_settle_seconds",
+        "maximum_active_seconds"
+      ],
+      "properties": {
+        "type": {"const": "resource-policy"},
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requests", "limits"],
+          "properties": {
+            "requests": {"const": {"cpu": "100m", "memory": "64Mi"}},
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cpu", "memory"],
+              "properties": {
+                "cpu": {"const": "200m"},
+                "memory": {"enum": ["88Mi", "104Mi", "112Mi"]}
+              }
+            }
+          }
+        },
+        "chaos_mesh": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["api_version", "kind", "mode", "duration_seconds", "memory"],
+          "properties": {
+            "api_version": {"const": "chaos-mesh.org/v1alpha1"},
+            "kind": {"const": "StressChaos"},
+            "mode": {"const": "all"},
+            "duration_seconds": {"enum": [90, 150, 180]},
+            "memory": {
+              "const": {"workers": 1, "size": "128MiB", "oom_score_adj": -1000}
+            }
+          }
+        },
+        "observation_seconds": {"enum": [60, 90, 120]},
+        "pre_injection_metric_settle_seconds": {"enum": [60, 75, 90]},
+        "maximum_active_seconds": {"const": 300}
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runner",
+        "profile",
+        "seed",
+        "requests_per_second",
+        "maximum_duration_seconds",
+        "synthetic_marker"
+      ],
+      "properties": {
+        "runner": {"const": "external-controller"},
+        "profile": {"const": "path-weighted"},
+        "seed": {"enum": [142, 242, 342]},
+        "requests_per_second": {"enum": [4, 5, 7]},
+        "maximum_duration_seconds": {"const": 300},
+        "synthetic_marker": {
+          "type": "string",
+          "pattern": "^agent-rca-holdout-v1-case-(01|08|11)$"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "service",
+        "severity",
+        "summary",
+        "generator_url",
+        "verification_prefix",
+        "rca_enabled",
+        "agent_rca_enabled"
+      ],
+      "properties": {
+        "name": {"type": "string", "pattern": "^AgentRCAHoldoutV1Case(01|08|11)$"},
+        "service": {"const": "checkoutservice"},
+        "severity": {"const": "critical"},
+        "summary": {"const": "Synthetic service health evaluation"},
+        "generator_url": {"const": "https://prometheus.invalid/holdout-v1"},
+        "verification_prefix": {
+          "type": "string",
+          "pattern": "^holdout-v1-case-(01|08|11)$"
+        },
+        "rca_enabled": {"const": "true"},
+        "agent_rca_enabled": {"const": "true"}
+      }
+    },
+    "expected": {
+      "const": {
+        "outcome": "ROOT_CAUSE",
+        "root_cause_ids": ["kubernetes.container-oomkilled"],
+        "same_pod_uid_required": true,
+        "evidence_predicates": {
+          "oom_signature": "kubernetes-oomkilled-or-loki-kernel-memcg",
+          "restart_count_delta_minimum": 1,
+          "memory_metric_required": true
+        }
+      }
+    },
+    "restoration": {
+      "const": {
+        "restore_exact_baseline": true,
+        "ready_replicas": 1,
+        "fresh_pod_restart_count": 0
+      }
+    }
+  }
+}

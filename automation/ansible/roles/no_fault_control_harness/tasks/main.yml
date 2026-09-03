@@ -1,4 +1,19 @@
 ---
+- name: Require a registered no-fault control scenario
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/validate_evaluation_scenario.py
+      - --scenario
+      - "{{ no_fault_control_scenario_path }}"
+      - --family
+      - no-fault
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Require explicit no-fault control authorization
   ansible.builtin.assert:
     that:
@@ -17,7 +32,9 @@
 
 - name: Define bounded no-fault control runtime paths
   ansible.builtin.set_fact:
-    no_fault_control_id: "no-fault-{{ ansible_facts.date_time.epoch }}"
+    no_fault_control_id: >-
+      {{ no_fault_control_scenario.alert.verification_prefix
+      | default('no-fault') }}-{{ ansible_facts.date_time.epoch }}
     no_fault_control_lock_name: agent-rca-no-fault-control-lock
     no_fault_control_repo_root: "{{ playbook_dir }}/../../.."
     no_fault_control_frontend_port: 18281
@@ -411,7 +428,7 @@
           alertname: "{{ no_fault_control_scenario.alert.name }}"
           cluster_id: "{{ cluster_name }}"
           namespace: "{{ online_boutique_namespace }}"
-          severity: warning
+          severity: "{{ no_fault_control_scenario.alert.severity | default('warning') }}"
           service: "{{ no_fault_control_scenario.alert.service }}"
           rca_enabled: "{{ no_fault_control_scenario.alert.rca_enabled }}"
           agent_rca_enabled: "{{ no_fault_control_scenario.alert.agent_rca_enabled }}"
@@ -428,11 +445,13 @@
           {{ [{
             'labels': no_fault_control_alert_labels,
             'annotations': {
-              'summary': 'Synthetic normal-traffic no-fault control'
+              'summary': no_fault_control_scenario.alert.summary
+                | default('Synthetic normal-traffic no-fault control')
             },
             'startsAt': no_fault_control_alert_times.starts_at,
             'endsAt': no_fault_control_alert_times.ends_at,
-            'generatorURL': 'https://prometheus.invalid/no-fault-control'
+            'generatorURL': no_fault_control_scenario.alert.generator_url
+              | default('https://prometheus.invalid/no-fault-control')
           }] }}
         status_code: 200
       delegate_to: "{{ groups['observability_domain'][0] }}"
@@ -844,7 +863,7 @@
           - .venv/bin/python
           - tools/build_controlled_fault_evaluation.py
           - --scenario
-          - evaluation/scenarios/frontend-no-fault-normal.yaml
+          - "{{ no_fault_control_scenario_path }}"
           - --require-agent-outcome
         chdir: "{{ no_fault_control_repo_root }}"
         stdin: >-
@@ -915,11 +934,13 @@
           {{ [{
             'labels': no_fault_control_alert_labels,
             'annotations': {
-              'summary': 'Synthetic normal-traffic no-fault control'
+              'summary': no_fault_control_scenario.alert.summary
+                | default('Synthetic normal-traffic no-fault control')
             },
             'startsAt': no_fault_control_alert_times.starts_at,
             'endsAt': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'),
-            'generatorURL': 'https://prometheus.invalid/no-fault-control'
+            'generatorURL': no_fault_control_scenario.alert.generator_url
+              | default('https://prometheus.invalid/no-fault-control')
           }] }}
         status_code: 200
       delegate_to: "{{ groups['observability_domain'][0] }}"

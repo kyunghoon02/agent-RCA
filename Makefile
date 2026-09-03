@@ -11,6 +11,11 @@ RCA_PREDICTION ?=
 EVIDENCE_GATE_POLICY ?= oom-signature-union-restart-v3
 EVALUATION_MATRIX_MANIFEST ?=
 EVALUATION_MATRIX_RESUME ?=
+HOLDOUT_EVALUATION_MATRIX_RESUME ?=
+CHECKOUT_OOM_SCENARIO_PATH ?= evaluation/scenarios/checkoutservice-oom.yaml
+PAYMENT_IMAGE_PULL_SCENARIO_PATH ?= evaluation/scenarios/paymentservice-image-pull.yaml
+CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH ?= evaluation/scenarios/checkoutservice-missing-configmap.yaml
+NO_FAULT_CONTROL_SCENARIO_PATH ?= evaluation/scenarios/frontend-no-fault-normal.yaml
 
 .PHONY: bootstrap-dev validate-docs validate-phase0 test-core validate-core smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \
@@ -30,7 +35,7 @@ EVALUATION_MATRIX_RESUME ?=
 	evaluate-no-fault-control \
 	deploy-three-domain smoke-krca-coverage summarize-checkout-oom \
 	verify-evaluation-runtime plan-evaluation-matrix evaluate-matrix \
-	summarize-evaluation-matrix
+	plan-holdout-matrix evaluate-holdout-matrix summarize-evaluation-matrix
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -307,7 +312,8 @@ evaluate-checkout-oom:
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/evaluate-checkout-oom.yml \
 		--extra-vars confirm_controlled_fault=yes \
-		--extra-vars controlled_fault_environment=development
+		--extra-vars controlled_fault_environment=development \
+		--extra-vars checkout_oom_scenario_path="$(CHECKOUT_OOM_SCENARIO_PATH)"
 
 evaluate-payment-image-pull:
 	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
@@ -318,7 +324,8 @@ evaluate-payment-image-pull:
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/evaluate-payment-image-pull.yml \
 		--extra-vars confirm_controlled_fault=yes \
-		--extra-vars controlled_fault_environment=development
+		--extra-vars controlled_fault_environment=development \
+		--extra-vars payment_image_pull_scenario_path="$(PAYMENT_IMAGE_PULL_SCENARIO_PATH)"
 
 evaluate-checkout-missing-configmap:
 	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
@@ -329,7 +336,8 @@ evaluate-checkout-missing-configmap:
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/evaluate-checkout-missing-configmap.yml \
 		--extra-vars confirm_controlled_fault=yes \
-		--extra-vars controlled_fault_environment=development
+		--extra-vars controlled_fault_environment=development \
+		--extra-vars checkout_missing_configmap_scenario_path="$(CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH)"
 
 evaluate-no-fault-control:
 	@test "$(CONFIRM_NO_FAULT_CONTROL)" = "yes" || \
@@ -340,7 +348,8 @@ evaluate-no-fault-control:
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/evaluate-no-fault-control.yml \
 		--extra-vars confirm_no_fault_control=yes \
-		--extra-vars controlled_fault_environment=development
+		--extra-vars controlled_fault_environment=development \
+		--extra-vars no_fault_control_scenario_path="$(NO_FAULT_CONTROL_SCENARIO_PATH)"
 
 summarize-checkout-oom:
 	PYTHONPATH=src .venv/bin/python tools/summarize_controlled_fault_observations.py \
@@ -358,6 +367,12 @@ plan-evaluation-matrix:
 
 evaluate-matrix:
 	PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --execute $(if $(strip $(EVALUATION_MATRIX_RESUME)),--resume "$(EVALUATION_MATRIX_RESUME)",)
+
+plan-holdout-matrix:
+	@PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --matrix holdout-v1
+
+evaluate-holdout-matrix:
+	PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py --matrix holdout-v1 --execute $(if $(strip $(HOLDOUT_EVALUATION_MATRIX_RESUME)),--resume "$(HOLDOUT_EVALUATION_MATRIX_RESUME)",)
 
 summarize-evaluation-matrix:
 	@test -n "$(EVALUATION_MATRIX_MANIFEST)" || \

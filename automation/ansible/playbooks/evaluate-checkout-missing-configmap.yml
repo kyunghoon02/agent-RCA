@@ -8,10 +8,11 @@
     - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
     - ../../../platform/versions.yaml
   vars:
+    checkout_missing_configmap_scenario_path: evaluation/scenarios/checkoutservice-missing-configmap.yaml
     checkout_missing_configmap_scenario: >-
       {{ lookup(
         'file',
-        playbook_dir + '/../../../evaluation/scenarios/checkoutservice-missing-configmap.yaml'
+        playbook_dir + '/../../../' + checkout_missing_configmap_scenario_path
       ) | from_yaml }}
 
   roles:

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:holdout-no-fault-control-attestation",
+  "title": "Holdout No-fault Control Attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "observed_at",
+    "observation_seconds",
+    "change_applied",
+    "active_fault_count",
+    "all_workloads_ready",
+    "deployment_snapshot_sha256_before",
+    "deployment_snapshot_sha256_after",
+    "pod_snapshot_sha256_before",
+    "pod_snapshot_sha256_after",
+    "restart_delta_maximum",
+    "workload"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.2.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-holdout-v1-frontend-no-fault-[abc]$"
+    },
+    "observed_at": {"type": "string", "format": "date-time"},
+    "observation_seconds": {"enum": [900, 1020, 1140]},
+    "change_applied": {"const": false},
+    "active_fault_count": {"const": 0},
+    "all_workloads_ready": {"const": true},
+    "deployment_snapshot_sha256_before": {"$ref": "#/$defs/sha256"},
+    "deployment_snapshot_sha256_after": {"$ref": "#/$defs/sha256"},
+    "pod_snapshot_sha256_before": {"$ref": "#/$defs/sha256"},
+    "pod_snapshot_sha256_after": {"$ref": "#/$defs/sha256"},
+    "restart_delta_maximum": {"const": 0},
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "seed",
+        "operations",
+        "request_attempts",
+        "successful_responses",
+        "transport_errors"
+      ],
+      "properties": {
+        "profile": {"const": "normal"},
+        "seed": {"enum": [145, 245, 345]},
+        "operations": {"type": "integer", "minimum": 1},
+        "request_attempts": {"type": "integer", "minimum": 1},
+        "successful_responses": {"type": "integer", "minimum": 1},
+        "transport_errors": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

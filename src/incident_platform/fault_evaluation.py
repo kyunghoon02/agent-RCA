@@ -506,28 +506,63 @@ def build_controlled_fault_evaluation(
 ) -> Dict[str, Dict[str, Any]]:
     """Build Ground Truth plus separate baseline and Agent score artifacts."""
 
+    scenario_id = scenario.get("scenario_id")
+    holdout_v1 = isinstance(scenario_id, str) and scenario_id.startswith(
+        "scenario-holdout-v1-"
+    )
     expected_causes = tuple(
         scenario.get("expected", {}).get("root_cause_ids", ())
     )
     if expected_causes == ("kubernetes.container-oomkilled",):
         scenario_kind = "oom"
-        validate_contract("controlled-fault-scenario.schema.json", scenario)
+        validate_contract(
+            (
+                "holdout-controlled-oom-scenario.schema.json"
+                if holdout_v1
+                else "controlled-fault-scenario.schema.json"
+            ),
+            scenario,
+        )
     elif expected_causes == ("kubernetes.image-pull-failure",):
         scenario_kind = "image-pull"
         validate_contract(
-            "controlled-image-pull-scenario.schema.json", scenario
+            (
+                "holdout-controlled-image-pull-scenario.schema.json"
+                if holdout_v1
+                else "controlled-image-pull-scenario.schema.json"
+            ),
+            scenario,
         )
     elif expected_causes == ("kubernetes.missing-configmap",):
         scenario_kind = "missing-configmap"
         validate_contract(
-            "controlled-missing-configmap-scenario.schema.json", scenario
+            (
+                "holdout-controlled-missing-configmap-scenario.schema.json"
+                if holdout_v1
+                else "controlled-missing-configmap-scenario.schema.json"
+            ),
+            scenario,
         )
+        if holdout_v1 and (
+            scenario["fault"]["configmap_name"]
+            != scenario["expected"]["evidence_predicates"]["configmap_name"]
+        ):
+            raise ContractViolation(
+                "holdout missing-ConfigMap predicate does not match the injected name"
+            )
     elif (
         expected_causes == ()
         and scenario.get("expected", {}).get("outcome") == "ABSTAIN"
     ):
         scenario_kind = "no-fault"
-        validate_contract("no-fault-control-scenario.schema.json", scenario)
+        validate_contract(
+            (
+                "holdout-no-fault-control-scenario.schema.json"
+                if holdout_v1
+                else "no-fault-control-scenario.schema.json"
+            ),
+            scenario,
+        )
     else:
         raise ContractViolation(
             "controlled fault evaluation has no registered scenario handler"
@@ -612,7 +647,14 @@ def build_controlled_fault_evaluation(
                 "no-fault evaluation requires a post-run control attestation"
             )
         attestation = copy.deepcopy(dict(raw_attestation))
-        validate_contract("no-fault-control-attestation.schema.json", attestation)
+        validate_contract(
+            (
+                "holdout-no-fault-control-attestation.schema.json"
+                if holdout_v1
+                else "no-fault-control-attestation.schema.json"
+            ),
+            attestation,
+        )
         if attestation["scenario_id"] != scenario["scenario_id"]:
             raise ContractViolation(
                 "no-fault control attestation belongs to another scenario"

@@ -8,10 +8,11 @@
     - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
     - ../../../platform/versions.yaml
   vars:
+    no_fault_control_scenario_path: evaluation/scenarios/frontend-no-fault-normal.yaml
     no_fault_control_scenario: >-
       {{ lookup(
         'file',
-        playbook_dir + '/../../../evaluation/scenarios/frontend-no-fault-normal.yaml'
+        playbook_dir + '/../../../' + no_fault_control_scenario_path
       ) | from_yaml }}
 
   roles:

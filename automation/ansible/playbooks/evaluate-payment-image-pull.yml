@@ -8,10 +8,11 @@
     - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
     - ../../../platform/versions.yaml
   vars:
+    payment_image_pull_scenario_path: evaluation/scenarios/paymentservice-image-pull.yaml
     payment_image_pull_scenario: >-
       {{ lookup(
         'file',
-        playbook_dir + '/../../../evaluation/scenarios/paymentservice-image-pull.yaml'
+        playbook_dir + '/../../../' + payment_image_pull_scenario_path
       ) | from_yaml }}
 
   roles:

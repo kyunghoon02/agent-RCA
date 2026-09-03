@@ -1,0 +1,120 @@
+schema_version: "1.1.0"
+matrix_id: focused-holdout-v1
+repetitions_per_scenario: 1
+
+execution:
+  schedule: rotated-round-robin
+  max_parallel: 1
+  failure_policy: stop-and-preserve
+  require_clean_worktree: true
+  require_head_matches_origin_main: true
+
+scenarios:
+  - scenario_id: scenario-holdout-v1-checkout-oom-a
+    scenario_family: kubernetes.container-oomkilled
+    variant_id: a
+    scenario_path: evaluation/scenarios/holdout-v1/checkoutservice-oom-a.yaml
+    scenario_sha256: a238b018b66ec278aba80c509b52863495b31a8bbdf2be7d965dba85bbb2e2f9
+    make_target: evaluate-checkout-oom
+    scenario_path_variable: CHECKOUT_OOM_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-payment-image-pull-a
+    scenario_family: kubernetes.image-pull-failure
+    variant_id: a
+    scenario_path: evaluation/scenarios/holdout-v1/paymentservice-image-pull-a.yaml
+    scenario_sha256: e7e7c8feac19a9a8db35cc5e0d7a7cb12f819e6435015ff6236370946ce84bdf
+    make_target: evaluate-payment-image-pull
+    scenario_path_variable: PAYMENT_IMAGE_PULL_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-checkout-missing-configmap-a
+    scenario_family: kubernetes.missing-configmap
+    variant_id: a
+    scenario_path: evaluation/scenarios/holdout-v1/checkoutservice-missing-configmap-a.yaml
+    scenario_sha256: eed5f8a5360c58829ca9c076783d03e37f1e7b8fd5edf37ba3d4bae8f540eb42
+    make_target: evaluate-checkout-missing-configmap
+    scenario_path_variable: CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-frontend-no-fault-a
+    scenario_family: no-fault
+    variant_id: a
+    scenario_path: evaluation/scenarios/holdout-v1/frontend-no-fault-a.yaml
+    scenario_sha256: e031eed3408356a516364deb7244d3b94817bb6aad490203fd50b541dea713a9
+    make_target: evaluate-no-fault-control
+    scenario_path_variable: NO_FAULT_CONTROL_SCENARIO_PATH
+    confirmation_variable: CONFIRM_NO_FAULT_CONTROL
+    expected_outcome: ABSTAIN
+  - scenario_id: scenario-holdout-v1-payment-image-pull-b
+    scenario_family: kubernetes.image-pull-failure
+    variant_id: b
+    scenario_path: evaluation/scenarios/holdout-v1/paymentservice-image-pull-b.yaml
+    scenario_sha256: 77dadf9250552ea956f8d507f1708039fc08058a00d35b868189ac6d740a0e9c
+    make_target: evaluate-payment-image-pull
+    scenario_path_variable: PAYMENT_IMAGE_PULL_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-checkout-missing-configmap-b
+    scenario_family: kubernetes.missing-configmap
+    variant_id: b
+    scenario_path: evaluation/scenarios/holdout-v1/checkoutservice-missing-configmap-b.yaml
+    scenario_sha256: 761d60a83cb04e47e16600aa2930289a45acd0ca3865b840606d2e3bd8fc4914
+    make_target: evaluate-checkout-missing-configmap
+    scenario_path_variable: CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-frontend-no-fault-b
+    scenario_family: no-fault
+    variant_id: b
+    scenario_path: evaluation/scenarios/holdout-v1/frontend-no-fault-b.yaml
+    scenario_sha256: 9ccfedbe999bfead33437d3f49a301ac66505a8fd1d3416343b08e463062fd3d
+    make_target: evaluate-no-fault-control
+    scenario_path_variable: NO_FAULT_CONTROL_SCENARIO_PATH
+    confirmation_variable: CONFIRM_NO_FAULT_CONTROL
+    expected_outcome: ABSTAIN
+  - scenario_id: scenario-holdout-v1-checkout-oom-b
+    scenario_family: kubernetes.container-oomkilled
+    variant_id: b
+    scenario_path: evaluation/scenarios/holdout-v1/checkoutservice-oom-b.yaml
+    scenario_sha256: d0cd5db59e392706c8ced942645a26e181b7661960d5be7520f576eab84e2fc9
+    make_target: evaluate-checkout-oom
+    scenario_path_variable: CHECKOUT_OOM_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-checkout-missing-configmap-c
+    scenario_family: kubernetes.missing-configmap
+    variant_id: c
+    scenario_path: evaluation/scenarios/holdout-v1/checkoutservice-missing-configmap-c.yaml
+    scenario_sha256: dd4b092618a1c7967e8c42810bc9a7d3378ea4537d9aeafcd13c853dd50e2000
+    make_target: evaluate-checkout-missing-configmap
+    scenario_path_variable: CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-frontend-no-fault-c
+    scenario_family: no-fault
+    variant_id: c
+    scenario_path: evaluation/scenarios/holdout-v1/frontend-no-fault-c.yaml
+    scenario_sha256: 5204d9078e863af5697bd1746496dc768bb33b631605be272f9a48ee991b9ba7
+    make_target: evaluate-no-fault-control
+    scenario_path_variable: NO_FAULT_CONTROL_SCENARIO_PATH
+    confirmation_variable: CONFIRM_NO_FAULT_CONTROL
+    expected_outcome: ABSTAIN
+  - scenario_id: scenario-holdout-v1-checkout-oom-c
+    scenario_family: kubernetes.container-oomkilled
+    variant_id: c
+    scenario_path: evaluation/scenarios/holdout-v1/checkoutservice-oom-c.yaml
+    scenario_sha256: 4a4eabd29759d593bffaebdb030f20e2394cf372a0b7acb9ae0930cf968cfff2
+    make_target: evaluate-checkout-oom
+    scenario_path_variable: CHECKOUT_OOM_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE
+  - scenario_id: scenario-holdout-v1-payment-image-pull-c
+    scenario_family: kubernetes.image-pull-failure
+    variant_id: c
+    scenario_path: evaluation/scenarios/holdout-v1/paymentservice-image-pull-c.yaml
+    scenario_sha256: 86c05da5c5471cef3aaf596036316a98383c6d0d7eb97d49c183c2270cc555c1
+    make_target: evaluate-payment-image-pull
+    scenario_path_variable: PAYMENT_IMAGE_PULL_SCENARIO_PATH
+    confirmation_variable: CONFIRM_CONTROLLED_FAULT
+    expected_outcome: ROOT_CAUSE

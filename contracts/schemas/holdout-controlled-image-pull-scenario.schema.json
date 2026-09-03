@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:holdout-controlled-image-pull-scenario",
+  "title": "Holdout Controlled Image Pull Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "fault",
+    "workload",
+    "alert",
+    "expected",
+    "restoration"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-holdout-v1-payment-image-pull-[abc]$"
+    },
+    "environment": {
+      "const": {"class": "development", "single_node_allowed": true}
+    },
+    "target": {
+      "const": {
+        "namespace": "online-boutique",
+        "kind": "Deployment",
+        "name": "paymentservice",
+        "container": "server"
+      }
+    },
+    "baseline": {
+      "const": {
+        "image": "us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice:v0.10.6",
+        "ready_replicas": 1,
+        "restart_count_policy": "record-current"
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "image", "observation_seconds", "maximum_active_seconds"],
+      "properties": {
+        "type": {"const": "image-reference"},
+        "image": {
+          "type": "string",
+          "pattern": "^registry\\.invalid/agent-rca/holdout-v1/paymentservice:(dns-missing|manifest-missing|backoff-missing)$"
+        },
+        "observation_seconds": {"enum": [15, 45, 90]},
+        "maximum_active_seconds": {"const": 180}
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner", "profile", "seed", "synthetic_marker"],
+      "properties": {
+        "runner": {"const": "none"},
+        "profile": {"const": "normal"},
+        "seed": {"enum": [143, 243, 343]},
+        "synthetic_marker": {
+          "type": "string",
+          "pattern": "^agent-rca-holdout-v1-case-(02|05|12)$"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "service",
+        "severity",
+        "summary",
+        "generator_url",
+        "verification_prefix",
+        "rca_enabled",
+        "agent_rca_enabled"
+      ],
+      "properties": {
+        "name": {"type": "string", "pattern": "^AgentRCAHoldoutV1Case(02|05|12)$"},
+        "service": {"const": "paymentservice"},
+        "severity": {"const": "critical"},
+        "summary": {"const": "Synthetic service health evaluation"},
+        "generator_url": {"const": "https://prometheus.invalid/holdout-v1"},
+        "verification_prefix": {
+          "type": "string",
+          "pattern": "^holdout-v1-case-(02|05|12)$"
+        },
+        "rca_enabled": {"const": "true"},
+        "agent_rca_enabled": {"const": "true"}
+      }
+    },
+    "expected": {
+      "const": {
+        "outcome": "ROOT_CAUSE",
+        "root_cause_ids": ["kubernetes.image-pull-failure"],
+        "same_pod_uid_required": true,
+        "evidence_predicates": {
+          "waiting_reasons": ["ErrImagePull", "ImagePullBackOff"],
+          "event_codes": ["ErrImagePull", "ImagePullBackOff"]
+        }
+      }
+    },
+    "restoration": {
+      "const": {
+        "restore_exact_image": true,
+        "ready_replicas": 1,
+        "restart_count_policy": "no-increase-or-fresh-replacement"
+      }
+    }
+  }
+}

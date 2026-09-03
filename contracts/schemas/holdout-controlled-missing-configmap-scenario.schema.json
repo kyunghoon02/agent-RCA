@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rca:schema:holdout-controlled-missing-configmap-scenario",
+  "title": "Holdout Controlled Missing ConfigMap Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "environment",
+    "target",
+    "baseline",
+    "fault",
+    "workload",
+    "alert",
+    "expected",
+    "restoration"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario-holdout-v1-checkout-missing-configmap-[abc]$"
+    },
+    "environment": {
+      "const": {"class": "development", "single_node_allowed": true}
+    },
+    "target": {
+      "const": {
+        "namespace": "online-boutique",
+        "kind": "Deployment",
+        "name": "checkoutservice",
+        "container": "server"
+      }
+    },
+    "baseline": {
+      "const": {
+        "ready_replicas": 1,
+        "fresh_pod_restart_count": 0,
+        "fault_volume_absent": true,
+        "fault_volume_mount_absent": true,
+        "configmap_absent": true
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "configmap_name",
+        "volume_name",
+        "mount_path",
+        "observation_seconds",
+        "maximum_active_seconds"
+      ],
+      "properties": {
+        "type": {"const": "required-configmap-reference"},
+        "configmap_name": {
+          "type": "string",
+          "pattern": "^checkoutservice-holdout-v1-missing-[abc]$"
+        },
+        "volume_name": {"type": "string", "pattern": "^holdout-v1-required-[abc]$"},
+        "mount_path": {"type": "string", "pattern": "^/var/run/agent-rca-holdout-v1/[abc]$"},
+        "observation_seconds": {"enum": [15, 30, 60]},
+        "maximum_active_seconds": {"const": 180}
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner", "profile", "seed", "synthetic_marker"],
+      "properties": {
+        "runner": {"const": "none"},
+        "profile": {"const": "normal"},
+        "seed": {"enum": [144, 244, 344]},
+        "synthetic_marker": {
+          "type": "string",
+          "pattern": "^agent-rca-holdout-v1-case-(03|06|09)$"
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "service",
+        "severity",
+        "summary",
+        "generator_url",
+        "verification_prefix",
+        "rca_enabled",
+        "agent_rca_enabled"
+      ],
+      "properties": {
+        "name": {"type": "string", "pattern": "^AgentRCAHoldoutV1Case(03|06|09)$"},
+        "service": {"const": "checkoutservice"},
+        "severity": {"const": "critical"},
+        "summary": {"const": "Synthetic service health evaluation"},
+        "generator_url": {"const": "https://prometheus.invalid/holdout-v1"},
+        "verification_prefix": {
+          "type": "string",
+          "pattern": "^holdout-v1-case-(03|06|09)$"
+        },
+        "rca_enabled": {"const": "true"},
+        "agent_rca_enabled": {"const": "true"}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "root_cause_ids", "evidence_predicates"],
+      "properties": {
+        "outcome": {"const": "ROOT_CAUSE"},
+        "root_cause_ids": {"const": ["kubernetes.missing-configmap"]},
+        "evidence_predicates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["configmap_name", "required", "event_reasons", "missing_kind"],
+          "properties": {
+            "configmap_name": {
+              "type": "string",
+              "pattern": "^checkoutservice-holdout-v1-missing-[abc]$"
+            },
+            "required": {"const": true},
+            "event_reasons": {"const": ["CreateContainerConfigError", "FailedMount"]},
+            "missing_kind": {"const": "ConfigMap"}
+          }
+        }
+      }
+    },
+    "restoration": {
+      "const": {
+        "remove_exact_volume": true,
+        "remove_exact_volume_mount": true,
+        "restore_exact_pod_template": true,
+        "ready_replicas": 1,
+        "fresh_pod_restart_count": 0,
+        "configmap_absent": true
+      }
+    }
+  }
+}

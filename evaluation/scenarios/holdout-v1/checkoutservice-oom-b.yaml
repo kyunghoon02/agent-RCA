@@ -1,0 +1,75 @@
+schema_version: "1.0.0"
+scenario_id: scenario-holdout-v1-checkout-oom-b
+
+environment:
+  class: development
+  single_node_allowed: true
+
+target:
+  namespace: online-boutique
+  kind: Deployment
+  name: checkoutservice
+  container: server
+
+baseline:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+fault:
+  type: resource-policy
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 104Mi
+  chaos_mesh:
+    api_version: chaos-mesh.org/v1alpha1
+    kind: StressChaos
+    mode: all
+    duration_seconds: 150
+    memory:
+      workers: 1
+      size: 128MiB
+      oom_score_adj: -1000
+  observation_seconds: 90
+  pre_injection_metric_settle_seconds: 75
+  maximum_active_seconds: 300
+
+workload:
+  runner: external-controller
+  profile: path-weighted
+  seed: 242
+  requests_per_second: 7
+  maximum_duration_seconds: 300
+  synthetic_marker: agent-rca-holdout-v1-case-08
+
+alert:
+  name: AgentRCAHoldoutV1Case08
+  service: checkoutservice
+  severity: critical
+  summary: Synthetic service health evaluation
+  generator_url: https://prometheus.invalid/holdout-v1
+  verification_prefix: holdout-v1-case-08
+  rca_enabled: "true"
+  agent_rca_enabled: "true"
+
+expected:
+  outcome: ROOT_CAUSE
+  root_cause_ids:
+    - kubernetes.container-oomkilled
+  same_pod_uid_required: true
+  evidence_predicates:
+    oom_signature: kubernetes-oomkilled-or-loki-kernel-memcg
+    restart_count_delta_minimum: 1
+    memory_metric_required: true
+
+restoration:
+  restore_exact_baseline: true
+  ready_replicas: 1
+  fresh_pod_restart_count: 0

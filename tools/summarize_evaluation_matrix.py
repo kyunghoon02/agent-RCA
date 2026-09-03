@@ -22,6 +22,7 @@ from tools.run_evaluation_matrix import (
     MatrixError,
     build_schedule,
     load_matrix,
+    matrix_name_from_id,
 )
 
 
@@ -78,7 +79,7 @@ def load_matrix_records(
         manifest_value, root=PRIVATE_MATRIX_ROOT, suffix="manifest.json"
     )
     manifest = _load_object(manifest_path)
-    matrix = load_matrix()
+    matrix = load_matrix(matrix_name_from_id(manifest.get("matrix_id")))
     expected_schedule = build_schedule(matrix)
     if manifest.get("schema_version") != "1.0.0":
         raise MatrixError("matrix manifest schema is unsupported")
@@ -182,6 +183,101 @@ def _numeric_summary(values: Sequence[float]) -> Mapping[str, float] | None:
     }
 
 
+def _summarize_group(
+    *,
+    group_seed: str,
+    expected_outcome: str,
+    planned_runs: int,
+    attempts: Sequence[Mapping[str, Any]],
+    records: Sequence[Mapping[str, Mapping[str, Any]]],
+) -> dict[str, Any]:
+    prediction_outcomes: dict[str, int] = {}
+    agent_statuses: dict[str, int] = {}
+    for record in records:
+        outcome = str(record["prediction"]["outcome"])
+        prediction_outcomes[outcome] = prediction_outcomes.get(outcome, 0) + 1
+        status = str(record["runtime"]["agent_status"])
+        agent_statuses[status] = agent_statuses.get(status, 0) + 1
+
+    metric_summaries: dict[str, Any] = {}
+    for metric_name in METRIC_NAMES:
+        values = [
+            float(record["result"]["metrics"][metric_name])
+            for record in records
+            if record["result"]["metrics"][metric_name] is not None
+        ]
+        metric_summaries[metric_name] = (
+            {
+                "applicable_runs": len(values),
+                "mean": round(statistics.fmean(values), 6),
+                "bootstrap_95": _bootstrap_95(
+                    values, seed=f"{group_seed}:{metric_name}"
+                ),
+            }
+            if values
+            else {"applicable_runs": 0, "mean": None, "bootstrap_95": None}
+        )
+
+    usage = {
+        name: {
+            "total": sum(int(record["runtime"]["usage"][name]) for record in records),
+            "mean": (
+                round(
+                    statistics.fmean(
+                        int(record["runtime"]["usage"][name]) for record in records
+                    ),
+                    3,
+                )
+                if records
+                else None
+            ),
+        }
+        for name in USAGE_NAMES
+    }
+    latencies = {
+        "ingest_to_agent_start_ms": _numeric_summary(
+            [float(record["runtime"]["ingest_to_agent_start_ms"]) for record in records]
+        ),
+        "agent_wall_time_ms": _numeric_summary(
+            [float(record["runtime"]["usage"]["wall_time_ms"]) for record in records]
+        ),
+        "ingest_to_terminal_ms": _numeric_summary(
+            [float(record["runtime"]["ingest_to_terminal_ms"]) for record in records]
+        ),
+        "ingest_to_report_ms": _numeric_summary(
+            [
+                float(record["runtime"]["ingest_to_report_ms"])
+                for record in records
+                if record["runtime"]["ingest_to_report_ms"] is not None
+            ]
+        ),
+    }
+    expected_matches = sum(
+        record["prediction"]["outcome"] == expected_outcome for record in records
+    )
+    return {
+        "expected_outcome": expected_outcome,
+        "planned_runs": planned_runs,
+        "attempted_runs": len(attempts),
+        "harness_passed_runs": sum(
+            attempt["state"] == "PASSED" for attempt in attempts
+        ),
+        "harness_failed_runs": sum(
+            attempt["state"] == "FAILED" for attempt in attempts
+        ),
+        "scored_runs": len(records),
+        "expected_outcome_matches": expected_matches,
+        "expected_outcome_rate": (
+            round(expected_matches / len(records), 6) if records else None
+        ),
+        "prediction_outcomes": prediction_outcomes,
+        "agent_statuses": agent_statuses,
+        "metrics": metric_summaries,
+        "latency_ms": latencies,
+        "usage": usage,
+    }
+
+
 def build_summary(
     matrix: Mapping[str, Any],
     manifest: Mapping[str, Any],
@@ -201,100 +297,75 @@ def build_summary(
             for record in records
             if record["attempt"]["scenario_id"] == scenario_id
         ]
-        prediction_outcomes: dict[str, int] = {}
-        agent_statuses: dict[str, int] = {}
-        for record in scenario_records:
-            outcome = str(record["prediction"]["outcome"])
-            prediction_outcomes[outcome] = prediction_outcomes.get(outcome, 0) + 1
-            status = str(record["runtime"]["agent_status"])
-            agent_statuses[status] = agent_statuses.get(status, 0) + 1
-
-        metric_summaries: dict[str, Any] = {}
-        for metric_name in METRIC_NAMES:
-            values = [
-                float(record["result"]["metrics"][metric_name])
-                for record in scenario_records
-                if record["result"]["metrics"][metric_name] is not None
-            ]
-            metric_summaries[metric_name] = (
-                {
-                    "applicable_runs": len(values),
-                    "mean": round(statistics.fmean(values), 6),
-                    "bootstrap_95": _bootstrap_95(
-                        values, seed=f"{scenario_id}:{metric_name}"
-                    ),
-                }
-                if values
-                else {"applicable_runs": 0, "mean": None, "bootstrap_95": None}
-            )
-
-        usage = {
-            name: {
-                "total": sum(int(record["runtime"]["usage"][name]) for record in scenario_records),
-                "mean": (
-                    round(
-                        statistics.fmean(
-                            int(record["runtime"]["usage"][name])
-                            for record in scenario_records
-                        ),
-                        3,
-                    )
-                    if scenario_records
-                    else None
-                ),
-            }
-            for name in USAGE_NAMES
-        }
-        latencies = {
-            "ingest_to_agent_start_ms": _numeric_summary(
-                [float(record["runtime"]["ingest_to_agent_start_ms"]) for record in scenario_records]
-            ),
-            "agent_wall_time_ms": _numeric_summary(
-                [float(record["runtime"]["usage"]["wall_time_ms"]) for record in scenario_records]
-            ),
-            "ingest_to_terminal_ms": _numeric_summary(
-                [float(record["runtime"]["ingest_to_terminal_ms"]) for record in scenario_records]
-            ),
-            "ingest_to_report_ms": _numeric_summary(
-                [
-                    float(record["runtime"]["ingest_to_report_ms"])
-                    for record in scenario_records
-                    if record["runtime"]["ingest_to_report_ms"] is not None
-                ]
+        summary = {
+            "scenario_id": scenario_id,
+            **_summarize_group(
+                group_seed=scenario_id,
+                expected_outcome=str(configured["expected_outcome"]),
+                planned_runs=int(matrix["repetitions_per_scenario"]),
+                attempts=scenario_attempts,
+                records=scenario_records,
             ),
         }
-        expected_matches = sum(
-            record["prediction"]["outcome"] == configured["expected_outcome"]
-            for record in scenario_records
+        if "scenario_family" in configured:
+            summary["scenario_family"] = configured["scenario_family"]
+            summary["variant_id"] = configured["variant_id"]
+        summaries.append(summary)
+
+    family_summaries: list[dict[str, Any]] = []
+    configured_families = list(
+        dict.fromkeys(
+            str(item["scenario_family"])
+            for item in matrix["scenarios"]
+            if "scenario_family" in item
         )
-        summaries.append(
+    )
+    for family in configured_families:
+        family_configured = [
+            item for item in matrix["scenarios"] if item["scenario_family"] == family
+        ]
+        family_scenario_ids = {
+            str(item["scenario_id"]) for item in family_configured
+        }
+        expected_outcomes = {
+            str(item["expected_outcome"]) for item in family_configured
+        }
+        if len(expected_outcomes) != 1:
+            raise MatrixError("matrix family mixes expected outcomes")
+        family_attempts = [
+            attempt
+            for attempt in attempts
+            if attempt["scenario_id"] in family_scenario_ids
+        ]
+        family_records = [
+            record
+            for record in records
+            if record["attempt"]["scenario_id"] in family_scenario_ids
+        ]
+        family_summaries.append(
             {
-                "scenario_id": scenario_id,
-                "expected_outcome": configured["expected_outcome"],
-                "planned_runs": matrix["repetitions_per_scenario"],
-                "attempted_runs": len(scenario_attempts),
-                "harness_passed_runs": sum(
-                    attempt["state"] == "PASSED" for attempt in scenario_attempts
+                "scenario_family": family,
+                **_summarize_group(
+                    group_seed=f"family:{family}",
+                    expected_outcome=expected_outcomes.pop(),
+                    planned_runs=len(family_configured)
+                    * int(matrix["repetitions_per_scenario"]),
+                    attempts=family_attempts,
+                    records=family_records,
                 ),
-                "harness_failed_runs": sum(
-                    attempt["state"] == "FAILED" for attempt in scenario_attempts
-                ),
-                "scored_runs": len(scenario_records),
-                "expected_outcome_matches": expected_matches,
-                "expected_outcome_rate": (
-                    round(expected_matches / len(scenario_records), 6)
-                    if scenario_records
-                    else None
-                ),
-                "prediction_outcomes": prediction_outcomes,
-                "agent_statuses": agent_statuses,
-                "metrics": metric_summaries,
-                "latency_ms": latencies,
-                "usage": usage,
             }
         )
 
-    return {
+    configured_by_id = {
+        item["scenario_id"]: item for item in matrix["scenarios"]
+    }
+    expected_outcome_matches = sum(
+        record["prediction"]["outcome"]
+        == configured_by_id[record["attempt"]["scenario_id"]]["expected_outcome"]
+        for record in records
+    )
+
+    summary = {
         "schema_version": "1.0.0",
         "matrix_id": matrix["matrix_id"],
         "generated_at": _format_time(generated_at),
@@ -307,6 +378,10 @@ def build_summary(
         "harness_passed_runs": sum(item["state"] == "PASSED" for item in attempts),
         "harness_failed_runs": sum(item["state"] == "FAILED" for item in attempts),
         "scored_runs": len(records),
+        "expected_outcome_matches": expected_outcome_matches,
+        "expected_outcome_rate": (
+            round(expected_outcome_matches / len(records), 6) if records else None
+        ),
         "confidence_interval": "deterministic-bootstrap-95-10000-resamples",
         "cost": {
             "status": "NOT_CALCULATED",
@@ -314,6 +389,9 @@ def build_summary(
         },
         "scenarios": summaries,
     }
+    if family_summaries:
+        summary["families"] = family_summaries
+    return summary
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -328,10 +406,10 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = _parser().parse_args()
     try:
-        matrix = load_matrix()
         manifest, records = load_matrix_records(
             arguments.manifest, allow_incomplete=arguments.allow_incomplete
         )
+        matrix = load_matrix(matrix_name_from_id(manifest.get("matrix_id")))
         summary = build_summary(
             matrix,
             manifest,

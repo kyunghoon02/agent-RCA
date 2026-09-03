@@ -1,4 +1,19 @@
 ---
+- name: Require a registered checkout OOM scenario
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/validate_evaluation_scenario.py
+      - --scenario
+      - "{{ checkout_oom_scenario_path }}"
+      - --family
+      - kubernetes.container-oomkilled
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Require explicit controlled-fault authorization
   ansible.builtin.assert:
     that:
@@ -54,7 +69,8 @@
       | selectattr('name', 'equalto', checkout_oom_scenario.target.container)
       | first }}
     checkout_fault_id: >-
-      checkout-oom-{{ ansible_facts.date_time.epoch }}
+      {{ checkout_oom_scenario.alert.verification_prefix
+      | default('checkout-oom') }}-{{ ansible_facts.date_time.epoch }}
     checkout_fault_lock_name: agent-rca-checkout-oom-lock
     checkout_fault_chaos_name: >-
       checkout-oom-{{ ansible_facts.date_time.epoch }}
@@ -546,7 +562,7 @@
           alertname: "{{ checkout_oom_scenario.alert.name }}"
           cluster_id: "{{ cluster_name }}"
           namespace: "{{ online_boutique_namespace }}"
-          severity: critical
+          severity: "{{ checkout_oom_scenario.alert.severity | default('critical') }}"
           service: "{{ checkout_oom_scenario.alert.service }}"
           rca_enabled: "{{ checkout_oom_scenario.alert.rca_enabled }}"
           agent_rca_enabled: "{{ checkout_oom_scenario.alert.agent_rca_enabled }}"
@@ -563,11 +579,13 @@
           {{ [{
             'labels': checkout_fault_alert_labels,
             'annotations': {
-              'summary': 'Controlled checkoutservice OOM evaluation'
+              'summary': checkout_oom_scenario.alert.summary
+                | default('Controlled checkoutservice OOM evaluation')
             },
             'startsAt': checkout_fault_alert_times.starts_at,
             'endsAt': checkout_fault_alert_times.ends_at,
-            'generatorURL': 'https://prometheus.invalid/controlled-checkout-oom'
+            'generatorURL': checkout_oom_scenario.alert.generator_url
+              | default('https://prometheus.invalid/controlled-checkout-oom')
           }] }}
         status_code: 200
       delegate_to: "{{ groups['observability_domain'][0] }}"
@@ -761,7 +779,7 @@
           - .venv/bin/python
           - tools/build_controlled_fault_evaluation.py
           - --scenario
-          - evaluation/scenarios/checkoutservice-oom.yaml
+          - "{{ checkout_oom_scenario_path }}"
           - --require-agent-outcome
         chdir: "{{ checkout_fault_repo_root }}"
         stdin: "{{ checkout_fault_bundle_result.stdout | trim }}"
@@ -887,11 +905,13 @@
           {{ [{
             'labels': checkout_fault_alert_labels,
             'annotations': {
-              'summary': 'Controlled checkoutservice OOM evaluation'
+              'summary': checkout_oom_scenario.alert.summary
+                | default('Controlled checkoutservice OOM evaluation')
             },
             'startsAt': checkout_fault_alert_times.starts_at,
             'endsAt': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'),
-            'generatorURL': 'https://prometheus.invalid/controlled-checkout-oom'
+            'generatorURL': checkout_oom_scenario.alert.generator_url
+              | default('https://prometheus.invalid/controlled-checkout-oom')
           }] }}
         status_code: 200
       delegate_to: "{{ groups['observability_domain'][0] }}"

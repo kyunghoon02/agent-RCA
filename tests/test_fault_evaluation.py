@@ -521,6 +521,73 @@ def with_agent_abstain_report(bundle: dict) -> dict:
 
 
 class ControlledFaultEvaluationTests(unittest.TestCase):
+    def test_holdout_oom_uses_the_frozen_holdout_contract(self) -> None:
+        bundle, _ = fixture_bundle()
+        bundle = with_agent_report(
+            bundle, cause_id="kubernetes.container-oomkilled"
+        )
+        scenario = yaml.safe_load(
+            (
+                ROOT
+                / "evaluation/scenarios/holdout-v1/checkoutservice-oom-a.yaml"
+            ).read_text()
+        )
+        bundle["incident"]["alert"]["name"] = scenario["alert"]["name"]
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="c" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(
+            artifacts["agent_prediction"]["predicted_root_cause_ids"],
+            ["kubernetes.container-oomkilled"],
+        )
+
+    def test_holdout_missing_configmap_rejects_a_mismatched_predicate(self) -> None:
+        bundle, _ = missing_configmap_fixture_bundle()
+        scenario = yaml.safe_load(
+            (
+                ROOT
+                / "evaluation/scenarios/holdout-v1/"
+                "checkoutservice-missing-configmap-a.yaml"
+            ).read_text()
+        )
+        scenario["expected"]["evidence_predicates"]["configmap_name"] = (
+            "checkoutservice-holdout-v1-missing-b"
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "injected name"):
+            build_controlled_fault_evaluation(
+                bundle,
+                scenario,
+                scenario_sha256="c" * 64,
+                evaluated_at=NOW,
+            )
+
+    def test_holdout_no_fault_uses_holdout_attestation_contract(self) -> None:
+        bundle, _ = no_fault_fixture_bundle()
+        bundle = with_agent_abstain_report(bundle)
+        scenario = yaml.safe_load(
+            (
+                ROOT / "evaluation/scenarios/holdout-v1/frontend-no-fault-a.yaml"
+            ).read_text()
+        )
+        bundle["control_attestation"]["scenario_id"] = scenario["scenario_id"]
+        bundle["control_attestation"]["workload"]["seed"] = 145
+        bundle["incident"]["alert"]["name"] = scenario["alert"]["name"]
+
+        artifacts = build_controlled_fault_evaluation(
+            bundle,
+            scenario,
+            scenario_sha256="c" * 64,
+            evaluated_at=NOW,
+        )
+
+        self.assertEqual(artifacts["agent_prediction"]["outcome"], "ABSTAIN")
+
     def test_no_fault_control_scores_correct_agent_abstention(self) -> None:
         bundle, scenario = no_fault_fixture_bundle()
         bundle = with_agent_abstain_report(bundle)

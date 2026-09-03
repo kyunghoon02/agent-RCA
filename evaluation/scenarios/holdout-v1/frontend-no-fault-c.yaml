@@ -1,0 +1,60 @@
+schema_version: "1.0.0"
+scenario_id: scenario-holdout-v1-frontend-no-fault-c
+
+environment:
+  class: development
+  single_node_allowed: true
+
+target:
+  namespace: online-boutique
+  kind: Deployment
+  name: frontend
+  container: server
+
+baseline:
+  all_workloads_ready: true
+  no_active_faults: true
+  preserve_deployment_snapshot: true
+  preserve_pod_snapshot: true
+  restart_delta_maximum: 0
+
+change:
+  type: none
+
+workload:
+  runner: external-controller
+  profile: normal
+  seed: 345
+  requests_per_second: 5
+  baseline_seconds: 1140
+  maximum_duration_seconds: 1200
+  synthetic_marker: agent-rca-holdout-v1-case-10
+
+alert:
+  name: AgentRCAHoldoutV1Case10
+  service: frontend
+  severity: critical
+  summary: Synthetic service health evaluation
+  generator_url: https://prometheus.invalid/holdout-v1
+  verification_prefix: holdout-v1-case-10
+  rca_enabled: "true"
+  agent_rca_enabled: "true"
+
+expected:
+  outcome: ABSTAIN
+  root_cause_ids: []
+  deterministic_rules_not_applicable: true
+  detected_deployment_changes_maximum: 0
+  deployment_no_change_evidence_minimum: 1
+  collector_failures_maximum: 0
+  minimum_context_completeness: 0.7
+
+postconditions:
+  all_workloads_ready: true
+  active_fault_count: 0
+  deployment_snapshot_unchanged: true
+  pod_snapshot_unchanged: true
+  restart_delta_maximum: 0
+  successful_responses_minimum: 1
+  successful_response_ratio_minimum: 0.99
+  transport_error_ratio_maximum: 0.01

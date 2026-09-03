@@ -139,6 +139,20 @@ matrix 종료 후 12개 Online Boutique Deployment가 모두 Ready이고, fault 
 StressChaos가 없으며 checkoutservice와 paymentservice가 원래 replica 상태로 복구된 것을
 별도 확인했다.
 
+## Holdout v1 Preregistration
+
+corrected matrix의 20/20이 같은 등록 fixture 반복에 과적합된 결과인지 확인하기 위해
+Holdout v1 계약을 2026-09-03에 실행 전에 동결했다. 기존 세 root-cause family와 no-fault
+control에서 각각 미사용 surface variant 3개, 총 12개를 한 번씩만 실행한다. memory limit,
+observation window, invalid image reference, missing ConfigMap identity와 workload seed/rate를
+변경하지만 새 Provider, cause ID, Agent prompt와 Evidence Gate 규칙은 추가하지 않는다.
+
+각 scenario는 SHA-256으로 matrix에 고정된다. Agent는 scenario manifest와 Ground Truth를
+받지 않으며 Alert name, summary, generator와 verification marker도 원인을 드러내지 않는
+중립 case ID로 제한한다. Ground Truth는 실행 종료 후 Prediction에만 결합한다. 첫 시도 후
+Agent prompt나 Gate를 수정해야 하면 Holdout v1을 이어서 실행하지 않고 새 Holdout v2를
+등록한다. 현재 상태는 `frozen-unexecuted`이므로 이 절에는 정확도 결과가 없다.
+
 ## Claim Boundary and Next Gate
 
 현재 말할 수 있는 것은 “고정된 한 runtime과 한 3-domain reference environment에서,
@@ -147,11 +161,11 @@ unsupported citation은 없었다”까지다. 이는 이전 45% baseline 이후
 등록 regression set에서 효과가 있었음을 보여주지만, production 정확도나 알려지지 않은
 장애에 대한 일반화 성능을 뜻하지 않는다.
 
-현재 CI는 matrix 계약, runner, scorer와 safety policy를 core test로 검증한다. 실제 fault를
-주입하는 20회 suite는 private runtime과 명시적 승인이 필요하므로 CI에서 자동 실행하지 않고
-수동 release gate로 유지한다. 다음 신뢰도 gate는 범위를 넓히기 전에 이 regression set을
-동일 조건에서 다시 재현하는 것이다. 별도 사전 등록과 독립 실행 없이 새 fault,
-multi-factor 원인, 다른 cluster topology에 대한 수치를 현재 20회와 합치지 않는다.
+현재 CI는 regression과 Holdout matrix 계약, runner, scorer와 safety policy를 core test로
+검증한다. 실제 fault suite는 private runtime과 명시적 승인이 필요하므로 CI에서 자동
+실행하지 않고 수동 release gate로 유지한다. 다음 신뢰도 gate는 동결된 Holdout v1 12회를
+변경 없이 실행하는 것이다. Holdout 결과는 regression 20회와 별도로 보고하며, 새 fault,
+multi-factor 원인, 다른 cluster topology에 대한 수치도 현재 결과와 합치지 않는다.
 
 ## Reproduce
 
@@ -161,7 +175,11 @@ make plan-evaluation-matrix
 CONFIRM_EVALUATION_MATRIX="$(git rev-parse HEAD)" make evaluate-matrix
 make summarize-evaluation-matrix \
   EVALUATION_MATRIX_MANIFEST=evaluation/runs/private/matrix/<run>/manifest.json
+make plan-holdout-matrix
+CONFIRM_HOLDOUT_EVALUATION_MATRIX="$(git rev-parse HEAD)" \
+  make evaluate-holdout-matrix
 ```
 
-실행 계획, fault safety boundary와 scorer 계약의 source of truth는
-[Evaluation Preregistration](../evaluation/preregistration.yaml)이다.
+regression 실행 계획의 source of truth는
+[Evaluation Preregistration](../evaluation/preregistration.yaml), 독립 holdout 경계는
+[Holdout v1 Preregistration](../evaluation/holdout-v1-preregistration.yaml)이다.

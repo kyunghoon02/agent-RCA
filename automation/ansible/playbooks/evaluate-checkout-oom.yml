@@ -8,10 +8,11 @@
     - "{{ deployment_profile_vars_file | default('../group_vars/default-profile.yml') }}"
     - ../../../platform/versions.yaml
   vars:
+    checkout_oom_scenario_path: evaluation/scenarios/checkoutservice-oom.yaml
     checkout_oom_scenario: >-
       {{ lookup(
         'file',
-        playbook_dir + '/../../../evaluation/scenarios/checkoutservice-oom.yaml'
+        playbook_dir + '/../../../' + checkout_oom_scenario_path
       ) | from_yaml }}
 
   roles:

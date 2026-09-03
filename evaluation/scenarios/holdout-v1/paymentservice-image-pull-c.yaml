@@ -1,0 +1,57 @@
+schema_version: "1.0.0"
+scenario_id: scenario-holdout-v1-payment-image-pull-c
+
+environment:
+  class: development
+  single_node_allowed: true
+
+target:
+  namespace: online-boutique
+  kind: Deployment
+  name: paymentservice
+  container: server
+
+baseline:
+  image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice:v0.10.6
+  ready_replicas: 1
+  restart_count_policy: record-current
+
+fault:
+  type: image-reference
+  image: registry.invalid/agent-rca/holdout-v1/paymentservice:backoff-missing
+  observation_seconds: 90
+  maximum_active_seconds: 180
+
+workload:
+  runner: none
+  profile: normal
+  seed: 343
+  synthetic_marker: agent-rca-holdout-v1-case-12
+
+alert:
+  name: AgentRCAHoldoutV1Case12
+  service: paymentservice
+  severity: critical
+  summary: Synthetic service health evaluation
+  generator_url: https://prometheus.invalid/holdout-v1
+  verification_prefix: holdout-v1-case-12
+  rca_enabled: "true"
+  agent_rca_enabled: "true"
+
+expected:
+  outcome: ROOT_CAUSE
+  root_cause_ids:
+    - kubernetes.image-pull-failure
+  same_pod_uid_required: true
+  evidence_predicates:
+    waiting_reasons:
+      - ErrImagePull
+      - ImagePullBackOff
+    event_codes:
+      - ErrImagePull
+      - ImagePullBackOff
+
+restoration:
+  restore_exact_image: true
+  ready_replicas: 1
+  restart_count_policy: no-increase-or-fresh-replacement

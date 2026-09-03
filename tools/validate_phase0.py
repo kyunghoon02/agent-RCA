@@ -2887,6 +2887,81 @@ def validate_controlled_fault_scenarios() -> None:
     }:
         raise ValidationFailure("no-fault Ground Truth policy changed")
 
+    holdout_preregistration = load_yaml_documents(
+        ROOT / "evaluation" / "holdout-v1-preregistration.yaml"
+    )[0]
+    if (
+        holdout_preregistration.get("holdout_id") != "focused-holdout-v1"
+        or holdout_preregistration.get("status") != "frozen-unexecuted"
+        or holdout_preregistration.get("isolation")
+        != {
+            "agent_runtime_receives_scenario_manifest": False,
+            "agent_runtime_receives_ground_truth": False,
+            "ground_truth_join": "post-run-only",
+            "holdout_variants_used_for_agent_correction": False,
+            "prompt_examples_overlap_allowed": False,
+            "cause_revealing_alert_metadata_allowed": False,
+        }
+        or holdout_preregistration.get("post_result_policy", {}).get(
+            "continue_v1_after_agent_prompt_or_gate_change"
+        )
+        is not False
+    ):
+        raise ValidationFailure("holdout v1 preregistration or isolation changed")
+
+    holdout_matrix = load_yaml_documents(
+        ROOT / "evaluation" / "holdout-v1-matrix.yaml"
+    )[0]
+    holdout_scenarios = holdout_matrix.get("scenarios", [])
+    if (
+        holdout_matrix.get("matrix_id") != "focused-holdout-v1"
+        or holdout_matrix.get("repetitions_per_scenario") != 1
+        or len(holdout_scenarios) != 12
+        or len({item.get("scenario_id") for item in holdout_scenarios}) != 12
+    ):
+        raise ValidationFailure("holdout v1 matrix is not twelve unique single runs")
+    holdout_schema_by_family = {
+        "kubernetes.container-oomkilled": "holdout-controlled-oom-scenario.schema.json",
+        "kubernetes.image-pull-failure": (
+            "holdout-controlled-image-pull-scenario.schema.json"
+        ),
+        "kubernetes.missing-configmap": (
+            "holdout-controlled-missing-configmap-scenario.schema.json"
+        ),
+        "no-fault": "holdout-no-fault-control-scenario.schema.json",
+    }
+    variants_by_family = {family: set() for family in holdout_schema_by_family}
+    holdout_scenario_root = (
+        ROOT / "evaluation" / "scenarios" / "holdout-v1"
+    ).resolve()
+    for configured in holdout_scenarios:
+        family = configured.get("scenario_family")
+        if family not in holdout_schema_by_family:
+            raise ValidationFailure("holdout v1 matrix contains an unknown family")
+        scenario_file = (ROOT / configured["scenario_path"]).resolve()
+        try:
+            scenario_file.relative_to(holdout_scenario_root)
+        except ValueError as error:
+            raise ValidationFailure("holdout scenario path escapes its root") from error
+        if hashlib.sha256(scenario_file.read_bytes()).hexdigest() != configured.get(
+            "scenario_sha256"
+        ):
+            raise ValidationFailure("holdout scenario digest changed")
+        holdout_scenario = load_yaml_documents(scenario_file)[0]
+        validate_instance(
+            schemas[holdout_schema_by_family[family]],
+            holdout_scenario,
+            registry,
+            configured["scenario_path"],
+        )
+        if holdout_scenario.get("scenario_id") != configured.get("scenario_id"):
+            raise ValidationFailure("holdout scenario identity differs from its matrix")
+        variants_by_family[family].add(configured.get("variant_id"))
+    if any(
+        variants != {"a", "b", "c"} for variants in variants_by_family.values()
+    ):
+        raise ValidationFailure("holdout v1 family variants are incomplete")
+
 
 def main() -> None:
     examples = validate_contracts()
@@ -2912,6 +2987,7 @@ def main() -> None:
     print("- private Incident Viewer frontend and same-origin BFF boundaries are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")
     print("- the development-only fault scenarios and no-fault control gates are valid")
+    print("- holdout v1 isolation, variants, and scenario digests are frozen")
     print("- negative RBAC and invented-evidence checks reject unsafe inputs")
 
 
