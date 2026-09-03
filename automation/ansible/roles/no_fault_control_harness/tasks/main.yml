@@ -204,18 +204,39 @@
       retries: 20
       delay: 1
 
-    - name: Start the controller-to-target loopback SSH tunnel
+    - name: Start the reconnecting controller-to-target SSH tunnel
       ansible.builtin.shell: |
         set -eu
-        nohup ssh -N \
-          -o BatchMode=yes \
-          -o ExitOnForwardFailure=yes \
-          -o ServerAliveInterval=15 \
-          -o ServerAliveCountMax=3 \
-          -i {{ no_fault_control_ssh_key | quote }} \
-          -L {{ no_fault_control_frontend_port }}:127.0.0.1:{{ no_fault_control_frontend_remote_port }} \
-          {{ (no_fault_control_ssh_user + '@' + no_fault_control_ssh_host) | quote }} \
-          >{{ no_fault_control_tunnel_log | quote }} 2>&1 </dev/null &
+        rm -f {{ no_fault_control_stop_file | quote }}
+        nohup /bin/bash -c '
+          child_pid=0
+          stop_tunnel() {
+            if [ "$child_pid" -gt 1 ]; then
+              kill "$child_pid" 2>/dev/null || true
+              wait "$child_pid" 2>/dev/null || true
+            fi
+            exit 0
+          }
+          trap stop_tunnel TERM INT
+          while [ ! -f {{ no_fault_control_stop_file | quote }} ]; do
+            ssh -N \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ConnectionAttempts=1 \
+              -o ExitOnForwardFailure=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=3 \
+              -i {{ no_fault_control_ssh_key | quote }} \
+              -L {{ no_fault_control_frontend_port }}:127.0.0.1:{{ no_fault_control_frontend_remote_port }} \
+              {{ (no_fault_control_ssh_user + '@' + no_fault_control_ssh_host) | quote }} &
+            child_pid=$!
+            wait "$child_pid" || true
+            child_pid=0
+            if [ ! -f {{ no_fault_control_stop_file | quote }} ]; then
+              sleep 1
+            fi
+          done
+        ' >{{ no_fault_control_tunnel_log | quote }} 2>&1 </dev/null &
         echo $!
       args:
         executable: /bin/bash
@@ -224,7 +245,7 @@
       register: no_fault_control_tunnel_process
       changed_when: true
 
-    - name: Mark the controller SSH tunnel as started
+    - name: Mark the reconnecting controller SSH tunnel as started
       ansible.builtin.set_fact:
         no_fault_control_tunnel_started: true
 
@@ -243,7 +264,6 @@
     - name: Start the external-controller normal workload
       ansible.builtin.shell: |
         set -eu
-        rm -f {{ no_fault_control_stop_file | quote }}
         nohup .venv/bin/python tools/run_online_boutique_workload.py \
           --base-url {{ ('http://127.0.0.1:' ~ no_fault_control_frontend_port ~ '/') | quote }} \
           --duration-seconds {{ no_fault_control_scenario.workload.maximum_duration_seconds }} \
@@ -277,7 +297,7 @@
           if ps -p "$workload_pid" -o command= 2>/dev/null | grep -Fq "run_online_boutique_workload.py"; then
             kill "$workload_pid" 2>/dev/null || true
           fi
-          if ps -p "$tunnel_pid" -o command= 2>/dev/null | grep -Fq "ssh -N"; then
+          if ps -p "$tunnel_pid" >/dev/null 2>&1; then
             kill "$tunnel_pid" 2>/dev/null || true
           fi
         ' >{{ no_fault_control_watchdog_log | quote }} 2>&1 </dev/null &
@@ -595,6 +615,8 @@
             {{ no_fault_control_successful_responses | int }}
           transport_errors: >-
             {{ no_fault_control_workload_summary.transport_errors | int }}
+          transport_error_types: >-
+            {{ no_fault_control_workload_summary.transport_error_types | default({}) }}
           transport_error_budget: >-
             {{ no_fault_control_scenario.postconditions.transport_errors_maximum | int }}
 
@@ -917,10 +939,10 @@
       changed_when: false
       when: no_fault_control_watchdog_started | bool
 
-    - name: Stop the controller SSH tunnel
+    - name: Stop the reconnecting controller SSH tunnel
       ansible.builtin.shell: |
         pid={{ no_fault_control_tunnel_process.stdout | default('0') | trim | int }}
-        if [ "$pid" -gt 1 ] && ps -p "$pid" -o command= 2>/dev/null | grep -Fq "ssh -N"; then
+        if [ "$pid" -gt 1 ] && ps -p "$pid" >/dev/null 2>&1; then
           kill "$pid" 2>/dev/null || true
         fi
       args:

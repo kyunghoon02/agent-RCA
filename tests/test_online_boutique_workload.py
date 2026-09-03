@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import urllib.error
+from unittest import mock
 
 from tools.run_online_boutique_workload import (
     deterministic_action_names,
@@ -79,6 +81,43 @@ class OnlineBoutiqueWorkloadTests(unittest.TestCase):
         self.assertLess(
             result["actions"].get("checkout", 0),
             result["actions"].get("home", 0),
+        )
+
+    def test_transport_errors_are_aggregated_by_reason_type(self) -> None:
+        clock = [0.0]
+
+        def monotonic() -> float:
+            return clock[0]
+
+        def sleep(seconds: float) -> None:
+            clock[0] += seconds
+
+        opener = mock.Mock()
+        opener.open.side_effect = urllib.error.URLError(
+            ConnectionRefusedError("connection refused")
+        )
+        with mock.patch(
+            "tools.run_online_boutique_workload.urllib.request.build_opener",
+            return_value=opener,
+        ):
+            result = run_workload(
+                base_url="http://127.0.0.1:18081/",
+                duration_seconds=10,
+                requests_per_second=2,
+                seed=44,
+                marker="transport-diagnostic",
+                timeout_seconds=1,
+                stop_file=None,
+                profile="normal",
+                monotonic=monotonic,
+                sleep=sleep,
+            )
+
+        self.assertEqual(result["schema_version"], "1.1.0")
+        self.assertEqual(result["transport_errors"], result["request_attempts"])
+        self.assertEqual(
+            result["transport_error_types"],
+            {"ConnectionRefusedError": result["request_attempts"]},
         )
 
 

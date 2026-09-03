@@ -1,8 +1,16 @@
-schema_version: "1.6.0"
+schema_version: "1.7.0"
 registered_at: "2026-07-27"
-amended_at: "2026-09-02"
+amended_at: "2026-09-03"
 status: frozen-with-runtime-amendments
 amendments:
+  - reason: replace-single-session-public-ssh-tunnel-with-bounded-reconnecting-supervisor-after-no-fault-transport-failure
+    preserves:
+      - failed-no-fault-run-artifacts
+      - external-to-target-node-load-generator
+      - workload-profile-rate-seed-and-duration
+      - root-cause-labels
+      - ground-truth-isolation
+      - primary-rca-metrics
   - reason: replace-brittle-absolute-payment-restart-zero-with-recorded-delta-after-first-repeat-matrix-preflight-failure
     preserves:
       - first-repeat-matrix-failure-artifacts

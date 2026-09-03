@@ -160,6 +160,7 @@ def run_workload(
     next_start = monotonic()
     statuses: Counter[str] = Counter()
     actions: Counter[str] = Counter()
+    transport_error_types: Counter[str] = Counter()
     transport_errors = 0
     request_attempts = 0
 
@@ -174,8 +175,11 @@ def run_workload(
                 timeout_seconds=timeout_seconds,
                 form=form,
             )
-        except (OSError, TimeoutError, urllib.error.URLError):
+        except (OSError, TimeoutError, urllib.error.URLError) as error:
             transport_errors += 1
+            reason = getattr(error, "reason", error)
+            error_type = type(reason).__name__
+            transport_error_types[error_type] += 1
         else:
             statuses[f"{status // 100}xx"] += 1
 
@@ -218,7 +222,7 @@ def run_workload(
             sleep(remaining)
 
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "profile": profile,
         "seed": seed,
         "synthetic_marker": marker,
@@ -226,6 +230,7 @@ def run_workload(
         "request_attempts": request_attempts,
         "status_families": dict(sorted(statuses.items())),
         "transport_errors": transport_errors,
+        "transport_error_types": dict(sorted(transport_error_types.items())),
         "actions": dict(sorted(actions.items())),
     }
 

@@ -2834,6 +2834,8 @@ def validate_controlled_fault_scenarios() -> None:
         "confirm_no_fault_control",
         "agent-rca-no-fault-control-lock",
         "Fill the complete normal-traffic baseline window",
+        "Start the reconnecting controller-to-target SSH tunnel",
+        "ConnectionAttempts=1",
         "Require an unchanged baseline before creating the synthetic alert",
         "Build the post-run no-fault control attestation",
         "Require the preregistered no-fault postconditions",
