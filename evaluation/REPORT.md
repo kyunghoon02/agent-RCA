@@ -151,21 +151,48 @@ observation window, invalid image reference, missing ConfigMap identity와 workl
 받지 않으며 Alert name, summary, generator와 verification marker도 원인을 드러내지 않는
 중립 case ID로 제한한다. Ground Truth는 실행 종료 후 Prediction에만 결합한다. 첫 시도 후
 Agent prompt나 Gate를 수정해야 하면 Holdout v1을 이어서 실행하지 않고 새 Holdout v2를
-등록한다. 현재 상태는 `frozen-unexecuted`이므로 이 절에는 정확도 결과가 없다.
+등록한다. preregistration의 `frozen-unexecuted` 상태는 실행 전에 계약을 고정한 시점을
+기록하며, 이후 runtime 결과는 아래에 분리해 기록한다.
+
+## Holdout v1 Runtime Result
+
+2026-09-03에 preregistration과 12개 scenario SHA-256을 검증한 뒤 같은 pinned Agent
+runtime으로 matrix를 순차 실행했다. 실행 중 retry, resume, Agent prompt, Provider,
+Evidence Gate와 taxonomy 변경은 없었다. Agent에는 중립 case metadata만 노출했고,
+Ground Truth는 각 Agent Prediction이 완료된 뒤 scorer에서 결합했다.
+
+| Family | Harness | Expected outcome | Top-1 / abstention | Evidence P/R | Unsupported citation | Mean ingest-to-report | Tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| checkoutservice OOMKilled | 3/3 | 3/3 `ROOT_CAUSE` | Top-1 3/3 | 1.0 / 1.0 | 0/3 | 21.33 s | 44,149 |
+| paymentservice ImagePullBackOff | 3/3 | 3/3 `ROOT_CAUSE` | Top-1 3/3 | 1.0 / 1.0 | 0/3 | 23.67 s | 46,719 |
+| checkoutservice missing ConfigMap | 3/3 | 3/3 `ROOT_CAUSE` | Top-1 3/3 | 1.0 / 1.0 | 0/3 | 20.00 s | 43,110 |
+| frontend no-fault control | 3/3 | 3/3 `ABSTAIN` | abstain 3/3 | not applicable | 0/3 | 26.00 s | 55,964 |
+| **Overall** | **12/12** | **12/12** | **fault Top-1 9/9; no-fault abstain 3/3** | **1.0 / 1.0 on 9 faults** | **0/12** | **22.75 s** | **189,942** |
+
+전체 사용량은 LLM 25회와 bounded read-only tool 34회였다. frozen model rate card가
+없어 비용은 계산하지 않았다. matrix 종료 후 12개 Online Boutique Deployment가 모두
+Ready이고, 활성 Chaos 객체, fault lock과 controlled-fault annotation이 없으며 변경했던
+checkoutservice resource와 paymentservice image가 기준값으로 복구된 것을 별도 확인했다.
+
+이 결과는 regression에 쓰지 않은 parameter와 workload surface variation에서도 등록된
+세 원인군과 no-fault 분기가 기대대로 동작했다는 증거다. 그러나 family당 3개, variant당
+1회, 같은 reference environment에서 얻은 결과이므로 알려지지 않은 원인이나 실제 장애
+모집단의 정확도를 추정하는 수치로 해석하지 않는다.
 
 ## Claim Boundary and Next Gate
 
 현재 말할 수 있는 것은 “고정된 한 runtime과 한 3-domain reference environment에서,
-등록된 단일 원인 fault 세 종류 15회와 no-fault 5회가 모두 기대 outcome을 냈고,
+등록 regression 20회와 별도 Holdout surface variant 12회가 모두 기대 outcome을 냈고,
 unsupported citation은 없었다”까지다. 이는 이전 45% baseline 이후 Agent/Gate 계약 수정이
-등록 regression set에서 효과가 있었음을 보여주지만, production 정확도나 알려지지 않은
-장애에 대한 일반화 성능을 뜻하지 않는다.
+등록 regression set과 같은 세 원인군의 미사용 surface variation에서 효과가 있었음을
+보여주지만, production 정확도나 알려지지 않은 장애에 대한 일반화 성능을 뜻하지 않는다.
 
 현재 CI는 regression과 Holdout matrix 계약, runner, scorer와 safety policy를 core test로
 검증한다. 실제 fault suite는 private runtime과 명시적 승인이 필요하므로 CI에서 자동
-실행하지 않고 수동 release gate로 유지한다. 다음 신뢰도 gate는 동결된 Holdout v1 12회를
-변경 없이 실행하는 것이다. Holdout 결과는 regression 20회와 별도로 보고하며, 새 fault,
-multi-factor 원인, 다른 cluster topology에 대한 수치도 현재 결과와 합치지 않는다.
+실행하지 않고 수동 release gate로 유지한다. 다음 신뢰도 gate는 Agent를 조정하지 않은 채
+동결된 Holdout을 다른 시점에 독립 재현하고 그 결과를 replication으로 별도 보고하는 것이다.
+새 fault, multi-factor 원인과 다른 cluster topology에 대한 평가는 별도 preregistration과
+수치 경계를 사용하며 현재 결과와 합치지 않는다.
 
 ## Reproduce
 

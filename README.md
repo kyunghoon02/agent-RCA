@@ -170,13 +170,14 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 | Post-correction fault runtime, 3 targeted smoke | fault Top-1 3/3, Evidence precision/recall 1.0/1.0, unsupported citation 0 | wiring regression 검증이며 반복 정확도 수치가 아님 |
 | Latest runtime, no-fault targeted smoke | `ABSTAIN` 1/1, abstention correctness 1.0, unsupported citation 0 | 900초 불변 baseline과 hypothesis/scorer 의미 검증 |
 | Corrected frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 20/20, fault Top-1 15/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | 동일 runtime의 등록 regression set 결과이며 production 일반화 수치가 아님 |
-| Holdout v1, 4 families × 3 variants | 계약 동결, 실행 전 | 같은 원인 taxonomy에서 미사용 surface variant 12개를 단 한 번씩 평가하며 regression 수치와 합치지 않음 |
+| Holdout v1, 4 families × 3 variants | harness 12/12, expected outcome 12/12, fault Top-1 9/9, no-fault `ABSTAIN` 3/3, unsupported citation 0 | 등록된 같은 원인 taxonomy의 미사용 surface variant 결과이며 regression 수치와 합치지 않음 |
 
 실패 artifact를 성공으로 재분류하지 않고 원인을 추적해 Gate reason code, UID-bounded
 Kubernetes Event, short Evidence reference와 Context completeness decision policy를
-보완했다. 수정 후 20회는 동일 runtime에서 처음부터 새로 실행했으며, 종료 후 모든 target
-workload의 Ready 상태와 fault cleanup도 확인했다. 이 결과는 등록된 단일 원인 fault 세 종류와
-no-fault 한 종류에만 적용한다. 수치, 실패 분석, 수정 경계와 재현 명령은
+보완했다. 수정 후 20회와 별도로 Holdout 12회도 Agent·Gate 변경 없이 실행했으며, 종료 후
+모든 target workload의 Ready 상태와 fault cleanup을 확인했다. Holdout에서는 중립 Alert
+metadata를 사용하고 Ground Truth를 Agent 실행 이후에만 결합했다. 이 결과는 등록된 단일 원인
+fault 세 종류와 no-fault 한 종류에만 적용한다. 수치, 실패 분석, 수정 경계와 재현 명령은
 [Evaluation and Reliability Record](evaluation/REPORT.md)에 기록한다. 평가 계약의 source of
 truth는 regression용 [Evaluation Preregistration](evaluation/preregistration.yaml)과
 독립 holdout용 [Holdout v1 Preregistration](evaluation/holdout-v1-preregistration.yaml)이다.
@@ -200,9 +201,10 @@ truth는 regression용 [Evaluation Preregistration](evaluation/preregistration.y
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
 - 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
-- 수정 후 반복 matrix는 한 reference environment의 등록 scenario당 5개 표본이다. 알려지지
-  않은 장애, multi-factor 원인, 다른 cluster topology와 production 정확도는 검증하지 않았다.
-- Holdout v1은 12개 scenario와 해시가 동결됐지만 아직 runtime 결과가 없다.
+- 수정 후 반복 matrix는 한 reference environment의 등록 scenario당 5개 표본이다.
+- Holdout v1도 같은 세 cause family의 surface variant를 같은 reference environment에서 각각
+  한 번 실행한 결과다. 알려지지 않은 장애, multi-factor 원인, 다른 cluster topology와
+  production 정확도는 검증하지 않았다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start
