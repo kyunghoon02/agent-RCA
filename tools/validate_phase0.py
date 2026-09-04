@@ -3042,6 +3042,47 @@ def validate_controlled_fault_scenarios() -> None:
         raise ValidationFailure("holdout v1 family variants are incomplete")
 
 
+def validate_host_and_chaos_command_boundaries() -> None:
+    all_vars = load_yaml_documents(
+        ROOT / "automation" / "ansible" / "group_vars" / "all.yml"
+    )[0]
+    if int(all_vars.get("kubernetes_inotify_max_user_instances", 0)) < 512:
+        raise ValidationFailure("Kubernetes host inotify instance capacity is too small")
+
+    host_tasks = (
+        ROOT
+        / "automation"
+        / "ansible"
+        / "roles"
+        / "host_prerequisites"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    if (
+        "fs.inotify.max_user_instances = "
+        "{{ kubernetes_inotify_max_user_instances }}"
+        not in host_tasks
+    ):
+        raise ValidationFailure("Kubernetes host inotify setting is not persisted")
+
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    for target in ("deploy-chaos-mesh", "verify-chaos-mesh"):
+        match = re.search(
+            rf"(?m)^{re.escape(target)}:\n(?P<body>(?:\t.*\n)+)",
+            makefile,
+        )
+        if match is None:
+            raise ValidationFailure(f"Make target {target} is missing")
+        body = match.group("body")
+        if (
+            "-i $(ANSIBLE_TARGET_INVENTORY)" not in body
+            or "-i $(ANSIBLE_INVENTORY)" in body
+        ):
+            raise ValidationFailure(
+                f"Make target {target} can escape the fault-target inventory"
+            )
+
+
 def main() -> None:
     examples = validate_contracts()
     validate_namespaces()
@@ -3055,6 +3096,7 @@ def main() -> None:
     validate_policy_configs()
     validate_negative_evidence_reference(examples)
     validate_controlled_fault_scenarios()
+    validate_host_and_chaos_command_boundaries()
     print("Phase 0 validation passed:")
     print(f"- {len(schema_registry()[0])} JSON Schemas are structurally valid")
     print("- 6 contract fixture groups are valid")
@@ -3062,6 +3104,7 @@ def main() -> None:
     print("- namespace and read-only RBAC boundaries are valid")
     print("- GCP self-managed Kubernetes target, readiness gates, and Kustomize pins are consistent")
     print("- opt-in Kubernetes 1.35 Chaos Mesh evaluation boundaries are consistent")
+    print("- host inotify capacity and Chaos target inventory boundaries are consistent")
     print("- private three-domain telemetry, RCA control, and fault-target boundaries are consistent")
     print("- private Incident Viewer frontend and same-origin BFF boundaries are consistent")
     print("- routing, Knowledge retrieval, Graph, and Ground Truth policies are frozen")

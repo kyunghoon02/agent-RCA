@@ -212,7 +212,9 @@ truth는 regression용 [Evaluation Preregistration](evaluation/preregistration.y
 - temporal replication에서 Evidence 선택은 정확했지만 LLM draft schema 위반 1건이
   fail-closed됐다. 당시 감사 record에는 validation 좌표가 없어 그 과거 실패 field는 사후
   구분할 수 없다. 현재 새 실패는 원본 draft나 값을 저장하지 않고 JSON/schema Pointer와
-  keyword만 audit와 Viewer에 남긴다. strict structured output 경계 평가는 아직 남아 있다.
+  keyword만 audit와 Viewer에 남긴다. 후속 strict structured output 검증은 등록 scenario
+  4개를 2회씩 실행해 계약 위반 없이 8/8을 기록했지만, 작은 재사용 표본이므로 장기
+  production reliability를 입증하지 않는다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
 
 ## Quick Start

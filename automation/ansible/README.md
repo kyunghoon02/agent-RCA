@@ -76,6 +76,7 @@ Kubernetes 1.35 pin cannot downgrade the existing v1.36 runtime:
 cp automation/ansible/inventories/chaos-eval.example.yml \
   automation/ansible/inventories/chaos-eval.yml
 export ANSIBLE_INVENTORY=automation/ansible/inventories/chaos-eval.yml
+export ANSIBLE_TARGET_INVENTORY=automation/ansible/inventories/chaos-eval.yml
 make bootstrap-kubernetes
 make deploy-observability
 make deploy-online-boutique
@@ -87,7 +88,9 @@ Populate the ignored inventory only after applying the reviewed opt-in
 Terraform plan. Chaos Mesh is namespace-scoped to `online-boutique`; its
 dashboard remains ClusterIP with security mode enabled, and installation
 verification refuses to pass while any PodChaos, NetworkChaos or StressChaos
-resource is active. StateGraph and Incident Platform run in the RCA control
+resource is active. The Chaos-specific Make targets always use
+`ANSIBLE_TARGET_INVENTORY`; generic bootstrap and workload targets use
+`ANSIBLE_INVENTORY`. StateGraph and Incident Platform run in the RCA control
 domain, not on this fault target.
 
 ## Three-domain deployment

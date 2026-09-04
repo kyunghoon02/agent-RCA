@@ -244,12 +244,12 @@ verify-observability:
 
 deploy-chaos-mesh:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
-		-i $(ANSIBLE_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
 		automation/ansible/playbooks/deploy-chaos-mesh.yml
 
 verify-chaos-mesh:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
-		-i $(ANSIBLE_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
 		automation/ansible/playbooks/verify-chaos-mesh.yml
 
 deploy-online-boutique:
