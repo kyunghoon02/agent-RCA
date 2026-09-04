@@ -17,6 +17,26 @@ Agent RCA는 Incident scope를 먼저 고정하고, 여러 관측 소스의 데�
 bounded read-only Agent가 그 범위 안에서 Evidence를 검사한다. 모든 결론은 실제
 `evidence_id`로 추적하며, 근거가 부족하거나 충돌하면 추측하지 않고 `ABSTAIN`한다.
 
+## Runtime Walkthrough
+
+아래 화면은 fixture가 아니라 GCP reference runtime에서 controlled evaluation으로 생성해
+저장한 read-only Incident artifact다.
+
+![Evidence-gated OOM root-cause report](assets/viewer-rca-conclusive.png)
+
+OOM 결론은 Kubernetes와 telemetry에서 수집한 두 Evidence를 인용하며, 전체 Incident
+lifecycle과 `PROVEN` 판정을 같은 화면에서 추적할 수 있다.
+
+![Only Evidence cited by the RCA Report](assets/viewer-evidence-traceability.png)
+
+Report가 실제 인용한 Evidence만 필터링하면 Loki의 kernel cgroup OOM 신호와 Prometheus의
+Pod restart 증가가 동일한 Frozen Context에 포함된 것을 확인할 수 있다.
+
+![Evidence Gate ABSTAIN on a no-fault control](assets/viewer-abstain.png)
+
+no-fault control에서는 분석 작업 자체는 정상 완료되지만, 원인별 증명 조건을 만족하지 않아
+root cause를 만들지 않고 `ABSTAIN`한다.
+
 ## Architecture
 
 > 논리 아키텍처는 cloud-neutral이며, 현재 reference runtime은 GCP Compute Engine의
