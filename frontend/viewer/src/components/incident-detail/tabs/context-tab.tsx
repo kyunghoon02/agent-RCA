@@ -210,7 +210,8 @@ function ContextPanel({
           </div>
           {context.recent_change_evidence_ids.length > 0 && (
             <p className="mt-1.5 text-[11px] text-muted-foreground">
-              Highlighted items are recent-change Evidence.
+              Highlighted items are StateGraph activity recorded inside the
+              Incident window.
             </p>
           )}
 
@@ -480,7 +481,7 @@ function TopologyView({
         <Metric term="Entities" value={String(topology.entityCount)} />
         <Metric term="Paths" value={String(topology.pathCount)} />
         <Metric term="Evidence" value={String(topology.evidenceCount)} />
-        <Metric term="Recent change" value={String(topology.recentChangeCount)} />
+        <Metric term="Window activity" value={String(topology.recentChangeCount)} />
         <Metric term="Namespaces" value={topology.namespaces.join(", ") || "—"} />
         <Metric term="Strategy" value={topology.strategy} />
         <Metric term="Completeness" value={formatRatio(topology.completeness)} />

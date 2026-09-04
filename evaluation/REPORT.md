@@ -1,8 +1,10 @@
 # Evaluation and Reliability Record
 
 이 문서는 Agent RCA의 성능 수치를 홍보용 한 줄로 축약하지 않고, 어떤 runtime과
-평가 경계에서 무엇을 측정했는지 기록한다. Incident ID, evaluation ID, cloud account
-정보와 원본 로그는 공개 문서에 넣지 않고 `evaluation/runs/private/`에만 보관한다.
+평가 경계에서 무엇을 측정했는지 기록한다. evaluation ID, cloud account 정보, Ground
+Truth 원본과 원본 로그는 공개 문서에 넣지 않고 `evaluation/runs/private/`에만 보관한다.
+공개 화면은 synthetic Incident artifact만 사용하며 runtime identifier는 일관된 별칭으로
+치환한다. 판정, Evidence 수와 인용 관계는 변경하지 않는다.
 
 ## Method
 

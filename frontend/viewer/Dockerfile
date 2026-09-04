@@ -3,7 +3,7 @@ FROM docker.io/library/node:22.17.1-bookworm-slim@sha256:ffb27ca0f26a231a08930c8
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --no-audit
 
 FROM docker.io/library/node:22.17.1-bookworm-slim@sha256:ffb27ca0f26a231a08930c872631cea70cbb318463d1e712922b5c7cfdc3fcca AS builder
 

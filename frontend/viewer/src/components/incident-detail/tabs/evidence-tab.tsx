@@ -339,7 +339,11 @@ function EvidenceSummaryBar({
     { label: "Total Evidence", value: summary.total },
     { label: "Subjects", value: summary.subjects, hint: "Distinct resources observed" },
     { label: "In Frozen Context", value: summary.inContext },
-    { label: "Recent change", value: summary.recentChange },
+    {
+      label: "Window activity",
+      value: summary.recentChange,
+      hint: "StateGraph change or event inside the Incident window",
+    },
     {
       label: "Insufficient / partial",
       value: summary.degraded,
@@ -450,7 +454,9 @@ function SubjectGroupRow({
               <Badge tone="info">{group.inContextCount} in Context</Badge>
             )}
             {group.recentChangeCount > 0 && (
-              <Badge tone="warning">{group.recentChangeCount} recent change</Badge>
+              <Badge tone="warning">
+                {group.recentChangeCount} in Incident window
+              </Badge>
             )}
             {group.degradedCount > 0 && (
               <Badge tone="critical">

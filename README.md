@@ -13,19 +13,34 @@ window 안에서 함께 확인해야 한다. 일반적인 LLM 요약은 시간�
 문서를 실제 원인 Evidence로 오인할 수도 있다.
 
 Agent RCA는 Incident scope를 먼저 고정하고, 여러 관측 소스의 데이터를 검증된
-`EvidenceItem`으로 정규화한다. 이후 KRCA와 Temporal StateGraph가 조사 범위를 줄이고,
-bounded read-only Agent가 그 범위 안에서 Evidence를 검사한다. 모든 결론은 실제
-`evidence_id`로 추적하며, 근거가 부족하거나 충돌하면 추측하지 않고 `ABSTAIN`한다.
+`EvidenceItem`으로 정규화한다. 이후 [KRCA-style drilldown](contracts/krca-drilldown.md),
+즉 KRCA 논문에서 차용한 API-level failure/latency propagation 분석과 Temporal
+StateGraph가 조사 범위를 줄이고, bounded read-only Agent가 그 범위 안에서 Evidence를
+검사한다. 이 프로젝트는 KRCA 논문의 전체 시스템이 아니라 이 drilldown 범위만 구현한다.
+모든 결론은 실제 `evidence_id`로 추적하며, 근거가 부족하거나 충돌하면 추측하지 않고
+`ABSTAIN`한다.
+
+## How It Decides
+
+`Frozen Context`는 분석 시작 시점에 선택한 Entity, Graph 경로, Evidence와 누락 source를
+고정한 변경 불가능한 Incident snapshot이다. 따라서 live cluster 상태가 나중에 바뀌어도
+Agent가 무엇을 보고 판단했는지 재현할 수 있다.
+
+`Evidence Gate`는 Agent가 고른 원인과 인용한 `evidence_id`가 이 snapshot 안에 있고,
+원인별 필수 증명 조건을 만족하는지 다시 검사한다. 통과하면 Report를 저장하고, 근거가
+부족하거나 충돌하면 원인을 추측하지 않고 `ABSTAIN`을 저장한다.
 
 ## Runtime Walkthrough
 
 아래 화면은 fixture가 아니라 GCP reference runtime에서 controlled evaluation으로 생성해
-저장한 read-only Incident artifact다.
+저장한 read-only Incident artifact다. 공개 캡처에서는 runtime identifier만 일관된 별칭으로
+치환하며, Report 판정과 Evidence 관계는 바꾸지 않는다.
 
 ![Evidence-gated OOM root-cause report](assets/viewer-rca-conclusive.png)
 
-OOM 결론은 Kubernetes와 telemetry에서 수집한 두 Evidence를 인용하며, 전체 Incident
-lifecycle과 `PROVEN` 판정을 같은 화면에서 추적할 수 있다.
+OOM 결론은 Loki의 kernel cgroup OOM 신호와 Prometheus의 Pod restart 증가를 인용하며,
+전체 Incident lifecycle과 `PROVEN` 판정을 같은 화면에서 추적할 수 있다. 화면 상단의
+`4 Evidence missing`은 확정된 OOM 원인이 아니라 배제된 하위 가설의 미충족 증명 조건이다.
 
 ![Only Evidence cited by the RCA Report](assets/viewer-evidence-traceability.png)
 
@@ -64,6 +79,7 @@ flowchart LR
         Q[(PostgreSQL Incident and Work Queue)]
         CW[Collection Worker]
         EB[EvidenceBuilder]
+        PJ[Domain Projectors]
         SG[(Temporal StateGraph)]
         AO[Agent RCA and Evidence Gate]
         R[RCA Report or ABSTAIN]
@@ -73,7 +89,7 @@ flowchart LR
     FW -->|logs| L
     FW -->|OTLP traces| TP
     AM -->|private authenticated webhook| RX
-    RX --> Q --> CW --> EB --> SG --> AO --> R
+    RX --> Q --> CW --> EB --> PJ --> SG --> AO --> R
     P --> CW
     L --> CW
     K --> CW
@@ -187,11 +203,8 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 | Evaluation boundary | Result | Interpretation |
 |---|---|---|
 | Historical frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 9/20, fault Top-1 4/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | Agent/Gate interface failures를 포함한 수정 전 baseline |
-| Post-correction fault runtime, 3 targeted smoke | fault Top-1 3/3, Evidence precision/recall 1.0/1.0, unsupported citation 0 | wiring regression 검증이며 반복 정확도 수치가 아님 |
-| Latest runtime, no-fault targeted smoke | `ABSTAIN` 1/1, abstention correctness 1.0, unsupported citation 0 | 900초 불변 baseline과 hypothesis/scorer 의미 검증 |
 | Corrected frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 20/20, fault Top-1 15/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | 동일 runtime의 등록 regression set 결과이며 production 일반화 수치가 아님 |
-| Holdout v1, 4 families × 3 variants | harness 12/12, expected outcome 12/12, fault Top-1 9/9, no-fault `ABSTAIN` 3/3, unsupported citation 0 | 등록된 같은 원인 taxonomy의 미사용 surface variant 결과이며 regression 수치와 합치지 않음 |
-| Holdout v1 temporal replication | harness 12/12, expected outcome 11/12, fault Top-1 8/9, no-fault `ABSTAIN` 3/3, unsupported citation 0 | missing ConfigMap 1건의 LLM draft가 output schema를 위반해 Evidence Gate가 fail-closed한 독립 재실행 결과 |
+| Holdout v1 and temporal replication, 각 12회 | 최초 12/12; 독립 재실행 11/12, fault Top-1 8/9, no-fault `ABSTAIN` 3/3, unsupported citation 0 | 같은 원인 taxonomy의 미사용 surface variant 결과. 재실행 1건은 schema 위반으로 fail-closed |
 | Strict structured-output check, 4 scenarios × 2 | `REPORT_ACCEPTED` 8/8, model failure 0, draft contract rejection 0, expected outcome 8/8, unsupported citation 0 | 알려진 scenario를 재사용한 작은 표본의 output-contract 검증이며 정확도·일반화 수치가 아님 |
 
 실패 artifact를 성공으로 재분류하지 않고 원인을 추적해 Gate reason code, UID-bounded
@@ -239,7 +252,7 @@ truth는 regression용 [Evaluation Preregistration](evaluation/preregistration.y
 
 ## Quick Start
 
-로컬 contract와 core test:
+로컬 contract, 문서 링크와 core test:
 
 ```bash
 make bootstrap-dev
@@ -247,96 +260,17 @@ make validate-docs
 make validate-core
 ```
 
-manifest와 Ansible 정적 검증:
+GCP foundation 생성은 [GCP Infrastructure](infra/terraform/README.md), kubeadm/Cilium과
+세 failure domain 배포·검증은
+[Kubernetes Bootstrap and Deployment](automation/ansible/README.md)를 따른다. workload와
+telemetry 설정은 각각 [Online Boutique target](platform/online-boutique/README.md)과
+[Observability stack](platform/observability/README.md)에 기록한다.
 
-```bash
-make terraform-validate
-make ansible-syntax
-make render-observability
-make render-chaos-mesh
-make render-stategraph
-make render-incident-platform
-make render-viewer-frontend
-```
-
-구성된 development inventory에 배포하고 검증:
-
-```bash
-make deploy-stategraph
-make deploy-incident-platform
-make verify-incident-platform
-make deploy-viewer-frontend
-make verify-viewer-frontend
-make deploy-three-domain
-make smoke-krca-coverage
-```
-
-`deploy-three-domain`의 synthetic alert는 webhook, queue와 기본 Provider 연결만 검증하며
-KRCA profile을 실행하지 않는다. `smoke-krca-coverage`는 별도의 15분 bounded workload로
-여섯 frontend route와 직전 baseline 구간을 채운 뒤, 모든 KRCA profile과 실제
-`Alertmanager → Incident worker → Evidence` 저장 경로를 검증한다.
-
-No-fault control은 정상 트래픽만 발생시키며, 실행 중 workload와 Pod snapshot이 바뀌면
-평가를 폐기한다. Controlled fault는 development 환경에서만 명시적으로 승인해 실행한다.
-
-```bash
-make evaluate-no-fault-control CONFIRM_NO_FAULT_CONTROL=yes
-make evaluate-checkout-oom CONFIRM_CONTROLLED_FAULT=yes
-make evaluate-payment-image-pull CONFIRM_CONTROLLED_FAULT=yes
-make evaluate-checkout-missing-configmap CONFIRM_CONTROLLED_FAULT=yes
-```
-
-반복 평가는 고정된 4개 시나리오를 각각 5회 순차 실행한다. 먼저 mutation 없는
-계획을 확인하고, 실제 실행 때만 현재 `main` commit 전체 SHA로 승인한다. 실행 로그와
-Incident 식별자가 포함된 결과는 `evaluation/runs/private/`에만 저장되며 첫 실패에서
-중단된다.
-
-```bash
-make plan-evaluation-matrix
-CONFIRM_EVALUATION_MATRIX="$(git rev-parse HEAD)" make evaluate-matrix
-make summarize-evaluation-matrix \
-  EVALUATION_MATRIX_MANIFEST=evaluation/runs/private/matrix/<run>/manifest.json
-```
-
-실패 원인을 확인한 뒤에는 같은 확인값과
-`EVALUATION_MATRIX_RESUME=<manifest>`로 실패 회차 다음부터 재개한다.
-
-Holdout v1은 기존 Agent image, Provider, prompt, Evidence Gate와 cause taxonomy를 그대로
-사용해 family별 3개 surface variant를 한 번씩 실행한다. scenario manifest와 Ground Truth는
-Agent 입력에서 격리되고, 첫 실행 뒤 Agent나 Gate를 바꾸면 v1을 재개하지 않고 v2를 새로
-등록한다.
-
-```bash
-make plan-holdout-matrix
-CONFIRM_HOLDOUT_EVALUATION_MATRIX="$(git rev-parse HEAD)" \
-  make evaluate-holdout-matrix
-make summarize-evaluation-matrix \
-  EVALUATION_MATRIX_MANIFEST=evaluation/runs/private/matrix/<run>/manifest.json
-```
-
-실패 후 동일한 동결 runtime으로 재개할 때만
-`HOLDOUT_EVALUATION_MATRIX_RESUME=<manifest>`를 사용한다.
-
-missing ConfigMap scenario는 required volume reference에서 이름만 발견하고 Kubernetes
-API로 해당 ConfigMap의 존재 여부를 다시 확인한다. ConfigMap 값과 Pod spec 원문은
-Evidence에 저장하지 않는다. live harness는 fault 제거와 rollout 복구까지 검증한다.
-
-배포된 Viewer frontend와 API는 RCA control cluster의 `ClusterIP`로만 노출된다.
-Ingress, NodePort와 LoadBalancer는 만들지 않으며, browser에는 API bearer token을
-노출하지 않는다. 로컬에서 확인할 때는 RCA control VM을 거치는 다음 SSH tunnel만
-열고 `http://127.0.0.1:13100`에 접속한다.
-
-```bash
-ssh -i ~/.ssh/google_compute_engine \
-  -L 13100:127.0.0.1:13100 \
-  <VM_USER>@<RCA_CONTROL_PUBLIC_IP> \
-  'sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf \
-    --namespace incident-platform port-forward \
-    service/incident-viewer-frontend 13100:3100 --address=127.0.0.1'
-```
-
-이 tunnel은 Viewer frontend에만 도달한다. frontend의 same-origin BFF가 cluster 내부
-Viewer API를 호출하므로 별도의 로컬 API tunnel이나 browser token 설정은 필요 없다.
+Controlled evaluation은 development runtime과 명시적 승인에서만 실행한다. Ground Truth
+격리, fault cleanup, 반복·holdout 절차와 재현 명령은
+[Evaluation and Reliability Record](evaluation/REPORT.md)가 담당한다. Viewer는 public
+Ingress 없이 RCA control cluster의 `ClusterIP`로만 배포하며, private access와 API 경계는
+[Viewer Contract](contracts/viewer.md)에서 확인한다.
 
 ## Repository Structure
 

@@ -43,6 +43,40 @@ jobs:
       - name: Validate documentation, contracts and unit tests
         run: make validate-docs validate-core
 
+  viewer:
+    name: Viewer tests and production build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend/viewer
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22.17.1"
+          cache: npm
+          cache-dependency-path: frontend/viewer/package-lock.json
+
+      - name: Install locked Viewer dependencies
+        run: npm ci --no-audit
+
+      - name: Run Viewer unit tests
+        run: npm test
+
+      - name: Check Viewer types
+        run: npm run typecheck
+
+      - name: Build the production Viewer
+        run: npm run build
+
   infrastructure:
     name: Terraform and Ansible static validation
     runs-on: ubuntu-24.04

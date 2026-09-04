@@ -19,6 +19,11 @@ const STATUS_FILL: Record<RcaHypothesis["status"], string> = {
   rejected: "var(--status-neutral)",
 };
 
+function percentageLabel(value: unknown): string {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? `${numeric}%` : "—";
+}
+
 /**
  * Ranked hypothesis confidence.
  *
@@ -55,8 +60,8 @@ export function HypothesisChart({ hypotheses }: { hypotheses: RcaHypothesis[] })
               fontSize: 11,
               color: "var(--popover-foreground)",
             }}
-            formatter={(value: number, _name, entry) => [
-              `${value}% · ${(entry?.payload as { status?: string })?.status ?? ""}`,
+            formatter={(value, _name, entry) => [
+              `${percentageLabel(value)} · ${(entry?.payload as { status?: string })?.status ?? ""}`,
               "confidence",
             ]}
           />
@@ -67,7 +72,7 @@ export function HypothesisChart({ hypotheses }: { hypotheses: RcaHypothesis[] })
             <LabelList
               dataKey="confidence"
               position="right"
-              formatter={(value: number) => `${value}%`}
+              formatter={percentageLabel}
               style={{ fontSize: 11, fill: "var(--muted-foreground)" }}
             />
           </Bar>

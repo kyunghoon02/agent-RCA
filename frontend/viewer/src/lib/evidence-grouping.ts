@@ -26,7 +26,7 @@ export type RelevanceTag =
 export const RELEVANCE_LABELS: Record<RelevanceTag, string> = {
   CITED_BY_REPORT: "Cited by Report",
   IN_CONTEXT: "In Frozen Context",
-  RECENT_CHANGE: "Recent change",
+  RECENT_CHANGE: "Incident-window activity",
   NOT_USED_BY_REPORT: "Not used by Report",
   OUTSIDE_CONTEXT: "Outside Frozen Context",
 };
