@@ -1,0 +1,112 @@
+---
+- name: Require an independently pinned Viewer API image
+  ansible.builtin.assert:
+    that:
+      - incident_platform.viewer_api.image_tag is match('^runtime-[0-9a-f]{12}$')
+      - incident_platform.viewer_api.image_digest is match('^sha256:[0-9a-f]{64}$')
+    fail_msg: The Viewer API requires its own runtime image pin.
+
+- name: Require the existing Viewer API Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment {{ incident_platform_viewer_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_viewer_api_before
+  changed_when: false
+
+- name: Require the existing Viewer-only identity before changing its image
+  ansible.builtin.assert:
+    that:
+      - (incident_viewer_api_before.stdout | from_json).spec.template.spec.containers | length == 1
+      - (incident_viewer_api_before.stdout | from_json).spec.template.spec.containers[0].name == 'viewer'
+      - (incident_viewer_api_before.stdout | from_json).spec.template.spec.serviceAccountName == 'incident-viewer'
+      - not ((incident_viewer_api_before.stdout | from_json).spec.template.spec.automountServiceAccountToken)
+    fail_msg: Install the private Incident Platform before this image-only Viewer rollout.
+
+- name: Read the GCP project identity for the Viewer API image
+  ansible.builtin.uri:
+    url: http://metadata.google.internal/computeMetadata/v1/project/project-id
+    headers:
+      Metadata-Flavor: Google
+    return_content: true
+  register: incident_viewer_api_gcp_project
+  no_log: true
+
+- name: Read a short-lived VM token for the Viewer API image
+  ansible.builtin.uri:
+    url: http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+    headers:
+      Metadata-Flavor: Google
+    return_content: true
+  register: incident_viewer_api_registry_token
+  no_log: true
+
+- name: Refresh the private Artifact Registry pull Secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: artifact-registry
+        namespace: {{ incident_platform_namespace }}
+      type: kubernetes.io/dockerconfigjson
+      stringData:
+        .dockerconfigjson: >-
+          {"auths":{"{{ execution_target.location }}-docker.pkg.dev":{"username":"oauth2accesstoken","password":"{{ (incident_viewer_api_registry_token.content | from_json).access_token }}","auth":"{{ ('oauth2accesstoken:' + (incident_viewer_api_registry_token.content | from_json).access_token) | b64encode }}"}}}
+  register: incident_viewer_api_registry_secret_apply
+  changed_when: >-
+    ' created' in incident_viewer_api_registry_secret_apply.stdout
+    or ' configured' in incident_viewer_api_registry_secret_apply.stdout
+  no_log: true
+
+- name: Resolve the independently pinned Viewer API image
+  ansible.builtin.set_fact:
+    incident_viewer_api_image: >-
+      {{ execution_target.location }}-docker.pkg.dev/{{ incident_viewer_api_gcp_project.content }}/{{ incident_platform.artifact_repository_id }}/agent-rca-runtime@{{ incident_platform.viewer_api.image_digest }}
+  no_log: true
+
+- name: Patch only the existing Viewer API container image
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - patch
+      - deployment
+      - "{{ incident_platform_viewer_deployment }}"
+      - --namespace
+      - "{{ incident_platform_namespace }}"
+      - --type=strategic
+      - --patch
+      - "{{ {'spec': {'template': {'spec': {'containers': [{'name': 'viewer', 'image': incident_viewer_api_image}]}}}} | to_json }}"
+  register: incident_viewer_api_patch
+  changed_when: "'(no change)' not in incident_viewer_api_patch.stdout"
+
+- name: Wait for the private Viewer API Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    rollout status deployment/{{ incident_platform_viewer_deployment }}
+    --namespace {{ incident_platform_namespace }}
+    --timeout={{ incident_platform_wait_timeout }}
+  changed_when: false
+
+- name: Read the rolled-out Viewer API Deployment
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get deployment {{ incident_platform_viewer_deployment }}
+    --namespace {{ incident_platform_namespace }} --output json
+  register: incident_viewer_api_after
+  changed_when: false
+
+- name: Require the ready Viewer API to use the requested digest
+  ansible.builtin.assert:
+    that:
+      - (incident_viewer_api_after.stdout | from_json).status.readyReplicas == 1
+      - (incident_viewer_api_after.stdout | from_json).spec.template.spec.containers[0].image == incident_viewer_api_image
+    fail_msg: The Viewer API rollout did not reach the pinned image.

@@ -133,7 +133,11 @@
     kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
     '/api/v1/namespaces/{{ incident_platform_namespace
     }}/services/http:{{ incident_platform_viewer_frontend_service
-    }}:3100/proxy/api/viewer/api/v1/incidents?limit=1'
+    }}:3100/proxy/api/viewer/api/v1/incidents?{{ item }}'
+  loop:
+    - limit=1
+    - limit=1&search=checkout
+    - limit=1&search=checkout&status=REPORTED
   register: incident_viewer_frontend_bff_query
   changed_when: false
   no_log: true
@@ -141,6 +145,8 @@
 - name: Require a live schema-versioned Viewer BFF response
   ansible.builtin.assert:
     that:
-      - (incident_viewer_frontend_bff_query.stdout | from_json).schema_version == '1.0.0'
-      - (incident_viewer_frontend_bff_query.stdout | from_json)['items'] | length >= 0
+      - (item.stdout | from_json).schema_version == '1.0.0'
+      - (item.stdout | from_json)['items'] | length <= 1
     fail_msg: The Viewer frontend BFF cannot reach the private Viewer API.
+  loop: "{{ incident_viewer_frontend_bff_query.results }}"
+  no_log: true

@@ -30,7 +30,7 @@ NO_FAULT_CONTROL_SCENARIO_PATH ?= evaluation/scenarios/frontend-no-fault-normal.
 	render-stategraph deploy-stategraph verify-stategraph \
 	render-viewer-frontend build-viewer-frontend-image \
 	deploy-incident-platform verify-incident-platform \
-	deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom \
+	deploy-viewer-api deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom \
 	evaluate-payment-image-pull \
 	evaluate-checkout-missing-configmap \
 	evaluate-no-fault-control \
@@ -185,6 +185,9 @@ ansible-syntax:
 		automation/ansible/playbooks/deploy-incident-viewer-frontend.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/deploy-incident-viewer-api.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/verify-incident-viewer-frontend.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
@@ -281,6 +284,11 @@ verify-incident-platform:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_INVENTORY) \
 		automation/ansible/playbooks/verify-incident-platform.yml
+
+deploy-viewer-api:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		automation/ansible/playbooks/deploy-incident-viewer-api.yml
 
 deploy-viewer-frontend:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \

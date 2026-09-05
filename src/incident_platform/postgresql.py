@@ -609,10 +609,10 @@ class PostgreSQLIncidentRepository:
             parameters.append(namespace)
         if search is not None:
             clauses.append(
-                "POSITION(lower(%s) IN lower("
-                "incident_id || ' ' || document->'alert'->>'name' || ' ' || "
-                "document->'source_entity'->>'name' || ' ' || "
-                "(document->'alert'->'labels')::text)) > 0"
+                "POSITION(lower(%s) IN lower(concat_ws(' ', "
+                "incident_id, document->'alert'->>'name', "
+                "document->'source_entity'->>'name', "
+                "(document->'alert'->'labels')::text))) > 0"
             )
             parameters.append(search)
         if before_updated_at is not None:

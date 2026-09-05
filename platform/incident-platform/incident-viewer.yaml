@@ -58,7 +58,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: viewer
-          image: agent-rca-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          image: agent-rca-viewer-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
           imagePullPolicy: IfNotPresent
           command:
             - gunicorn

@@ -1,0 +1,13 @@
+---
+- name: Update only the existing private Viewer API and verify its BFF
+  hosts: rca_control
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/default-profile.yml
+    - ../../../platform/versions.yaml
+
+  roles:
+    - role: incident_viewer_api_stack
+    - role: incident_viewer_frontend_verify

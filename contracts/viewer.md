@@ -87,9 +87,11 @@ same-origin backend가 보관하는 것을 전제로 한다.
 현재 구현은 Python service/repository contract, PostgreSQL adapter, 인증된 bounded WSGI
 transport, Next.js UI와 server-side BFF를 포함한다. API는 private ClusterIP로 배포하고
 별도 PostgreSQL role에 table `SELECT`만 부여하며 mutation 권한과 실제 mutation query를
-모두 거부하는지 검증한다. authenticated list/detail/work request와 local BFF를 통한 live
+모두 거부하는지 검증한다. authenticated list/detail/work request와 in-cluster BFF를 통한 live
 Incident/Evidence 조회도 확인했다.
 
-아직 UI의 cluster Deployment, public ingress/domain과 사용자 session/role 기반 인증은
-없다. Grafana/Loki/Hubble deep link의 runtime allowlist와 production PostgreSQL query plan,
+UI와 BFF도 RCA control cluster의 private ClusterIP로 배포하며 SSH port-forward로 접근한다.
+Viewer API 이미지는 `incident_platform.viewer_api`로 별도 고정해 Agent runtime을 바꾸지
+않고 배포할 수 있다. public ingress/domain과 사용자 session/role 기반 인증은 없다.
+Grafana/Loki/Hubble deep link의 runtime allowlist와 production PostgreSQL query plan,
 외부 노출을 전제로 한 rate limit도 미구현이다.

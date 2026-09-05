@@ -10,6 +10,7 @@ from incident_platform.evidence import (
     EvidenceBuilder,
     EvidenceDraft,
 )
+from incident_platform.errors import ContractViolation
 from incident_platform.incidents import AlertmanagerNormalizer
 from incident_platform.postgresql import (
     PostgreSQLIncidentAnalysisWorkRepository,
@@ -26,6 +27,7 @@ from incident_platform.stategraph_observations import (
     StateGraphObservationCycle,
     StateGraphObservationRepository,
 )
+from incident_platform.viewer import IncidentViewerQueryService
 
 from contract_suites import FIXED_TIME, IncidentRepositoryContract, contract_request
 
@@ -546,11 +548,8 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        try:
-            import psycopg
-            from psycopg import sql
-        except ImportError as error:
-            raise unittest.SkipTest("psycopg is not installed") from error
+        import psycopg
+        from psycopg import sql
 
         cls._psycopg = psycopg
         cls._sql = sql
@@ -600,6 +599,98 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
             incident,
             evidence,
         )
+
+    def test_viewer_search_and_filtered_pagination_execute_in_postgresql(self) -> None:
+        repository = PostgreSQLIncidentRepository(self.connection_factory)
+        viewer = IncidentViewerQueryService(repository)
+        marker = f"ViewerSearch{uuid.uuid4().hex}"
+        namespace = f"viewer-search-{uuid.uuid4().hex}"
+        incidents = []
+        for index in range(4):
+            incident = contract_incident()
+            incident["incident_id"] = f"inc-{uuid.uuid4().hex}"
+            incident["deduplication_key"] = f"viewer-search-{uuid.uuid4().hex}"
+            incident["alert"]["name"] = marker
+            incident["alert"]["labels"] = {
+                "alertname": marker,
+                "literal": "30%_literal ' quoted",
+            }
+            incident["source_entity"]["name"] = "viewer-search-service"
+            incident["source_entity"]["namespace"] = namespace
+            if index == 1:
+                # Resolved graph entities keep the namespace under scope.
+                incident["source_entity"] = {
+                    "entity_id": f"ent-{uuid.uuid4().hex}",
+                    "entity_type": "Service",
+                    "domain": "application",
+                    "name": "viewer-search-service",
+                    "scope": {"namespace": namespace},
+                    "external_ref": None,
+                    "exists": True,
+                }
+            if index == 2:
+                incident["updated_at"] = "2026-08-12T01:04:00Z"
+            if index == 3:
+                incident["severity"] = "critical"
+            repository.create_or_get_by_deduplication_key(incident)
+            incidents.append(incident)
+
+        query = {
+            "schema_version": "1.0.0",
+            "statuses": ["RECEIVED"],
+            "severities": ["warning"],
+            "namespace": namespace,
+            "search": marker.lower(),
+            "limit": 2,
+            "cursor": None,
+        }
+        expected_ids = [
+            item["incident_id"] for item in sorted(
+                incidents[:3],
+                key=lambda item: (item["updated_at"], item["incident_id"]),
+                reverse=True,
+            )
+        ]
+        for search in (marker.upper(), "VIEWER-SEARCH-SERVICE", "30%_literal ' quoted"):
+            with self.subTest(search=search):
+                result = viewer.list_incidents(
+                    {**query, "search": search, "limit": 10}
+                )
+                self.assertEqual(
+                    [item["incident_id"] for item in result["items"]], expected_ids
+                )
+                self.assertIsNone(result["next_cursor"])
+        for incident_id in expected_ids:
+            result = viewer.list_incidents({**query, "search": incident_id.upper()})
+            self.assertEqual(
+                [item["incident_id"] for item in result["items"]], [incident_id]
+            )
+        for search in ("does-not-exist", "%' OR true --", "30X_literal", "30%Xliteral"):
+            with self.subTest(search=search):
+                result = viewer.list_incidents({**query, "search": search})
+                self.assertEqual(result["items"], [])
+                self.assertIsNone(result["next_cursor"])
+        for changed_filter in (
+            {"statuses": ["REPORTED"]}, {"namespace": "other-namespace"}
+        ):
+            self.assertEqual(
+                viewer.list_incidents({**query, **changed_filter})["items"], []
+            )
+
+        first = viewer.list_incidents(query)
+        self.assertEqual(
+            [item["incident_id"] for item in first["items"]], expected_ids[:2]
+        )
+        self.assertIsNotNone(first["next_cursor"])
+        second = viewer.list_incidents({**query, "cursor": first["next_cursor"]})
+        self.assertEqual(
+            [item["incident_id"] for item in second["items"]], expected_ids[2:]
+        )
+        self.assertIsNone(second["next_cursor"])
+        with self.assertRaises(ContractViolation):
+            viewer.list_incidents(
+                {**query, "search": "different", "cursor": first["next_cursor"]}
+            )
 
     def test_stategraph_observation_journal_is_durable_and_prunable(self) -> None:
         incident = contract_incident()

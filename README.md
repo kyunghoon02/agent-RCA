@@ -260,6 +260,9 @@ make validate-docs
 make validate-core
 ```
 
+CI는 임시 PostgreSQL 17.6에서 repository 통합 테스트와 Viewer 검색·pagination도 검증한다.
+로컬 통합 테스트는 별도 테스트 DB를 `POSTGRES_TEST_DSN`으로 지정할 때 실행한다.
+
 GCP foundation 생성은 [GCP Infrastructure](infra/terraform/README.md), kubeadm/Cilium과
 세 failure domain 배포·검증은
 [Kubernetes Bootstrap and Deployment](automation/ansible/README.md)를 따른다. workload와

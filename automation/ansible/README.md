@@ -114,6 +114,13 @@ private Viewer API. `make deploy-viewer-frontend` updates this component without
 rewiring the other two domains. Access it through an SSH-wrapped Kubernetes
 port-forward; do not add a public firewall rule or Service type.
 
+For an API-only fix, build with `make build-incident-platform-image`, pin the
+result under `incident_platform.viewer_api` in `platform/versions.yaml`, then run
+`make deploy-viewer-api`. This requires the existing private API and frontend;
+it refreshes the image-pull Secret and patches only the API container image,
+then checks BFF listing and search. The full stack deploy uses the same API pin.
+The reconciler, collection worker and Agent image pins remain unchanged.
+
 The bootstrap is intentionally fail-fast on a host other than Ubuntu 24.04
 x86_64 with cgroup v2. Package and binary versions plus download checksums are
 pinned in `group_vars/all.yml` and mirrored in `platform/versions.yaml`.

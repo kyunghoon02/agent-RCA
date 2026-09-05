@@ -1256,6 +1256,12 @@ def validate_incident_platform_manifest() -> None:
                 "sha256:e9e761576536d1c2737f769cc07eab7ffd9345e7d010781fbfb271e54e6b2899"
             ),
         },
+        "viewer_api": {
+            "image_tag": "runtime-dcdedeaa062e",
+            "image_digest": (
+                "sha256:9db6287e1e9aaec0fc624178a7b9306850db6e03af0ccff60c28d34761d2183b"
+            ),
+        },
         "viewer_frontend": {
             "node_version": "22.17.1",
             "image_tag": "viewer-8577a41a69be",
@@ -1594,7 +1600,7 @@ def validate_incident_platform_manifest() -> None:
         or viewer_pod_spec.get("serviceAccountName") != "incident-viewer"
         or viewer_pod_spec.get("automountServiceAccountToken") is not False
         or viewer_container.get("image")
-        != "agent-rca-runtime@sha256:" + "0" * 64
+        != "agent-rca-viewer-api@sha256:" + "0" * 64
         or viewer_container.get("command") != ["gunicorn"]
         or "tools.run_incident_viewer:application"
         not in viewer_container.get("args", [])
