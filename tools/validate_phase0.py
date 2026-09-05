@@ -1258,9 +1258,9 @@ def validate_incident_platform_manifest() -> None:
         },
         "viewer_frontend": {
             "node_version": "22.17.1",
-            "image_tag": "viewer-9349e81b48ac",
+            "image_tag": "viewer-8577a41a69be",
             "image_digest": (
-                "sha256:0b3fc1bbd9b944729f24e3d7ff59880de2024bd01e6564f9f7b0d86d5b6fe33f"
+                "sha256:f034ea3dd5a5b9afdb8d189ff260f4e39c637d4e5542b57534b72b2442630659"
             ),
             "service_type": "ClusterIP",
             "port": 3100,

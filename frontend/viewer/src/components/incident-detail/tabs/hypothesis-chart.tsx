@@ -38,7 +38,7 @@ export function HypothesisChart({ hypotheses }: { hypotheses: RcaHypothesis[] })
   }));
 
   return (
-    <div className="h-[--chart-height]" style={{ ["--chart-height" as string]: `${data.length * 34 + 24}px` }}>
+    <div style={{ height: data.length * 34 + 24 }}>
       {/* Minimums keep the chart measurable in narrow containers and in jsdom. */}
       <ResponsiveContainer width="100%" height="100%" minWidth={240} minHeight={48}>
         <BarChart data={data} layout="vertical" margin={{ top: 4, right: 44, bottom: 4, left: 4 }}>
@@ -46,6 +46,7 @@ export function HypothesisChart({ hypotheses }: { hypotheses: RcaHypothesis[] })
           <YAxis
             type="category"
             dataKey="name"
+            interval={0}
             width={32}
             tickLine={false}
             axisLine={false}
