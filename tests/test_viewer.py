@@ -8,6 +8,7 @@ from incident_platform.agent_rca import AgentRCAService
 from incident_platform.errors import ContractViolation
 from incident_platform.incidents import AlertmanagerNormalizer
 from incident_platform.knowledge import BoundedKnowledgeRetriever
+from incident_platform.repository import AuditEvent
 from incident_platform.viewer import IncidentViewerQueryService, ViewerQueryPolicy
 
 from test_agent_rca import (
@@ -73,6 +74,44 @@ def add_incident(
 
 
 class IncidentViewerQueryServiceTests(unittest.TestCase):
+    def test_work_audit_events_keep_their_pipeline_stage_and_stored_time(self) -> None:
+        for prefix, expected_stage in (
+            ("INCIDENT_WORK_", "COLLECTION"),
+            ("INCIDENT_LOCALIZATION_WORK_", "LOCALIZATION"),
+            ("INCIDENT_ANALYSIS_WORK_", "ANALYSIS"),
+        ):
+            for suffix in ("CLAIMED", "RECLAIMED", "COMPLETED", "FAILED", "REAPED"):
+                with self.subTest(event_type=prefix + suffix):
+                    audit = AuditEvent(
+                        incident_id="inc-viewer-stage-fixture",
+                        event_type=prefix + suffix,
+                        occurred_at="2026-08-12T01:05:10Z",
+                        details={"attempts": 1},
+                    )
+                    timeline = IncidentViewerQueryService._timeline(
+                        evidence=[], contexts=[], reports=[], agent_runs=[],
+                        audit_events=[audit],
+                    )
+                    self.assertEqual(timeline[0]["stage"], expected_stage)
+                    self.assertEqual(timeline[0]["occurred_at"], audit.occurred_at)
+                    self.assertEqual(timeline[0]["details"], audit.details)
+                    self.assertIsNot(timeline[0]["details"], audit.details)
+
+    def test_failed_transition_belongs_to_the_stage_that_failed(self) -> None:
+        for source, expected in (
+            ("COLLECTING", "COLLECTION"),
+            ("LOCALIZING", "LOCALIZATION"),
+            ("ANALYZING", "ANALYSIS"),
+        ):
+            with self.subTest(source=source):
+                audit = AuditEvent(
+                    incident_id="inc-viewer-stage-fixture",
+                    event_type="STATUS_TRANSITIONED",
+                    occurred_at="2026-08-12T01:05:10Z",
+                    details={"from": source, "to": "FAILED"},
+                )
+                self.assertEqual(IncidentViewerQueryService._audit_stage(audit), expected)
+
     def test_evidence_observed_events_expose_collected_at_and_no_fenced_values(
         self,
     ) -> None:

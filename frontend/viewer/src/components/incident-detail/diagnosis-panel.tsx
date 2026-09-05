@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EntityRefLabel } from "@/components/entity-ref";
 import { formatTimestamp } from "@/lib/format";
-import { reportEvidenceIds, reportMissingEvidence } from "@/lib/report-refs";
+import { reportEvidenceIds, reportRequirementGaps } from "@/lib/report-refs";
 import type { Diagnosis, DiagnosisTone } from "@/lib/diagnosis";
 import type { Incident, IncidentWorkState, ReportBundle } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -93,7 +93,7 @@ export function DiagnosisPanel({
   const analysis = work?.analysis ?? null;
   const contextId = analysis?.context_id ?? null;
   const citedIds = bundle ? reportEvidenceIds(bundle.report) : [];
-  const missing = bundle ? reportMissingEvidence(bundle.report) : [];
+  const gaps = bundle ? reportRequirementGaps(bundle.report) : null;
 
   return (
     <Card className="relative overflow-hidden">
@@ -142,7 +142,7 @@ export function DiagnosisPanel({
           <Fact label="Last update">{formatTimestamp(incident.updated_at)}</Fact>
         </dl>
 
-        {bundle && (
+        {bundle && gaps && (
           <div className="border-t border-border pt-2.5">
             {bundle.report.root_cause ? (
               <>
@@ -171,13 +171,23 @@ export function DiagnosisPanel({
               <Badge tone="outline">
                 {citedIds.length} Evidence cited
               </Badge>
-              <Badge tone={missing.length > 0 ? "warning" : "outline"}>
-                {missing.length} Evidence missing
+              {bundle.report.root_cause && (
+                <Badge tone={gaps.selected === null || gaps.selected.length > 0 ? "warning" : "outline"}>
+                  {gaps.selected === null
+                    ? "Selected-cause requirements unavailable"
+                    : `${gaps.selected.length} selected-cause requirements missing`}
+                </Badge>
+              )}
+              <Badge tone={gaps.other.length > 0 ? "warning" : "outline"}>
+                {gaps.other.length} {gaps.selected === null ? "hypothesis" : "alternative-hypothesis"} requirements missing
               </Badge>
               <span className="tabular text-[11px] text-muted-foreground">
                 reported {formatTimestamp(bundle.report.generated_at)}
               </span>
             </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Requirements are proof gaps recorded in hypotheses, not failed collectors or missing Evidence objects.
+            </p>
 
             {citedIds.length > 0 && (
               <div className="mt-1.5 flex flex-wrap items-center gap-1">

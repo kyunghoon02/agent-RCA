@@ -7,7 +7,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .errors import PermanentProviderError, RetryableProviderError
 from .evidence import (
@@ -321,9 +321,12 @@ class IncidentCollectionService:
         self,
         repository: IncidentRepository,
         orchestrator: CollectorOrchestrator,
+        *,
+        clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._repository = repository
         self._orchestrator = orchestrator
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def collect_incident(
         self,
@@ -332,7 +335,7 @@ class IncidentCollectionService:
         scope: ResourceScope,
         observed_at: Optional[datetime] = None,
     ) -> CollectionRun:
-        now = observed_at or datetime.now(timezone.utc)
+        now = observed_at or self._clock()
         incident = self._validated_incident(incident_id, scope)
         self._repository.transition(
             incident_id,
@@ -356,7 +359,7 @@ class IncidentCollectionService:
     ) -> CollectionRun:
         """Collect an Incident already moved to COLLECTING by a fenced claim."""
 
-        now = observed_at or datetime.now(timezone.utc)
+        now = observed_at or self._clock()
         incident = self._validated_incident(incident_id, scope)
         if incident["status"] != "COLLECTING":
             raise ValueError("claimed Incident must be COLLECTING")
@@ -403,13 +406,15 @@ class IncidentCollectionService:
         self._repository.replace_collector_statuses(
             incident_id,
             run.collector_statuses,
-            occurred_at=observed_at,
+            # observed_at pins the query cutoff, not when collectors finished.
+            occurred_at=self._clock(),
         )
         self._repository.store_evidence(incident_id, run.evidence)
         self._repository.transition(
             incident_id,
             expected_status="COLLECTING",
             next_status="FAILED" if run.status == "FAILED" else "LOCALIZING",
-            occurred_at=observed_at,
+            # Record the lifecycle transition after Evidence persistence.
+            occurred_at=self._clock(),
         )
         return run

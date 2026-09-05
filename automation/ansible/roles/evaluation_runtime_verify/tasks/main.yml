@@ -4,6 +4,8 @@
     that:
       - incident_platform.agent_worker.enabled | bool
       - incident_platform.reconciler.image_digest is match('^sha256:[a-f0-9]{64}$')
+      - incident_platform.worker.image_digest is match('^sha256:[a-f0-9]{64}$')
+      - incident_platform.viewer_api.image_digest is match('^sha256:[a-f0-9]{64}$')
     fail_msg: The frozen Agent evaluation runtime contract is disabled or unpinned.
 
 - name: Read the RCA runtime Deployments
@@ -37,7 +39,7 @@
         ] | sort)
     fail_msg: The RCA runtime Deployment set is incomplete.
 
-- name: Require Ready Deployments on the frozen runtime digest
+- name: Require Ready Deployments on their independently pinned runtime digests
   ansible.builtin.assert:
     that:
       - >-
@@ -48,12 +50,18 @@
         == evaluation_runtime_deployment.spec.replicas | int
       - evaluation_runtime_deployment.status.unavailableReplicas | default(0) | int == 0
       - >-
-        incident_platform.reconciler.image_digest in
+        evaluation_runtime_expected_digest in
         evaluation_runtime_deployment.spec.template.spec.containers[0].image
     fail_msg: >-
       RCA Deployment {{ evaluation_runtime_deployment_name }} is unavailable
       or its image digest drifted.
   vars:
+    evaluation_runtime_expected_digest: >-
+      {{ incident_platform.worker.image_digest
+      if evaluation_runtime_deployment_name == incident_platform_worker_deployment
+      else incident_platform.viewer_api.image_digest
+      if evaluation_runtime_deployment_name == incident_platform_viewer_deployment
+      else incident_platform.reconciler.image_digest }}
     evaluation_runtime_deployment: >-
       {{ (evaluation_runtime_deployments.stdout | from_json)['items']
       | selectattr('metadata.name', 'equalto', evaluation_runtime_deployment_name)

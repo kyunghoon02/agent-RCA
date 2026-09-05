@@ -1258,16 +1258,16 @@ def validate_incident_platform_manifest() -> None:
             ),
         },
         "viewer_api": {
-            "image_tag": "runtime-dcdedeaa062e",
+            "image_tag": "runtime-fb9f4af89d71",
             "image_digest": (
-                "sha256:9db6287e1e9aaec0fc624178a7b9306850db6e03af0ccff60c28d34761d2183b"
+                "sha256:2ae294b3a92187e528b4708cec696d788fd35c72bdd745b240f748d5162a875b"
             ),
         },
         "viewer_frontend": {
             "node_version": "22.17.1",
-            "image_tag": "viewer-8577a41a69be",
+            "image_tag": "viewer-83db0963a09d",
             "image_digest": (
-                "sha256:f034ea3dd5a5b9afdb8d189ff260f4e39c637d4e5542b57534b72b2442630659"
+                "sha256:429da9619ae1d60487a419a92681d76b3e7b27bcae36c45172eeda80ca7cf7ae"
             ),
             "service_type": "ClusterIP",
             "port": 3100,
@@ -1280,6 +1280,10 @@ def validate_incident_platform_manifest() -> None:
             "alert_matcher": "rca_enabled=true",
         },
         "worker": {
+            "image_tag": "runtime-fb9f4af89d71",
+            "image_digest": (
+                "sha256:2ae294b3a92187e528b4708cec696d788fd35c72bdd745b240f748d5162a875b"
+            ),
             "poll_interval_seconds": 2,
             "lease_seconds": 120,
             "max_attempts": 3,
@@ -1513,7 +1517,7 @@ def validate_incident_platform_manifest() -> None:
         worker_deployment["spec"].get("replicas") != 1
         or worker_pod_spec.get("serviceAccountName") != "incident-platform-reader"
         or worker_pod_spec.get("automountServiceAccountToken") is not True
-        or worker_container.get("image") != "agent-rca-runtime@sha256:" + "0" * 64
+        or worker_container.get("image") != "agent-rca-collection-runtime@sha256:" + "0" * 64
         or worker_container.get("args") != ["/app/tools/run_incident_worker.py"]
         or worker_container.get("resources", {}).get("requests")
         != {"cpu": "100m", "memory": "192Mi"}

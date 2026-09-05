@@ -3,14 +3,16 @@ import { describe, expect, it } from "vitest";
 import { DiagnosisPanel } from "@/components/incident-detail/diagnosis-panel";
 import { FixtureViewerAdapter } from "@/lib/adapter/fixture-adapter";
 import { deriveDiagnosis } from "@/lib/diagnosis";
+import type { RcaReport } from "@/lib/types";
 
 const adapter = new FixtureViewerAdapter();
 
-async function renderPanel(incidentId: string) {
+async function renderPanel(incidentId: string, report?: RcaReport) {
   const [detail, work] = await Promise.all([
     adapter.getIncidentDetail(incidentId),
     adapter.getIncidentWorkState(incidentId),
   ]);
+  if (report) detail.reports = [{ report, markdown: "" }];
   const diagnosis = deriveDiagnosis(detail.incident, work, detail.reports);
   const result = render(
     <DiagnosisPanel
@@ -71,14 +73,32 @@ describe("Panel with a stored Report", () => {
     expect(screen.getByText("Root cause")).toBeInTheDocument();
     expect(screen.getByText(/Deployment revision 8 added an envFrom reference/)).toBeInTheDocument();
     expect(screen.getByText(/Evidence cited/)).toBeInTheDocument();
-    expect(screen.getByText(/Evidence missing/)).toBeInTheDocument();
+    expect(screen.getByText("Selected-cause requirements unavailable")).toBeInTheDocument();
+    expect(screen.getByText("1 hypothesis requirements missing")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Open RCA Report/ })).toBeInTheDocument();
+  });
+
+  it("separates selected-cause requirements from unresolved alternatives", async () => {
+    const detail = await adapter.getIncidentDetail("inc-checkout-0001");
+    const report = structuredClone(detail.reports[0].report);
+    report.root_cause!.cause_id = "kubernetes.missing-configmap";
+    report.hypotheses[0].cause_id = "kubernetes.missing-configmap";
+    report.hypotheses[1].missing_evidence = ["node pressure observation"];
+    report.hypotheses[1].status = "unresolved";
+    report.hypotheses[2].status = "unresolved";
+    await renderPanel("inc-checkout-0001", report);
+    expect(screen.getByText("PROVEN")).toBeInTheDocument();
+    expect(screen.getByText("0 selected-cause requirements missing")).toBeInTheDocument();
+    expect(screen.getByText("2 alternative-hypothesis requirements missing")).toBeInTheDocument();
+    expect(screen.queryByText(/Evidence missing/)).not.toBeInTheDocument();
   });
 
   it("presents an ABSTAIN outcome without a root cause statement", async () => {
     await renderPanel("inc-frontend-0003");
     expect(screen.getByText("ABSTAIN")).toBeInTheDocument();
     expect(screen.getByText("Agent abstained")).toBeInTheDocument();
+    expect(screen.getByText("2 hypothesis requirements missing")).toBeInTheDocument();
+    expect(screen.queryByText(/selected-cause requirements/i)).not.toBeInTheDocument();
     expect(
       screen.getByText("No root cause was recorded for this Incident."),
     ).toBeInTheDocument();

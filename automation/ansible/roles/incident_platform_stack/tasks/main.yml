@@ -443,6 +443,9 @@
             - name: agent-rca-runtime
               newName: {{ execution_target.location }}-docker.pkg.dev/{{ incident_platform_gcp_project.content }}/{{ incident_platform.artifact_repository_id }}/agent-rca-runtime
               digest: {{ incident_platform.reconciler.image_digest }}
+            - name: agent-rca-collection-runtime
+              newName: {{ execution_target.location }}-docker.pkg.dev/{{ incident_platform_gcp_project.content }}/{{ incident_platform.artifact_repository_id }}/agent-rca-runtime
+              digest: {{ incident_platform.worker.image_digest }}
             - name: agent-rca-viewer-api
               newName: {{ execution_target.location }}-docker.pkg.dev/{{ incident_platform_gcp_project.content }}/{{ incident_platform.artifact_repository_id }}/agent-rca-runtime
               digest: {{ incident_platform.viewer_api.image_digest }}

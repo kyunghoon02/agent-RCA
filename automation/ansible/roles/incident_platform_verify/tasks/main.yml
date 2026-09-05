@@ -386,7 +386,7 @@
     that:
       - (incident_platform_worker_deployment_result.stdout | from_json).status.readyReplicas == 1
       - >-
-        incident_platform.reconciler.image_digest in
+        incident_platform.worker.image_digest in
         (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.containers[0].image
       - >-
         (incident_platform_worker_deployment_result.stdout | from_json).spec.template.spec.serviceAccountName

@@ -47,6 +47,18 @@ IncidentRepository/PostgreSQL
 timeline은 detection/lifecycle audit, Evidence 관측, Context freeze, Agent completion과
 Report generation을 시간순으로 합친다.
 
+queue audit의 `INCIDENT_WORK_*`, `INCIDENT_LOCALIZATION_WORK_*`,
+`INCIDENT_ANALYSIS_WORK_*`는 각각 COLLECTION, LOCALIZATION, ANALYSIS로 분류한다.
+실패 transition도 실패한 원래 단계에 표시한다. 수집 service는 query cutoff인 `observed_at`과
+수집 완료·Evidence 저장 후 transition의 실제 기록 시각을 분리한다. 과거 audit의
+`occurred_at`은 재계산하거나 보정하지 않는다.
+
+진단 요약의 missing requirements는 Evidence 객체 누락 수나 collector 실패 수가 아니다.
+Report의 `cause_id`와 Entity가 일치하는 선택된 원인의 부족 근거를 대안 가설과 분리하고,
+ABSTAIN은 원인을 임의로 선택하지 않은 채 전체 가설의 부족 근거를 표시한다.
+`cause_id`가 없는 legacy Report 등 정확한 일치가 없으면 선택된 원인의 요구사항은
+0이 아니라 unavailable이다. 이 표시는 저장된 Report outcome과 Frozen Context를 바꾸지 않는다.
+
 `EVIDENCE_OBSERVED` event의 `occurred_at`은 Evidence `observed_at`이며 signal이 나타내는
 시각이다. 수집 실행 시각이 아니므로 Incident 생성보다 앞설 수 있다. 같은 event의
 `details.collected_at`은 저장된 `provenance.collected_at`을 그대로 노출하며 Provider

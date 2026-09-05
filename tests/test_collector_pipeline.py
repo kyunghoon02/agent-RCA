@@ -6,11 +6,14 @@ import threading
 import time
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from incident_platform.collectors import (
     COLLECTOR_NAMES,
+    CollectionRun,
+    CollectorExecution,
     CollectorOrchestrator,
     CollectorSpec,
     IncidentCollectionService,
@@ -350,6 +353,94 @@ class EvidenceTests(unittest.TestCase):
 
 
 class IncidentCollectionServiceTests(unittest.TestCase):
+    def test_completion_clock_is_separate_from_query_cutoff_and_persistence(self) -> None:
+        cutoff = datetime(2026, 8, 12, 1, 5, 10, tzinfo=timezone.utc)
+        provider_end = cutoff + timedelta(seconds=3)
+        collection_end = cutoff + timedelta(seconds=4)
+        persistence_end = cutoff + timedelta(seconds=5)
+        for status in ("SUCCEEDED", "PARTIAL", "FAILED"):
+            for claimed in (False, True):
+                for closed_window in (False, True):
+                    with self.subTest(status=status, claimed=claimed, closed=closed_window):
+                        repository = InMemoryIncidentRepository()
+                        incident = AlertmanagerIngestionService(repository).ingest(
+                            {"alerts": [{
+                                "status": "firing",
+                                "labels": {
+                                    "alertname": "CollectionClockFixture",
+                                    "namespace": "online-boutique",
+                                    "service": "checkoutservice",
+                                    "severity": "warning",
+                                },
+                                "annotations": {},
+                                "startsAt": "2026-08-12T01:00:00Z",
+                                "endsAt": "0001-01-01T00:00:00Z",
+                                "fingerprint": "collection-clock-fixture",
+                            }]},
+                            received_at=FIXED_TIME,
+                        )[0].incident
+                        incident_id = incident["incident_id"]
+                        if closed_window:
+                            repository.record_alert_resolution(
+                                incident_id, incident_end="2026-08-12T01:05:00Z",
+                                occurred_at=cutoff,
+                            )
+                        if claimed:
+                            repository.transition(
+                                incident_id, expected_status="RECEIVED",
+                                next_status="COLLECTING", occurred_at=cutoff,
+                            )
+                        query_end = "2026-08-12T01:05:00Z" if closed_window else "2026-08-12T01:05:10Z"
+                        request = replace(
+                            contract_request(incident_id, "checkoutservice"),
+                            window=EvidenceWindow(
+                                start=incident["window"]["baseline_start"], end=query_end,
+                            ),
+                        )
+                        evidence = EvidenceBuilder().build(
+                            evidence_draft(), request, collected_at=provider_end,
+                        )
+                        run = CollectionRun(status=status, executions=(CollectorExecution(
+                            name="prometheus", status=status, attempts=1,
+                            started_at=cutoff, ended_at=provider_end,
+                            evidence=() if status == "FAILED" else (evidence,),
+                            error="provider failure" if status == "FAILED" else None,
+                        ),))
+                        orchestrator = Mock(spec=CollectorOrchestrator)
+                        orchestrator.collect.return_value = run
+                        # Completion is read after collection; the second clock
+                        # read must occur only after Evidence persistence.
+                        persisted = False
+                        def clock():
+                            return persistence_end if persisted else collection_end
+                        original_store = repository.store_evidence
+                        def store(*args):
+                            nonlocal persisted
+                            original_store(*args)
+                            persisted = True
+                        service = IncidentCollectionService(repository, orchestrator, clock=clock)
+                        collect = service.collect_claimed_incident if claimed else service.collect_incident
+                        with patch.object(repository, "store_evidence", side_effect=store):
+                            self.assertEqual(collect(
+                                incident_id, scope=collection_scope(), observed_at=cutoff,
+                            ), run)
+                        request_args = orchestrator.collect.call_args.kwargs
+                        self.assertEqual(request_args["observed_at"], cutoff)
+                        self.assertEqual(request_args["window"].end, query_end)
+                        audits = repository.list_audit_events(incident_id)
+                        completed = next(item for item in audits if item.event_type == "COLLECTION_COMPLETED")
+                        self.assertEqual(completed.occurred_at, "2026-08-12T01:05:14Z")
+                        self.assertEqual(audits[-1].event_type, "STATUS_TRANSITIONED")
+                        self.assertEqual(audits[-1].occurred_at, "2026-08-12T01:05:15Z")
+                        stored = repository.get(incident_id)
+                        self.assertEqual(stored["updated_at"], "2026-08-12T01:05:15Z")
+                        self.assertEqual(stored["status"], "FAILED" if status == "FAILED" else "LOCALIZING")
+                        self.assertEqual(stored["collector_statuses"][0]["ended_at"], "2026-08-12T01:05:13Z")
+                        self.assertEqual(repository.list_evidence(incident_id), list(run.evidence))
+                        if run.evidence:
+                            self.assertEqual(evidence["observed_at"], "2026-08-12T01:04:59Z")
+                            self.assertEqual(evidence["provenance"]["collected_at"], "2026-08-12T01:05:13Z")
+
     def test_partial_collection_is_persisted_and_lifecycle_continues(self) -> None:
         repository = InMemoryIncidentRepository()
         incident = AlertmanagerIngestionService(repository).ingest(
