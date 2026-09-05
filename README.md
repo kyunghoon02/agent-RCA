@@ -52,6 +52,35 @@ Pod restart 증가가 동일한 Frozen Context에 포함된 것을 확인할 수
 no-fault control에서는 분석 작업 자체는 정상 완료되지만, 원인별 증명 조건을 만족하지 않아
 root cause를 만들지 않고 `ABSTAIN`한다.
 
+### Five-minute Demo
+
+새 장애를 주입하지 않고 위 두 종류의 저장된 Incident를 조회한다. Viewer에서
+`AgentRCAControlledCheckoutOOM`을 검색하고, 같은 이름의 여러 실행 중 `RCA Report`에
+OOM root cause와 `PROVEN` 가설이 저장된 사례를 선택한다. 아래 시연 시간은 설명 순서이며
+실제 장애 감지·분석 소요 시간이 아니다.
+
+| Time | Viewer에서 확인할 내용 | 설명할 핵심 |
+|---|---|---|
+| 0–1분 | OOM Incident의 `Overview`와 `Timeline` | Alert 수신 후 collection, localization, analysis가 별도 worker 단계로 진행됨 |
+| 1–2분 | `RCA Report`의 인용을 눌러 `Evidence` 확인 | Loki OOM 신호와 Prometheus restart 증가의 Pod UID·관측 시각·provenance를 대조함 |
+| 2–3분 | `Frozen Context`와 Report의 가설·analysis budget | 분석에 사용한 scope와 Evidence를 고정하고, Agent의 결론을 독립 Evidence Gate가 검증함 |
+| 3–4분 | `AgentRCAControlledNoFault`의 `RCA Report` | 정상 traffic의 대조군에서는 원인을 만들어내지 않고 `ABSTAIN`함 |
+| 4–5분 | [평가 기록](evaluation/REPORT.md) | 등록 regression의 개선과 Holdout replication 실패를 함께 설명하며 production 정확도로 일반화하지 않음 |
+
+코드는 [Alert 정규화](src/incident_platform/incidents.py) →
+[수집 조율](src/incident_platform/collectors.py)·[EvidenceBuilder](src/incident_platform/evidence.py) →
+[Context 고정](src/incident_platform/localization.py) →
+[AgentRCAService와 EvidenceGate](src/incident_platform/agent_rca.py) 순으로 따라간다.
+
+이 OOM 사례의 [시나리오](evaluation/scenarios/checkoutservice-oom.yaml)와
+[평가 실행기](automation/ansible/roles/checkout_oom_fault_harness/tasks/main.yml)는 resource limit
+변경과 Chaos Mesh `StressChaos`로 실제 OOM을 유발·확인한 뒤, 평가용 Alert를 Alertmanager에
+직접 제출한다. Chaos Mesh는 장애를 만들고 Receiver가 Alert를 정규화해 Incident를 만든다.
+따라서 이 사례만으로 PrometheusRule의 자동 장애 감지까지 검증했다고 주장하지 않는다.
+[no-fault 대조군](evaluation/scenarios/frontend-no-fault-normal.yaml)은 Chaos를 주입하지 않고
+정상 traffic과 평가용 Alert만 사용한다. `REPORTED`는 보고서 저장이지 서비스 복구 완료가
+아니며, 실험 resource 복구는 평가 실행기가 담당한다. Agent는 write 작업을 하지 않는다.
+
 ## Architecture
 
 > 논리 아키텍처는 cloud-neutral이며, 현재 reference runtime은 GCP Compute Engine의
@@ -88,6 +117,7 @@ flowchart LR
     FW -->|remote write| P
     FW -->|logs| L
     FW -->|OTLP traces| TP
+    P -->|alert rules| AM
     AM -->|private authenticated webhook| RX
     RX --> Q --> CW --> EB --> PJ --> SG --> AO --> R
     P --> CW
@@ -101,6 +131,11 @@ Incident만 webhook으로 전달하게 하고, `agent_rca_enabled=true`는 연�
 해당 Incident의 analysis work를 자동 claim할 수 있게 한다. Receiver는 Provider를 직접
 호출하지 않고 PostgreSQL에 durable work를 먼저 저장하므로, Alertmanager 응답과 Evidence
 수집 실패가 서로 영향을 주지 않는다.
+
+서비스 오류율 Alert는 기존 `5% 초과 + 2분 유지` 조건을 사용한다. 별도
+`OnlineBoutiqueRecentOOMRestart`는 최근 5분 OOM 종료 시각과 restart count를 확인하고
+Pod → ReplicaSet → Deployment 소유 관계로 Service를 결정한다. 이는 조사 시작 신호이며
+OOM root cause 확정은 여전히 수집된 Evidence와 Gate가 담당한다.
 
 ## Core Components
 
@@ -206,6 +241,15 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 | Corrected frozen matrix, 4 scenarios × 5 | harness 20/20, expected outcome 20/20, fault Top-1 15/15, no-fault `ABSTAIN` 5/5, unsupported citation 0 | 동일 runtime의 등록 regression set 결과이며 production 일반화 수치가 아님 |
 | Holdout v1 and temporal replication, 각 12회 | 최초 12/12; 독립 재실행 11/12, fault Top-1 8/9, no-fault `ABSTAIN` 3/3, unsupported citation 0 | 같은 원인 taxonomy의 미사용 surface variant 결과. 재실행 1건은 schema 위반으로 fail-closed |
 | Strict structured-output check, 4 scenarios × 2 | `REPORT_ACCEPTED` 8/8, model failure 0, draft contract rejection 0, expected outcome 8/8, unsupported citation 0 | 알려진 scenario를 재사용한 작은 표본의 output-contract 검증이며 정확도·일반화 수치가 아님 |
+
+위 matrix들은 평가용 Alert를 제출한 뒤의 분석을 검증한다. 별도 native-alert 검증의 첫
+OOM 실행에서는 오류율이 `for: 2m` 조건을 유지하지 못해 Incident가 생성되지 않았다.
+이 감지 실패를 보존한 뒤, 기존 오류율 규칙과 분리한 OOM/restart 규칙을 28개 로컬 PromQL
+시나리오로 검증하고 배포했다. 2026-09-05 후속 장애 1회에서는 평가용 Alert 제출 없이
+`Prometheus → Alertmanager → Incident → Agent → Report`가 연결됐다. 동일 Pod의 OOM
+Evidence를 인용한 `conclusive` Report가 수락됐으며 Incident 수신부터 27초가 걸렸다.
+복구·자연 resolved webhook까지 확인했지만, 이는 단일 OOM 이벤트의 연결성 검증이지
+새 정확도 수치나 frontend 영향에서 하위 서비스 원인까지 찾는 검증은 아니다.
 
 실패 artifact를 성공으로 재분류하지 않고 원인을 추적해 Gate reason code, UID-bounded
 Kubernetes Event, short Evidence reference와 Context completeness decision policy를

@@ -1,0 +1,62 @@
+---
+- name: Require an explicit remote target identity for workload alerts
+  ansible.builtin.assert:
+    that:
+      - three_domain_target_cluster_id is match('^[a-z0-9][a-z0-9-]*$')
+      - three_domain_target_cluster_id != cluster_name
+
+- name: Ensure the central rule directory exists
+  ansible.builtin.file:
+    path: /etc/agent-rca/three-domain
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the bounded remote workload event rule
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('ansible.builtin.file', playbook_dir + '/../../../platform/observability/remote-workload-alerts.yaml')
+         | replace('FAULT_TARGET_CLUSTER_ID', three_domain_target_cluster_id) }}
+    dest: /etc/agent-rca/three-domain/remote-workload-alerts.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Validate the workload rule against the Kubernetes API without persisting it
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf apply --dry-run=server
+    --filename /etc/agent-rca/three-domain/remote-workload-alerts.yaml
+  changed_when: false
+
+- name: Apply only the remote workload event rule
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf apply
+    --filename /etc/agent-rca/three-domain/remote-workload-alerts.yaml
+  register: workload_alert_apply
+  changed_when: >-
+    ' created' in workload_alert_apply.stdout or ' configured' in workload_alert_apply.stdout
+
+- name: Wait for both workload rules to be loaded and healthy in central Prometheus
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ observability_namespace }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/rules
+  register: workload_alert_rules
+  changed_when: false
+  no_log: true
+  until: >-
+    ((workload_alert_rules.stdout | from_json).data.groups
+    | selectattr('name', 'equalto', 'remote-online-boutique-workload-rca')
+    | map(attribute='rules') | flatten | selectattr('health', 'equalto', 'ok')
+    | list | length) == 2
+  retries: 30
+  delay: 3
+
+- name: Report the narrow workload-rule deployment boundary
+  ansible.builtin.debug:
+    msg:
+      status: RULES_LOADED
+      alert: OnlineBoutiqueRecentOOMRestart
+      fault_injected: false
+      synthetic_alert_submitted: false
+      agent_runtime_changed: false

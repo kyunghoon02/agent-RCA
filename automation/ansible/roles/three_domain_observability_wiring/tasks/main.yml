@@ -103,6 +103,9 @@
     ' created' in three_domain_observability_resources_apply.stdout
     or ' configured' in three_domain_observability_resources_apply.stdout
 
+- name: Reconcile the independently managed workload event rule
+  ansible.builtin.include_tasks: workload-alerts.yml
+
 - name: Verify private connectivity to the control webhook
   ansible.builtin.uri:
     url: >-

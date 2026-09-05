@@ -26,9 +26,14 @@
       - groups['fault_target'] | length == 1
       - groups['observability_domain'] | length == 1
       - groups['rca_control'] | length == 1
+      - checkout_fault_trigger_mode | default('synthetic') in ['synthetic', 'prometheus']
     fail_msg: >-
       This destructive development-only scenario requires
       CONFIRM_CONTROLLED_FAULT=yes through the Make target.
+
+- name: Verify the unchanged native alert rule before an autonomous detection run
+  ansible.builtin.include_tasks: native_alert_preflight.yml
+  when: checkout_fault_trigger_mode | default('synthetic') == 'prometheus'
 
 - name: Read the reference cluster nodes
   ansible.builtin.command: >-
@@ -553,6 +558,7 @@
       delegate_to: "{{ groups['observability_domain'][0] }}"
       register: checkout_fault_alert_times_result
       changed_when: false
+      when: checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
 
     - name: Freeze the controlled Alertmanager payload
       ansible.builtin.set_fact:
@@ -567,6 +573,7 @@
           rca_enabled: "{{ checkout_oom_scenario.alert.rca_enabled }}"
           agent_rca_enabled: "{{ checkout_oom_scenario.alert.agent_rca_enabled }}"
           verification_id: "{{ checkout_fault_id }}"
+      when: checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
 
     - name: Submit the controlled OOM alert through Alertmanager
       ansible.builtin.uri:
@@ -590,10 +597,25 @@
         status_code: 200
       delegate_to: "{{ groups['observability_domain'][0] }}"
       changed_when: true
+      when: checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
 
     - name: Mark the controlled Alertmanager alert as submitted
       ansible.builtin.set_fact:
         checkout_fault_alert_submitted: true
+      when: checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
+
+    - name: Capture the naturally firing Prometheus and Alertmanager identity
+      ansible.builtin.include_tasks: native_alert_capture.yml
+      when: checkout_fault_trigger_mode | default('synthetic') == 'prometheus'
+
+    - name: Bind the Incident query to the selected trigger identity
+      ansible.builtin.set_fact:
+        checkout_fault_incident_where: >-
+          {% if checkout_fault_trigger_mode | default('synthetic') == 'prometheus' %}
+          incident.incident_id = '{{ checkout_fault_native_capture.incident_id }}'
+          {% else %}
+          incident.document->'alert'->'labels'->>'verification_id' = '{{ checkout_fault_id }}'
+          {% endif %}
 
     - name: Wait for a unique frozen Context Package
       ansible.builtin.command:
@@ -624,8 +646,7 @@
               ) = 1 THEN 'READY'
               ELSE 'WAITING'
             END FROM incidents incident
-            WHERE incident.document->'alert'->'labels'->>'verification_id'
-              = '{{ checkout_fault_id }}';"
+            WHERE {{ checkout_fault_incident_where }};"
       register: checkout_fault_context_wait
       delegate_to: "{{ groups['rca_control'][0] }}"
       changed_when: false
@@ -659,8 +680,7 @@
             --command="WITH target AS (
               SELECT incident.incident_id, incident.status
               FROM incidents incident
-              WHERE incident.document->'alert'->'labels'->>'verification_id'
-                = '{{ checkout_fault_id }}'
+              WHERE {{ checkout_fault_incident_where }}
               ORDER BY incident.created_at DESC LIMIT 1
             ) SELECT json_build_object(
               'terminal', COALESCE(work.state IN ('SUCCEEDED', 'FAILED'), false),
@@ -765,13 +785,16 @@
                 ORDER BY run.started_at DESC LIMIT 1
               )
             ) FROM incidents incident
-            WHERE incident.document->'alert'->'labels'->>'verification_id'
-              = '{{ checkout_fault_id }}'
+            WHERE {{ checkout_fault_incident_where }}
             ORDER BY incident.created_at DESC LIMIT 1;"
       register: checkout_fault_bundle_result
       delegate_to: "{{ groups['rca_control'][0] }}"
       changed_when: false
       no_log: true
+
+    - name: Preserve and attest the native detection run separately from frozen matrices
+      ansible.builtin.include_tasks: native_alert_result.yml
+      when: checkout_fault_trigger_mode | default('synthetic') == 'prometheus'
 
     - name: Build local-only Ground Truth, Agent, and baseline evaluation artifacts
       ansible.builtin.command:
@@ -790,12 +813,14 @@
       register: checkout_fault_evaluation_result
       changed_when: true
       no_log: true
+      when: checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
 
     - name: Decode the sanitized controlled-fault result
       ansible.builtin.set_fact:
         checkout_fault_evaluation_summary: >-
           {{ checkout_fault_evaluation_result.stdout | from_json }}
       no_log: true
+      when: checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
 
     - name: Report the sanitized controlled-fault scores
       ansible.builtin.debug:
@@ -817,6 +842,7 @@
               {{ checkout_fault_evaluation_summary.deterministic_baseline.prediction_outcome }}
             metrics: >-
               {{ checkout_fault_evaluation_summary.deterministic_baseline.metrics }}
+      when: checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
 
     - name: Require the completed Agent outcome to be represented honestly
       ansible.builtin.assert:
@@ -918,7 +944,9 @@
       register: checkout_fault_alert_resolution
       changed_when: checkout_fault_alert_resolution.status | default(0) == 200
       failed_when: false
-      when: checkout_fault_alert_submitted | bool
+      when:
+        - checkout_fault_alert_submitted | bool
+        - checkout_fault_trigger_mode | default('synthetic') == 'synthetic'
 
     - name: Stop the remote restoration watchdog
       ansible.builtin.shell: |
@@ -1063,3 +1091,9 @@
           checkoutservice did not return to the preregistered Ready,
           restart-zero baseline; inspect the cluster before another run.
       when: checkout_fault_lock_created | bool
+
+    - name: Verify native alert resolution after the owned fault is restored
+      ansible.builtin.include_tasks: native_alert_recovery.yml
+      when:
+        - checkout_fault_trigger_mode | default('synthetic') == 'prometheus'
+        - checkout_native_preflight is defined

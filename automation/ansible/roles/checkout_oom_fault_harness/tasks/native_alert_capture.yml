@@ -1,0 +1,97 @@
+---
+- name: Observe native detection without submitting or resolving any alert
+  block:
+    - name: Wait for the unchanged Prometheus checkout rule to fire naturally
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+        /api/v1/namespaces/{{ observability_namespace }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/rules
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: checkout_native_rules_firing
+      changed_when: false
+      no_log: true
+      until: >-
+        ((checkout_native_rules_firing.stdout | from_json).data.groups
+        | map(attribute='rules') | flatten
+        | selectattr('name', 'equalto', checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate'))
+        | selectattr('state', 'equalto', 'firing') | list | length) == 1
+      retries: 40
+      delay: 3
+
+    - name: Wait for Alertmanager to receive the naturally generated checkout alert
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+        /api/v1/namespaces/{{ observability_namespace }}/services/http:{{ alertmanager_service_name }}:9093/proxy/api/v2/alerts
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: checkout_native_alertmanager
+      changed_when: false
+      no_log: true
+      until: >-
+        (checkout_native_alertmanager.stdout | from_json
+        | selectattr('labels.alertname', 'equalto', checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate'))
+        | selectattr('labels.service', 'equalto', 'checkoutservice' if checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate') == 'OnlineBoutiqueRecentOOMRestart' else 'frontend')
+        | selectattr('labels.cluster_id', 'defined')
+        | selectattr('labels.cluster_id', 'equalto', cluster_name)
+        | list | length) == 1
+      retries: 20
+      delay: 2
+
+    - name: Derive the exact Receiver Incident identity from the native alert
+      ansible.builtin.command:
+        argv:
+          - .venv/bin/python
+          - tools/verify_native_alert.py
+          - --phase=capture
+          - --alert-name
+          - "{{ checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate') }}"
+          - --cluster-id
+          - "{{ cluster_name }}"
+        chdir: "{{ checkout_fault_repo_root }}"
+        stdin: >-
+          {{ {'prometheus': checkout_native_rules_firing.stdout | from_json,
+              'alertmanager': checkout_native_alertmanager.stdout | from_json,
+              'not_before': checkout_native_not_before} | to_json }}
+      delegate_to: localhost
+      become: false
+      register: checkout_native_capture_result
+      changed_when: false
+      no_log: true
+
+    - name: Bind the native capture to this single verification run
+      ansible.builtin.set_fact:
+        checkout_fault_native_capture: "{{ checkout_native_capture_result.stdout | from_json }}"
+      no_log: true
+
+    - name: Require a safe native Incident identifier and unchanged rule fingerprint
+      ansible.builtin.assert:
+        that:
+          - checkout_fault_native_capture.incident_id is match('^inc-[a-f0-9]{24}$')
+          - checkout_fault_native_capture.rule_expression_sha256 == checkout_native_preflight.rule_expression_sha256
+          - not checkout_fault_alert_submitted
+        fail_msg: The native alert identity or unchanged-rule boundary is invalid.
+
+  always:
+    - name: Create the local-only native detection artifact directory
+      ansible.builtin.file:
+        path: "{{ checkout_fault_repo_root }}/evaluation/runs/private/native-prometheus"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Preserve detection evidence even if the native rule does not fire
+      ansible.builtin.copy:
+        dest: "{{ checkout_fault_repo_root }}/evaluation/runs/private/native-prometheus/{{ checkout_fault_id }}-detection.json"
+        mode: "0600"
+        content: >-
+          {{ {'preflight': checkout_native_preflight,
+              'fault_scenario': checkout_oom_scenario_path,
+              'fault_postcondition': checkout_fault_oom_state.stdout | default('{}', true) | from_json,
+              'original_resources': checkout_fault_original_container.resources,
+              'prometheus': checkout_native_rules_firing.stdout | default('{}', true) | from_json,
+              'alertmanager': checkout_native_alertmanager.stdout | default('[]', true) | from_json,
+              'capture': checkout_fault_native_capture | default(none),
+              'capture_check': checkout_native_capture_result.stdout | default('{}', true) | from_json,
+              'synthetic_alert_submitted': checkout_fault_alert_submitted} | to_nice_json }}
+      delegate_to: localhost
+      become: false
+      no_log: true

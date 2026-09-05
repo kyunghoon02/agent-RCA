@@ -1,0 +1,113 @@
+---
+- name: Verify natural alert resolution after workload restoration
+  block:
+    - name: Wait for Prometheus to clear the checkout alert without a synthetic resolve
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+        /api/v1/namespaces/{{ observability_namespace }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/rules
+      delegate_to: "{{ groups['observability_domain'][0] }}"
+      register: checkout_native_rules_recovered
+      changed_when: false
+      no_log: true
+      until: >-
+        ((checkout_native_rules_recovered.stdout | from_json).data.groups
+        | map(attribute='rules') | flatten
+        | selectattr('name', 'equalto', checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate'))
+        | selectattr('state', 'equalto', 'inactive') | list | length) == 1
+      retries: 40
+      delay: 5
+
+    - name: Verify the recovered rule still has its original expression and hold time
+      ansible.builtin.command:
+        argv:
+          - .venv/bin/python
+          - tools/verify_native_alert.py
+          - --phase=preflight
+          - --alert-name
+          - "{{ checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate') }}"
+          - --cluster-id
+          - "{{ cluster_name }}"
+        chdir: "{{ checkout_fault_repo_root }}"
+        stdin: "{{ {'prometheus': checkout_native_rules_recovered.stdout | from_json} | to_json }}"
+      delegate_to: localhost
+      become: false
+      register: checkout_native_recovered_check
+      changed_when: false
+      no_log: true
+
+    - name: Wait for the native resolved webhook to close the Incident alert window
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/kubernetes/admin.conf
+          - exec
+          - --namespace
+          - "{{ incident_platform_namespace }}"
+          - statefulset/{{ incident_platform_postgresql_statefulset }}
+          - --
+          - /bin/sh
+          - -ec
+          - >-
+            PGPASSWORD="$POSTGRES_PASSWORD" psql
+            --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --tuples-only --no-align
+            --command="SELECT document->'window'->>'incident_end' FROM incidents
+              WHERE incident_id = '{{ checkout_fault_native_capture.incident_id }}';"
+      delegate_to: "{{ groups['rca_control'][0] }}"
+      register: checkout_native_incident_resolved
+      changed_when: false
+      no_log: true
+      until: checkout_native_incident_resolved.stdout | trim | length > 0
+      retries: 30
+      delay: 3
+      when: checkout_fault_native_capture is defined
+
+    - name: Read final target availability and remaining StressChaos
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get deployment,stresschaos
+        --namespace {{ online_boutique_namespace }} --output json
+      register: checkout_native_target_recovered
+      changed_when: false
+
+    - name: Require all target workloads Ready and no StressChaos remaining
+      ansible.builtin.assert:
+        that:
+          - >-
+            (checkout_native_target_recovered.stdout | from_json)['items']
+            | selectattr('kind', 'equalto', 'StressChaos') | list | length == 0
+          - >-
+            (checkout_native_target_recovered.stdout | from_json)['items']
+            | selectattr('kind', 'equalto', 'Deployment')
+            | selectattr('status.readyReplicas', 'defined')
+            | selectattr('status.readyReplicas', 'equalto', 1)
+            | map(attribute='metadata.name') | list | sort
+            == online_boutique_expected_deployments | sort
+          - >-
+            (checkout_fault_restored_deployment_result.stdout | from_json).spec.template.spec.containers
+            | selectattr('name', 'equalto', checkout_oom_scenario.target.container)
+            | map(attribute='resources') | first == checkout_fault_original_container.resources
+          - not checkout_fault_alert_submitted
+        fail_msg: Native verification did not restore the target or violated the no-synthetic-alert boundary.
+
+  always:
+    - name: Ensure the private recovery directory exists even if detection was not reached
+      ansible.builtin.file:
+        path: "{{ checkout_fault_repo_root }}/evaluation/runs/private/native-prometheus"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Preserve private native recovery evidence separately from the RCA prediction
+      ansible.builtin.copy:
+        dest: "{{ checkout_fault_repo_root }}/evaluation/runs/private/native-prometheus/{{ checkout_fault_id }}-recovery.json"
+        mode: "0600"
+        content: >-
+          {{ {'rule_check': checkout_native_recovered_check.stdout | default('{}', true) | from_json,
+              'incident_end': checkout_native_incident_resolved.stdout | default('') | trim,
+              'target_state': checkout_native_target_recovered.stdout | default('{}', true) | from_json,
+              'synthetic_alert_submitted': checkout_fault_alert_submitted} | to_nice_json }}
+      delegate_to: localhost
+      become: false
+      no_log: true

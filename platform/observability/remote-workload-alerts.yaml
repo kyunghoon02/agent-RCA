@@ -1,0 +1,94 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: remote-online-boutique-workload-rca
+  namespace: online-boutique
+  labels:
+    release: monitoring
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  groups:
+    - name: remote-online-boutique-workload-rca
+      interval: 15s
+      rules:
+        # This reference workload uses matching Deployment and Service names.
+        # UID-bound controller ownership, not Pod-name parsing, supplies service.
+        - record: agent_rca_target_pod_service
+          expr: |
+            max by (cluster_id, namespace, pod, uid, service) (
+              label_replace(
+                max by (cluster_id, namespace, pod, uid, owner_name) (
+                  kube_pod_owner{
+                    cluster_id="FAULT_TARGET_CLUSTER_ID", namespace="online-boutique",
+                    owner_kind="ReplicaSet", owner_is_controller="true"
+                  } == 1
+                ), "replicaset", "$1", "owner_name", "(.+)"
+              )
+              * on (cluster_id, namespace, replicaset) group_left(service)
+              label_replace(
+                max by (cluster_id, namespace, replicaset, owner_name) (
+                  kube_replicaset_owner{
+                    cluster_id="FAULT_TARGET_CLUSTER_ID", namespace="online-boutique",
+                    owner_kind="Deployment", owner_is_controller="true",
+                    owner_name=~"adservice|cartservice|checkoutservice|currencyservice|emailservice|frontend|paymentservice|productcatalogservice|recommendationservice|redis-cart|shippingservice"
+                  } == 1
+                ), "service", "$1", "owner_name", "(.+)"
+              )
+            )
+        - alert: OnlineBoutiqueRecentOOMRestart
+          # last reason alone remains set after recovery. Require a bounded event
+          # timestamp and a restart; unlike increase(), this also handles a Pod
+          # whose very first observed sample is already restartCount=1.
+          expr: |
+            max by (cluster_id, namespace, service) (
+              (
+                (
+                  max by (cluster_id, namespace, pod, uid, container) (
+                    kube_pod_container_status_last_terminated_reason{
+                      cluster_id="FAULT_TARGET_CLUSTER_ID", namespace="online-boutique",
+                      reason="OOMKilled"
+                    }
+                  ) == 1
+                )
+                and on (cluster_id, namespace, pod, uid, container)
+                (
+                  max by (cluster_id, namespace, pod, uid, container) (
+                    kube_pod_container_status_restarts_total{
+                      cluster_id="FAULT_TARGET_CLUSTER_ID", namespace="online-boutique"
+                    }
+                  ) > 0
+                )
+                and on (cluster_id, namespace, pod, uid, container)
+                (
+                  (
+                    time() - max by (cluster_id, namespace, pod, uid, container) (
+                      kube_pod_container_status_last_terminated_timestamp{
+                        cluster_id="FAULT_TARGET_CLUSTER_ID", namespace="online-boutique"
+                      }
+                    )
+                  ) >= 0
+                )
+                and on (cluster_id, namespace, pod, uid, container)
+                (
+                  (
+                    time() - max by (cluster_id, namespace, pod, uid, container) (
+                      kube_pod_container_status_last_terminated_timestamp{
+                        cluster_id="FAULT_TARGET_CLUSTER_ID", namespace="online-boutique"
+                      }
+                    )
+                  ) < 300
+                )
+              )
+              * on (cluster_id, namespace, pod, uid) group_left(service)
+              agent_rca_target_pod_service{
+                cluster_id="FAULT_TARGET_CLUSTER_ID", namespace="online-boutique"
+              }
+            ) > 0
+          for: 0s
+          labels:
+            severity: warning
+            rca_enabled: "true"
+            agent_rca_enabled: "true"
+          annotations:
+            summary: Online Boutique workload has a recent OOM termination and restart
+            description: A container's latest termination was OOMKilled within five minutes and its restart count is positive. This triggers investigation, not a proven root cause or recovery claim.

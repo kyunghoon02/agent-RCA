@@ -44,6 +44,46 @@ fault-target metric series, logs, traces, and a bounded Hubble flow summary are
 available to RCA control, and that a central synthetic alert becomes a durable
 Incident with remote Evidence.
 
+## Workload event alerts
+
+`remote-workload-alerts.yaml` adds `OnlineBoutiqueRecentOOMRestart` without changing
+the six service-impact rules (`failure rate > 5%`, request rate > 0.1, `for: 2m`).
+It requires the same cluster/namespace/Pod UID/container to have a last termination
+reason of OOMKilled, a termination timestamp within five minutes (not in the
+future), and a positive restart count. There is no additional hold time. A
+counter increase baseline is not required, so the first observed sample may
+already have restartCount=1. Ordinary restarts alone do not trigger RCA.
+
+Controller ownership maps Pod → ReplicaSet → Deployment → matching Service name
+for the 11 explicitly listed Online Boutique application Services. The telemetry
+collector is excluded. This name mapping is a reference-workload convention, not
+a general Kubernetes guarantee. UID joins prevent old Pod identities from being
+combined with replacements; exporter replicas are deduplicated before joining.
+The final alert contains Service-level labels only, because the current Worker
+requires a Service-scoped Incident. It omits `krca_profile` and uses existing
+root-scoped Kubernetes/metric/Loki/Hubble collection and StateGraph localization.
+
+Multiple matching Pods coalesce into one Service alert. Expiry of the event window
+is not a service-recovery claim, and the Alert itself is not root-cause Evidence.
+Missing metrics/ownership fail closed and can prevent detection; short events
+overwritten before a scrape or deleted Pods can still be missed. The termination
+metrics are experimental in [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics/blob/main/docs/metrics/workload/pod-metrics.md).
+
+```bash
+make validate-alert-rules    # pinned promtool, isolated samples, no cluster access
+make deploy-workload-alerts # only the central workload PrometheusRule
+```
+
+The 28 scenarios cover first-sample OOM, expiry, ordinary restarts, missing data,
+UID/cluster/namespace isolation, ownership, duplicate exporters and unchanged
+service-impact hold behavior. CI runs them with the pinned PromQL evaluator.
+Rule deployment and healthy Service mappings are verified live. On 2026-09-05,
+one real checkout OOM fired this rule and reached an accepted Agent Report in
+27 seconds from Incident ingestion, without a synthetic alert. Exact workload
+restoration and the natural resolved webhook were verified. This is a single-run
+connectivity check, not an accuracy result or downstream impact-localization test;
+see the [runtime record](../../evaluation/REPORT.md#native-alert-runtime-check).
+
 ## Private access
 
 No endpoint uses a LoadBalancer, public Ingress, or open public firewall. The

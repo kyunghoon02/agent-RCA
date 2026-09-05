@@ -1,0 +1,33 @@
+---
+- name: Read the central Prometheus alert rules without changing them
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw
+    /api/v1/namespaces/{{ observability_namespace }}/services/http:monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/rules
+  delegate_to: "{{ groups['observability_domain'][0] }}"
+  register: checkout_native_rules_before
+  changed_when: false
+  no_log: true
+
+- name: Require the exact inactive production-style rule and opt-in labels
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/verify_native_alert.py
+      - --phase=preflight
+      - --alert-name
+      - "{{ checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate') }}"
+      - --cluster-id
+      - "{{ cluster_name }}"
+    chdir: "{{ playbook_dir }}/../../.."
+    stdin: "{{ {'prometheus': checkout_native_rules_before.stdout | from_json} | to_json }}"
+  delegate_to: localhost
+  become: false
+  register: checkout_native_preflight_result
+  changed_when: false
+  no_log: true
+
+- name: Freeze the rule attestation and earliest allowed alert time
+  ansible.builtin.set_fact:
+    checkout_native_preflight: "{{ checkout_native_preflight_result.stdout | from_json }}"
+    checkout_native_not_before: "{{ (checkout_native_preflight_result.stdout | from_json).observed_at }}"
+  no_log: true

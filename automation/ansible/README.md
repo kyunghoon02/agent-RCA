@@ -121,6 +121,24 @@ it refreshes the image-pull Secret and patches only the API container image,
 then checks BFF listing and search. The full stack deploy uses the same API pin.
 The reconciler, collection worker and Agent image pins remain unchanged.
 
+`CONFIRM_CONTROLLED_FAULT=yes make verify-prometheus-rca` is a separate one-run
+native-alert release check: fill the 15-minute normal traffic window, execute the
+registered checkout OOM fault, and wait for the existing Prometheus rule to fire.
+It never POSTs firing/resolved alerts or changes rule thresholds. Prometheus,
+Alertmanager fingerprint, Receiver Incident identity, Agent outcome and natural
+resolution are recorded under ignored `evaluation/runs/private/native-prometheus/`.
+The existing watchdog and exact resource restoration still apply. Results are
+not added to the frozen accuracy matrices; an abstention or failure stays a failure
+of this check rather than being retried into a success.
+
+The default checks the existing sustained checkout failure-rate rule. To verify
+the separately deployed event rule, explicitly select
+`NATIVE_ALERT_NAME=OnlineBoutiqueRecentOOMRestart` with the same command. Both modes
+inject a **new real fault**; neither is a read-only replay. The selected alert and
+its ownership recording rule are checked against source before the fault.
+`make deploy-workload-alerts` instead updates only the central workload rules,
+without a stack redeploy, synthetic alert, or fault injection.
+
 The bootstrap is intentionally fail-fast on a host other than Ubuntu 24.04
 x86_64 with cgroup v2. Package and binary versions plus download checksums are
 pinned in `group_vars/all.yml` and mirrored in `platform/versions.yaml`.

@@ -1,0 +1,50 @@
+---
+- name: Save the unmodified native Incident bundle before evaluating its result
+  ansible.builtin.copy:
+    dest: "{{ checkout_fault_repo_root }}/evaluation/runs/private/native-prometheus/{{ checkout_fault_id }}-bundle.json"
+    mode: "0600"
+    content: "{{ checkout_fault_bundle_result.stdout | trim }}\n"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Attest native detection and report identity without rewriting predictions
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/verify_native_alert.py
+      - --phase=attest
+      - --cluster-id
+      - "{{ cluster_name }}"
+    chdir: "{{ checkout_fault_repo_root }}"
+    stdin: >-
+      {{ {'capture': checkout_fault_native_capture,
+          'bundle': checkout_fault_bundle_result.stdout | from_json} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: checkout_native_attestation_result
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Preserve the native run outcome separately from controlled matrices
+  ansible.builtin.copy:
+    dest: "{{ checkout_fault_repo_root }}/evaluation/runs/private/native-prometheus/{{ checkout_fault_id }}-result.json"
+    mode: "0600"
+    content: "{{ checkout_native_attestation_result.stdout | trim }}\n"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Report the native detection result without private runtime identifiers
+  ansible.builtin.debug:
+    msg: "{{ checkout_native_attestation_result.stdout | from_json }}"
+
+- name: Require the native RCA run to produce the expected evidence-gated report
+  ansible.builtin.assert:
+    that:
+      - checkout_native_attestation_result.rc == 0
+      - (checkout_native_attestation_result.stdout | from_json).native_detection_verified
+      - (checkout_native_attestation_result.stdout | from_json).report_accepted
+      - (checkout_native_attestation_result.stdout | from_json).expected_cause_match
+    fail_msg: Native detection or RCA did not meet the one-run verification contract; preserve the failed result.

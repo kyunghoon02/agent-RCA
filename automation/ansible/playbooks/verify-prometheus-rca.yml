@@ -1,0 +1,21 @@
+---
+- name: Verify native Prometheus detection through the continuous RCA worker
+  hosts: fault_target
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - "{{ deployment_profile_vars_file | default('../group_vars/chaos-eval.yml') }}"
+    - ../../../platform/versions.yaml
+  vars:
+    checkout_fault_trigger_mode: prometheus
+    checkout_native_alert_name: "{{ native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate') }}"
+    checkout_oom_scenario_path: evaluation/scenarios/checkoutservice-oom.yaml
+    checkout_oom_scenario: >-
+      {{ lookup('file', playbook_dir + '/../../../' + checkout_oom_scenario_path) | from_yaml }}
+
+  roles:
+    - role: krca_coverage_smoke
+      tags: warmup
+    - role: checkout_oom_fault_harness
+      tags: fault

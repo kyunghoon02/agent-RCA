@@ -17,8 +17,9 @@ CHECKOUT_OOM_SCENARIO_PATH ?= evaluation/scenarios/checkoutservice-oom.yaml
 PAYMENT_IMAGE_PULL_SCENARIO_PATH ?= evaluation/scenarios/paymentservice-image-pull.yaml
 CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH ?= evaluation/scenarios/checkoutservice-missing-configmap.yaml
 NO_FAULT_CONTROL_SCENARIO_PATH ?= evaluation/scenarios/frontend-no-fault-normal.yaml
+NATIVE_ALERT_NAME ?= OnlineBoutiqueCheckoutHighFailureRate
 
-.PHONY: bootstrap-dev validate-docs validate-phase0 test-core validate-core smoke-agent-rca \
+.PHONY: bootstrap-dev validate-docs validate-phase0 test-core validate-core validate-alert-rules deploy-workload-alerts smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \
 	sync-knowledge-vectors evaluate-knowledge-retrieval evaluate-rca gcp-readiness \
 	render-online-boutique build-online-boutique-otel-images terraform-fmt terraform-validate \
@@ -30,7 +31,7 @@ NO_FAULT_CONTROL_SCENARIO_PATH ?= evaluation/scenarios/frontend-no-fault-normal.
 	render-stategraph deploy-stategraph verify-stategraph \
 	render-viewer-frontend build-viewer-frontend-image \
 	deploy-incident-platform verify-incident-platform \
-	deploy-viewer-api deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom \
+	deploy-viewer-api deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom verify-prometheus-rca \
 	evaluate-payment-image-pull \
 	evaluate-checkout-missing-configmap \
 	evaluate-no-fault-control \
@@ -54,6 +55,15 @@ test-core:
 	PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
 validate-core: validate-phase0 test-core
+
+validate-alert-rules:
+	.venv/bin/python tools/test_alert_rules.py
+
+deploy-workload-alerts:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/deploy-workload-alerts.yml
 
 smoke-agent-rca:
 	PYTHONPATH=src:. .venv/bin/python tools/smoke_agent_rca.py
@@ -142,6 +152,10 @@ bootstrap-ansible:
 
 ansible-syntax:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/deploy-workload-alerts.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
 		automation/ansible/playbooks/bootstrap.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
@@ -194,6 +208,11 @@ ansible-syntax:
 		-i automation/ansible/inventories/chaos-eval.example.yml \
 		-i automation/ansible/inventories/observability.example.yml \
 		--syntax-check automation/ansible/playbooks/evaluate-checkout-oom.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/dev.example.yml \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/verify-prometheus-rca.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
 		-i automation/ansible/inventories/chaos-eval.example.yml \
@@ -313,6 +332,18 @@ smoke-krca-coverage:
 		-i $(ANSIBLE_TARGET_INVENTORY) \
 		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
 		automation/ansible/playbooks/smoke-krca-coverage.yml
+
+verify-prometheus-rca:
+	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
+		(echo "Refusing native alert fault: set CONFIRM_CONTROLLED_FAULT=yes" >&2; exit 2)
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/verify-prometheus-rca.yml \
+		--extra-vars native_alert_name=$(NATIVE_ALERT_NAME) \
+		--extra-vars confirm_controlled_fault=yes \
+		--extra-vars controlled_fault_environment=development
 
 evaluate-checkout-oom:
 	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \

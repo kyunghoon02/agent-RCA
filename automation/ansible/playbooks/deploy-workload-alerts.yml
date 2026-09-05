@@ -1,0 +1,26 @@
+---
+- name: Discover the fault-target identity without changing the target
+  hosts: fault_target
+  become: false
+  gather_facts: false
+  vars_files:
+    - ../group_vars/chaos-eval.yml
+  tasks:
+    - name: Publish the configured target cluster identity
+      ansible.builtin.set_fact:
+        workload_alert_target_cluster_id: "{{ cluster_name }}"
+
+- name: Deploy only the central workload event alert rules
+  hosts: observability_domain
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  vars:
+    three_domain_target_cluster_id: "{{ hostvars[groups['fault_target'][0]].workload_alert_target_cluster_id }}"
+  tasks:
+    - name: Reconcile the workload rules without stack deployment or an alert probe
+      ansible.builtin.include_role:
+        name: three_domain_observability_wiring
+        tasks_from: workload-alerts.yml

@@ -255,7 +255,103 @@ frozen model rate card가 없어 비용은 계산하지 않았다. 평가 종료
 등록된 네 시나리오에서 두 번씩 재현됐다는 작은 표본 증거다. production reliability,
 미관측 원인 정확도 또는 통계적 일반화를 뜻하지 않는다.
 
+## Native Alert Runtime Check
+
+### Sustained Impact Rule: Detection Failure
+
+2026-09-05에 기존 checkout OOM scenario를 한 번 실행했다. 15분 정상 traffic으로 KRCA
+6개 profile의 coverage를 먼저 확인한 뒤 resource limit 변경과 Chaos Mesh `StressChaos`로
+실제 `OOMKilled`와 restart를 확인했다. 기존 matrix와 달리 firing/resolved Alert를 직접
+제출하지 않고, 배포된 `OnlineBoutiqueCheckoutHighFailureRate` 규칙을 그대로 관찰했다.
+Agent runtime, Provider, prompt, Gate, Alert 임계값과 `for: 2m`는 변경하지 않았다.
+
+| Boundary | Observed result |
+|---|---|
+| Fault postcondition | 같은 대상 Pod에서 `OOMKilled`, restart 1회 이상 확인 |
+| Native detection | `pending` 관측, `firing` 없음; 검증 실패 |
+| Metric history | checkout 오류율 최대 약 7.09%; 5% 아래로 떨어져 2분 연속 유지 조건 미충족 |
+| Incident / Agent / Report | 해당 실행 구간의 native Incident 0, Agent run 0, Report 0 |
+| Cleanup | Deployment 12/12 Ready, Chaos 0, fault lock 0, controlled-fault marker 0, resource exact rollback |
+
+이는 RCA가 잘못된 원인을 골랐다는 결과가 아니라, 짧은 OOM 증상과 현재 지속 오류율
+Alert 정책의 조합이 Agent를 시작시키지 못한 결과다. 실패를 덮어쓰거나 자동 재실행하지
+않았다. 감지 기록, 원본 OOM postcondition, Prometheus 시계열과 사후 read-only 검증은
+ignored `evaluation/runs/private/native-prometheus/`에 보관한다. 기존 정확도 matrix에
+합산하지 않으며, 이 실행에서는 자동 감지부터 Report까지의 성공을 주장할 수 없다.
+
+이 결과로 지속적인 사용자 영향 감지와 짧은 OOM/restart 이벤트 감지의 목적을
+분리했다. 또한 이 영향 기반 Alert의 source는 `frontend`이고
+Kubernetes·Loki collector는 초기 source 범위만 조회하므로, KRCA가 지목한 하위 서비스의
+원인 Evidence를 추가 수집하는 경로도 검증 대상이다. 이번에는 Agent가 시작되지 않아
+그 경로의 runtime 성공·실패를 측정하지 못했다.
+
+후속 정책은 기존 오류율 규칙을 유지하고 `OnlineBoutiqueRecentOOMRestart`를 별도로
+구현·배포했다. 2026-09-05에 pinned promtool로 28개 격리 시나리오를 검증했고 중앙
+Prometheus에서 rule health `ok`, `inactive`와 application Service 11개의 UID-bound
+ownership mapping을 확인했다. 새 규칙의 Alert label은 Service 기준으로 정규화되어
+해당 Service의 기존 collector 범위로 연결되는 것을 로컬 contract test로 검증했다.
+이 배포 단계에서는 장애 재주입·평가용 Alert 제출·Agent runtime 변경을 하지 않았다.
+이후 명시적으로 승인받은 별도 실행의 결과는 아래와 같다.
+
+### OOM Event Rule: One Native End-to-End Run
+
+2026-09-05에 `OnlineBoutiqueRecentOOMRestart`를 선택해 기존 checkout OOM fault를
+**1회만** 실행했다. 기존 Agent image, model, Provider, prompt와 Evidence Gate는 유지했고,
+firing/resolved Alert를 직접 제출하지 않았다. 새 규칙은 `checkoutservice`를 source로
+사용하며 `krca_profile`이 없으므로 15분 API coverage warmup은 `--skip-tags warmup`으로
+생략했다. 정상 workload, fresh Ready Pod, 장애 전 65초 metric 수집 대기, 최대 120초
+StressChaos, OOM 확인 후 75초 관측과 기존 watchdog·exact rollback은 유지했다.
+
+| Boundary | Observed result |
+|---|---|
+| Native detection | 실제 Pod `OOMKilled`·restart 1회 → Prometheus `firing` → Alertmanager → 정확히 매칭된 Incident |
+| Agent / Gate | `gpt-5.6-luna`, `SUCCEEDED` / `REPORT_ACCEPTED`, `conclusive`, `kubernetes.container-oomkilled` |
+| Supporting Evidence | 동일 fault Pod UID의 Kubernetes `OOMKilled`/exit 137, Prometheus restart delta 1, Loki cgroup OOM signature; 인용 3건 모두 조회·Context 포함 확인 |
+| Latency / usage | Incident 수신 → Report 27초; Agent 약 15초; LLM 2회, read-only tool 3회, 15,722 tokens |
+| Recovery | Deployment 12/12 Ready, Chaos·fault lock·marker 0, 원래 resource 복원, 새 Pod Ready/restart 0, 규칙 `inactive`와 자연 resolved webhook 확인 |
+
+UTC 기준 Incident 수신 `06:31:37`, Context freeze `06:31:45`, Agent 실행
+`06:31:49–06:32:04`, Report 저장 `06:32:04`, alert window 종료 `06:33:06`이다.
+27초는 **Incident 수신부터**의 시간이며 장애 발생부터의 지연이나 반복 측정 SLO가 아니다.
+resolved webhook은 alert window를 닫았고 Incident는 `REPORTED` 상태를 유지했다.
+서비스 복원은 Agent 자동 조치가 아니라 fault harness가 수행했다.
+
+이 결과는 OOM 신호를 가진 Alert에서 동일 Service의 원인 Evidence를 확인한 단일 연결성
+검증이다. frontend 영향만으로 하위 서비스 원인을 찾는 능력, 메모리 고갈을 유발한
+애플리케이션 동작, 원인 독립적인 정확도나 production 일반화를 입증하지 않는다.
+앞선 영향 규칙의 감지 실패와 기존 matrix는 그대로 보존하며, 이번 성공을 합산하지 않는다.
+원본 detection/bundle/result/recovery와 별도 postcheck는 ignored private 경로에 보관한다.
+
 ## Reproduce
+
+### Native Alert Check
+
+명시적 승인으로 **새 장애 1회를 주입**하는 명령은 다음과 같다. 기존 실행의 조회 명령이 아니다.
+
+```bash
+CONFIRM_CONTROLLED_FAULT=yes make verify-prometheus-rca
+# Separate event-rule check; also injects one new real fault:
+CONFIRM_CONTROLLED_FAULT=yes NATIVE_ALERT_NAME=OnlineBoutiqueRecentOOMRestart \
+  make verify-prometheus-rca
+```
+
+위 Make target은 기본적으로 warmup을 포함한다. 위에 기록한 event-rule 실행의
+정확한 warmup 생략 조건을 재현하려면 다음 명령을 사용한다. **새 장애를 주입하므로**
+기존 결과를 확인하기 위한 조회 명령으로 실행하지 않는다.
+
+```bash
+ANSIBLE_CONFIG=automation/ansible/ansible.cfg .venv-ansible/bin/ansible-playbook \
+  -i automation/ansible/inventories/dev.yml \
+  -i automation/ansible/inventories/chaos-eval.yml \
+  -i automation/ansible/inventories/observability.yml \
+  automation/ansible/playbooks/verify-prometheus-rca.yml \
+  --skip-tags warmup \
+  --extra-vars native_alert_name=OnlineBoutiqueRecentOOMRestart \
+  --extra-vars confirm_controlled_fault=yes \
+  --extra-vars controlled_fault_environment=development
+```
+
+### Registered Matrices
 
 ```bash
 make validate-core

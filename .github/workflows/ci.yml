@@ -57,6 +57,9 @@ jobs:
           POSTGRES_TEST_DSN: postgresql://viewer_test:ci-only-test-password@127.0.0.1:5432/viewer_test
         run: make validate-docs validate-core
 
+      - name: Test alert rules with the pinned PromQL evaluator and isolated samples
+        run: make validate-alert-rules
+
   viewer:
     name: Viewer tests and production build
     runs-on: ubuntu-24.04

@@ -398,6 +398,7 @@ def validate_versions_and_manifests() -> None:
         "kube_prometheus_stack": {
             "chart_ref": "oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack",
             "chart_version": "88.5.3",
+            "promtool_image": "quay.io/prometheus/prometheus:v3.14.0-distroless@sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a",
             "retention": "7d",
             "retention_size": "12GiB",
         },
