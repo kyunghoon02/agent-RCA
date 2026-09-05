@@ -121,6 +121,12 @@ it refreshes the image-pull Secret and patches only the API container image,
 then checks BFF listing and search. The full stack deploy uses the same API pin.
 The reconciler, collection worker and Agent image pins remain unchanged.
 
+Collection/localization has its own `incident_platform.worker` image pin in
+`platform/versions.yaml`, separate from the Viewer API and shared Agent/reconciler
+runtime pin. The full stack deploy replaces the `agent-rca-collection-runtime`
+image placeholder with this pin; changing collection code does not require
+changing the Agent image pin.
+
 `CONFIRM_CONTROLLED_FAULT=yes make verify-prometheus-rca` is a separate one-run
 native-alert release check: fill the 15-minute normal traffic window, execute the
 registered checkout OOM fault, and wait for the existing Prometheus rule to fire.
