@@ -17,18 +17,21 @@ Agent RCA는 Incident scope를 먼저 고정하고, 여러 관측 소스의 데�
 즉 KRCA 논문에서 차용한 API-level failure/latency propagation 분석과 Temporal
 StateGraph가 조사 범위를 줄이고, bounded read-only Agent가 그 범위 안에서 Evidence를
 검사한다. 이 프로젝트는 KRCA 논문의 전체 시스템이 아니라 이 drilldown 범위만 구현한다.
-모든 결론은 실제 `evidence_id`로 추적하며, 근거가 부족하거나 충돌하면 추측하지 않고
-`ABSTAIN`한다.
+모든 원인 주장은 실제 `evidence_id`로 추적하며, 근거 없는 원인 확정은 허용하지 않는다.
+유효한 판단 유보인 `ABSTAIN`과 검증을 통과하지 못한 Gate rejection을 구분한다.
 
 ## How It Decides
 
-`Frozen Context`는 분석 시작 시점에 선택한 Entity, Graph 경로, Evidence와 누락 source를
-고정한 변경 불가능한 Incident snapshot이다. 따라서 live cluster 상태가 나중에 바뀌어도
-Agent가 무엇을 보고 판단했는지 재현할 수 있다.
+`Frozen Context`는 분석 시작 시점에 선택한 Entity, Graph 경로, Evidence와 근거 누락·수집
+실패·완전성 정보를 고정한 변경 불가능한 Incident snapshot이다. 따라서 live cluster
+상태가 나중에 바뀌어도 Agent가 무엇을 보고 판단했는지 추적할 수 있다.
 
 `Evidence Gate`는 Agent가 고른 원인과 인용한 `evidence_id`가 이 snapshot 안에 있고,
-원인별 필수 증명 조건을 만족하는지 다시 검사한다. 통과하면 Report를 저장하고, 근거가
-부족하거나 충돌하면 원인을 추측하지 않고 `ABSTAIN`을 저장한다.
+원인별 필수 증명 조건을 만족하는지 다시 검사한다. 유효한 초안은 Report로 저장하고
+Incident를 `REPORTED`로 전환한다. 근거 부족을 명시한 `INCONCLUSIVE` 초안에 root cause가
+없으면, 수락된 Report는 `inconclusive`로 저장되고 Viewer에서 `ABSTAIN`으로 표시된다.
+반대로 근거 없는 확정 결론이나 허용되지 않은 인용은 자동 보정하지 않고 거절한다.
+이 경우 Gate rejection 감사 기록을 남기고 Incident를 `FAILED`로 처리한다.
 
 ## Runtime Walkthrough
 
@@ -116,7 +119,8 @@ flowchart LR
         PJ[Domain Projectors]
         SG[(Temporal StateGraph)]
         AO[Agent RCA and Evidence Gate]
-        R[RCA Report or ABSTAIN]
+        R[Accepted RCA Report including ABSTAIN]
+        F[FAILED and rejection audit]
     end
 
     FW -->|remote write| P
@@ -124,12 +128,20 @@ flowchart LR
     FW -->|OTLP traces| TP
     P -->|alert rules| AM
     AM -->|private authenticated webhook| RX
-    RX --> Q --> CW --> EB --> PJ --> SG --> AO --> R
+    RX --> Q --> CW --> EB --> PJ --> SG --> AO
+    AO -->|accepted| R
+    AO -->|rejected| F
     P --> CW
     L --> CW
     K --> CW
     H -->|private bounded flow query| CW
 ```
+
+Online Boutique의 애플리케이션 계측(OpenTelemetry)이 HTTP·gRPC 요청의 처리 기록(span)을
+생성한다. Collector는 이를 요청 수·실패 수·응답 시간 metric으로 변환하고, Prometheus가
+수집해 오류율을 계산하고 Alert 조건을 평가한다. 현재 오류율은 오류 상태로 기록된 span을
+기준으로 하므로, 계측에서 실패로 표시하지 않은 업무 오류까지 자동으로 감지하지는 않는다.
+Alert는 이상 증상을 알리는 시작 신호이며, 실제 원인은 RCA가 수집된 Evidence를 통해 조사한다.
 
 Alert 수신과 LLM 실행은 분리돼 있다. `rca_enabled=true`는 Alertmanager가 RCA 대상
 Incident만 webhook으로 전달하게 하고, `agent_rca_enabled=true`는 연속 Agent Worker가
@@ -142,6 +154,11 @@ Incident만 webhook으로 전달하게 하고, `agent_rca_enabled=true`는 연�
 Pod → ReplicaSet → Deployment 소유 관계로 Service를 결정한다. 이는 조사 시작 신호이며
 OOM root cause 확정은 여전히 수집된 Evidence와 Gate가 담당한다.
 
+Alert 이름을 원인에 대응시키는 분기는 없으며, 원본 Alert 이름은 현재 모델 입력에도 직접
+포함하지 않는다. Service·namespace와 선택적 `krca_profile` label은 수집·조사 범위를
+결정한다. 다만 확정 가능한 원인 ID는 등록된 세 종류로 제한되므로, 범용적인 미지의 원인
+발견 시스템은 아니다.
+
 ## Core Components
 
 | Component | Input | Responsibility | Output |
@@ -153,7 +170,7 @@ OOM root cause 확정은 여전히 수집된 Evidence와 Gate가 담당한다.
 | Projectors | validated Evidence | domain Evidence를 temporal Entity와 relation으로 변환 | versioned Graph records |
 | StateGraph and Resolver | Graph records와 Incident source | exact Entity resolution과 bounded localization | `Frozen Context` |
 | Agent RCA Orchestrator | Frozen Context | Evidence 후보 선택과 bounded read-only tool investigation | structured RCA draft |
-| Evidence Gate | Agent draft와 inspected Evidence | citation, scope와 원인별 등록 Evidence 조건 재검증 | Report 또는 `ABSTAIN` |
+| Evidence Gate | Agent draft와 inspected Evidence | citation, scope와 원인별 등록 Evidence 조건 재검증 | 초안 수락 또는 fail-closed rejection |
 | Viewer | 저장된 Incident artifacts | Incident, Evidence, Context, work와 Report 조회 | read-only UI/API |
 
 Provider가 Graph record를 직접 만들지는 않는다. 모든 Provider output은
@@ -250,12 +267,17 @@ Evidence precision/recall, `ABSTAIN` correctness, latency와 LLM/tool cost를 �
 
 평가용 Alert 기반 matrix의 unsupported citation은 모두 0건이다. 그러나 이 결과는 등록된
 단일 원인 fault 세 종류와 no-fault 한 종류에 한정되며 production 정확도가 아니다.
+수정 전 평가에서 deterministic baseline도 같은 등록 scenario의 기대 결과를 20/20
+만족했다. 따라서 현재 점수만으로 LLM Agent가 규칙 기반 진단보다 정확하거나 효율적이라고
+주장하지 않는다. Agent의 추가 이점을 입증하는 비교 평가는 아직 남아 있다.
 
 native 검증의 첫 OOM 실행에서는 기존 오류율 규칙의 `for: 2m`을 유지하지 못해 Incident가
 생성되지 않았다. 이 실패는 보존했다. 이후 별도 OOM/restart 규칙을 검증·배포하고
 2026-09-05 후속 1회에서 Report와 resource 복구, 자연 resolved webhook을 확인했다.
 27초는 **Incident 수신 이후** 시간이며 장애 발생부터의 감지 지연이나 운영 SLO가 아니다.
 frontend 영향에서 하위 서비스 원인을 찾는 경로도 이 단일 사례의 검증 범위가 아니다.
+이 실행은 OOM 신호를 감지하는 전용 Alert의 처리 경로를 검증한 것이며, 원인에 대한
+사전 단서가 없는 장애 식별 평가가 아니다.
 
 수치, 실패 분석, 수정 경계, cleanup과 재현 명령은
 [Evaluation and Reliability Record](evaluation/REPORT.md)에 둔다. 실패를 성공으로
