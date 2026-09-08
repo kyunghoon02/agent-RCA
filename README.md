@@ -35,8 +35,8 @@ Incident를 `REPORTED`로 전환한다. 근거 부족을 명시한 `INCONCLUSIVE
 
 ## Runtime Walkthrough
 
-아래 화면은 GCP reference runtime에 저장된 실제 Incident를 read-only로 조회한 것이다.
-첫 두 화면은 통제된 OOM 장애를 **Prometheus가 직접 감지한 사례**이고, 마지막 화면은
+아래 세 Viewer 화면은 GCP reference runtime에 저장된 실제 Incident를 read-only로 조회한 것이다.
+첫 두 화면은 통제된 OOM 장애를 **Prometheus가 직접 감지한 사례**이고, 세 번째 화면은
 **평가용 Alert로 시작한 no-fault 대조군**이다. 공개 캡처의 Incident·Context·Report·Evidence
 ID와 Pod 식별자는 일관된 별칭으로 치환했다. 저장된 artifact, 판정, 수치와 Evidence 관계는
 변경하지 않았다.
@@ -59,6 +59,21 @@ cgroup OOM 신호가 동일한 Frozen Context에 포함된다. 메모리 제한�
 no-fault control에서는 분석 작업 자체는 정상 완료되지만, 원인별 증명 조건을 만족하지 않아
 root cause를 만들지 않고 `ABSTAIN`한다. 화면의 6개 누락 조건은 미확정 가설에 관한 것이며,
 이 대조군의 결과를 모든 정상 서비스에 대한 무오탐 보장으로 해석하지 않는다.
+
+### Network Evidence: Hubble UI
+
+![Hubble UI frontend service map and forwarded flows after recovery](assets/hubble-network-observability.png)
+
+`frontend`로 필터링한 Hubble UI에서 `productcatalogservice:3550/TCP`와
+`opentelemetrycollector:4317/TCP`로 향하는 연결, 개별 Flow의 `forwarded` verdict와
+관측 시각을 확인한다. 내부 IP와 개별 Pod 식별자가 노출되지 않는 필터·표시 열로 캡처했다.
+이 화면은 **정책 차단 실험 복구 후 별도 시점의 실시간 관측**이며, 장애 당시 캡처나
+애플리케이션 요청 성공을 증명하는 화면은 아니다.
+
+Hubble UI는 운영자가 네트워크 신호를 확인하는 보조 화면이다. Agent는 이 이미지를
+분석하지 않고, Hubble Provider가 수집·정규화한 Flow Evidence를 StateGraph와
+Frozen Context를 통해 참조한다. 따라서 장애 원인을 검증할 때는 현재 UI가 아니라
+**Incident 시간창에 수집해 고정한 Evidence**를 기준으로 삼는다.
 
 ### Five-minute Demo
 
