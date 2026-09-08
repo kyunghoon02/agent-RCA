@@ -37,9 +37,7 @@ Incident를 `REPORTED`로 전환한다. 근거 부족을 명시한 `INCONCLUSIVE
 
 아래 세 Viewer 화면은 GCP reference runtime에 저장된 실제 Incident를 read-only로 조회한 것이다.
 첫 두 화면은 통제된 OOM 장애를 **Prometheus가 직접 감지한 사례**이고, 세 번째 화면은
-**평가용 Alert로 시작한 no-fault 대조군**이다. 공개 캡처의 Incident·Context·Report·Evidence
-ID와 Pod 식별자는 일관된 별칭으로 치환했다. 저장된 artifact, 판정, 수치와 Evidence 관계는
-변경하지 않았다.
+**평가용 Alert로 시작한 no-fault 대조군**이다. 공개 캡처의 식별자는 별칭 처리하거나 숨겼다.
 
 ![Evidence-gated OOM root-cause report](assets/viewer-rca-conclusive.png)
 
@@ -68,8 +66,7 @@ root cause를 만들지 않고 `ABSTAIN`한다. 화면의 6개 누락 조건은 
 
 **오른쪽 `productcatalogservice`의 `3550/TCP` 앞 빨간 점선**이 Hubble 자체의 drop 표시다.
 같은 화면의 `Flow Details`에서 **05:25:50.893Z · dropped · Policy denied · egress**를
-대조한다. 설명용 `Native drop marker ↓` 표시는 위치만 안내하며, 빨간 선의 색·점선·굵기는
-임의로 바꾸지 않았다. Pod·verdict 필터를 적용하지 않아 다른 서비스, Redis와 telemetry
+대조한다. Pod·verdict 필터를 적용하지 않아 다른 서비스, Redis와 telemetry
 연결도 함께 보인다. 모든 선을 애플리케이션 간 API 의존성으로 해석하지 않는다.
 
 위 OOM 사례와 별도로, 2026-09-08 **05:25:32–05:26:14 UTC**에 `CiliumNetworkPolicy`로
@@ -104,10 +101,6 @@ Agent가 참조하는 것은 이 이미지가 아니라 수집·정규화된 Evi
 기반 Evidence 경로 검증**이며 LLM 호출이나 네트워크 원인 확정은 포함하지 않는다.
 수집 품질의 `PARTIAL`과 retention `UNKNOWN`도 그대로 유지했다.
 [검증 범위와 안전장치](platform/observability/README.md#controlled-network-evidence-verification)를 참고한다.
-
-공개 캡처는 내부 IP·Pod·Cilium 식별자와 세부 라벨 필드를 숨기고 확대 배율·상세 패널
-배치를 조정했다. 설명 배너와 위치 안내만 추가했으며, 관측된 서비스·연결, Flow 시각,
-verdict와 drop reason은 변경하지 않았다.
 
 ### Five-minute Demo
 
