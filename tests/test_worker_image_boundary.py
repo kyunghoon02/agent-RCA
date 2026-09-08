@@ -8,6 +8,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkerImageBoundaryTests(unittest.TestCase):
+    def test_collection_cli_matches_cilium_and_uses_an_immutable_binary_source(self):
+        versions = yaml.safe_load((ROOT / "platform/versions.yaml").read_text())
+        hubble = versions["hubble"]
+        expected_version = "v" + versions["cilium"]["chart_version"]
+        self.assertEqual(hubble["worker_cli_version"], expected_version)
+        self.assertRegex(hubble["worker_cli_source_image"],
+                         rf"^quay.io/cilium/cilium:{expected_version}@sha256:[0-9a-f]{{64}}$")
+        dockerfile = (ROOT / "platform/incident-platform/Dockerfile").read_text()
+        self.assertIn("FROM " + hubble["worker_cli_source_image"] + " AS hubble-cli", dockerfile)
+        self.assertIn("COPY --from=hubble-cli /usr/bin/hubble /usr/local/bin/hubble", dockerfile)
+        self.assertIn("hubble version | grep -F 'hubble " + expected_version + "@'", dockerfile)
+        self.assertNotIn("releases/download/", dockerfile)
+
+    def test_collection_rollout_does_not_accept_partial_hubble_probe(self):
+        tasks = yaml.safe_load((ROOT / "automation/ansible/playbooks/deploy-incident-worker.yml").read_text())[0]["tasks"]
+        probe = next(task for task in tasks if task["name"] ==
+                     "Verify v2 Hubble collection and projection without creating an Incident")
+        code = probe["ansible.builtin.command"]["argv"][-1]
+        compile(code, "hubble-live-probe", "exec")
+        self.assertIn("assert batch.status == 'SUCCEEDED'", code)
+        self.assertIn("assert not draft.facts['observation_gaps']", code)
+        self.assertIn("assert not draft.facts['truncated']", code)
+        self.assertIn("max_raw_flows=500", code)
+        self.assertIn("max_raw_flows=500", (ROOT / "tools/run_incident_worker.py").read_text())
+        self.assertIn("incident_persisted': False", code)
+        version_check = next(task for task in tasks if task["name"] ==
+                             "Require the collection CLI version pinned for the Relay")
+        self.assertIn("hubble.worker_cli_version", str(version_check))
+
     def test_runtime_verifiers_use_each_components_pin(self):
         tasks = yaml.safe_load((ROOT / "automation/ansible/roles/incident_platform_verify/tasks/main.yml").read_text())
         worker_check = next(task for task in tasks if task["name"] == "Require the digest-pinned read-only Incident worker")

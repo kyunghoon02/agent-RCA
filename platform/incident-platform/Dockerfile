@@ -1,3 +1,7 @@
+# The official Cilium image includes the matching Hubble CLI. Copy only that
+# binary; keep the dataplane, Relay and their privileges outside this runtime.
+FROM quay.io/cilium/cilium:v1.20.1@sha256:ae9ea21f7427fe24bc6ea7247eb552157a1b0a431744045d3f641545ca71d11b AS hubble-cli
+
 FROM docker.io/library/python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -21,13 +25,8 @@ COPY tools/run_incident_worker.py /app/tools/run_incident_worker.py
 COPY tools/run_agent_worker.py /app/tools/run_agent_worker.py
 COPY tools/run_incident_viewer.py /app/tools/run_incident_viewer.py
 
-ADD https://github.com/cilium/hubble/releases/download/v1.19.4/hubble-linux-amd64.tar.gz /tmp/hubble-linux-amd64.tar.gz
-RUN echo "c7c37a5f27ed2ae2d5495c6ddbecc61cebbb841508e77af3c131e96f005ed247  /tmp/hubble-linux-amd64.tar.gz" \
-      | sha256sum --check --strict \
-    && tar --extract --gzip --file /tmp/hubble-linux-amd64.tar.gz \
-      --directory /usr/local/bin hubble \
-    && chmod 0755 /usr/local/bin/hubble \
-    && rm /tmp/hubble-linux-amd64.tar.gz
+COPY --from=hubble-cli /usr/bin/hubble /usr/local/bin/hubble
+RUN hubble version | grep -F 'hubble v1.20.1@'
 
 RUN chown -R 65532:65532 /app
 

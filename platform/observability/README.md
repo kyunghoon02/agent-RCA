@@ -1,5 +1,8 @@
 # Development observability stack
 
+The GCP reference runtime was retired on 2026-09-08. Dated checks below are
+historical evidence; access commands require a redeployed environment.
+
 This directory contains reviewable values and manifests for the GCP kubeadm
 reference runtime. The same base supports `local`, `forwarder`, and `receiver`
 profiles. The fault target forwards selected metric, log, and trace data; the
@@ -118,8 +121,14 @@ also provisions this dashboard in receiver/local profiles.
 
 On 2026-09-08, all 12 metric panel queries returned live target series through
 Grafana's Prometheus datasource. This proves dashboard connectivity, not network
-fault RCA accuracy. The Hubble CLI/Relay version warning remains explicit as
-described in the [Provider contract](../../contracts/providers.md#networkflowprovider).
+fault RCA accuracy. The collection runtime now copies Hubble CLI `v1.20.1` from
+the digest-pinned official Cilium image, matching the target Relay; the separately
+installed host diagnostic CLI remains `v1.19.4`. These are distinct pins in
+`platform/versions.yaml`. The rollout probe uses the worker's 500-flow budget and
+rejects `PARTIAL`, observation gaps and truncation. Its 60-second read-only check
+passed with 119 flows; retention remains `UNKNOWN`. See the
+[runtime verification](../../evaluation/REPORT.md#hubble-cli-compatibility-repair)
+and [Provider contract](../../contracts/providers.md#networkflowprovider).
 
 ## Private access
 

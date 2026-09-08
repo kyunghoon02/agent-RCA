@@ -87,6 +87,20 @@
         --namespace {{ incident_platform_namespace }} --timeout={{ incident_platform_wait_timeout }}
       changed_when: false
 
+    - name: Read the deployed collection Hubble CLI version
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        exec deployment/{{ incident_platform_worker_deployment }}
+        --namespace {{ incident_platform_namespace }} -- hubble version
+      register: collection_worker_hubble_version
+      changed_when: false
+
+    - name: Require the collection CLI version pinned for the Relay
+      ansible.builtin.assert:
+        that:
+          - collection_worker_hubble_version.stdout.startswith('hubble ' + hubble.worker_cli_version + '@')
+        fail_msg: The collection runtime does not contain the expected Hubble CLI binary.
+
     - name: Verify v2 Hubble collection and projection without creating an Incident
       ansible.builtin.command:
         argv:
@@ -116,7 +130,7 @@
                     resource_names=('frontend',), max_items=1), timeout_seconds=15,
             )
             provider = HubbleNetworkFlowProvider(HubbleCLIClient(os.environ['HUBBLE_SERVER']),
-                cluster_id=os.environ['INCIDENT_WORKER_CLUSTER_ID'], max_raw_flows=100)
+                cluster_id=os.environ['INCIDENT_WORKER_CLUSTER_ID'], max_raw_flows=500)
             batch = provider.collect(request)
             assert FEATURE_SET == 'hubble-network-flow-summary-v2'
             assert len(batch.items) == 1
@@ -128,8 +142,12 @@
             print(json.dumps({'feature_set': FEATURE_SET, 'status': batch.status,
                 'flow_count': draft.facts['flow_count'], 'flow_signal': draft.facts['flow_signal'],
                 'observation_gaps': draft.facts['observation_gaps'],
+                'truncated': draft.facts['truncated'],
                 'retention_status': draft.facts['retention_status'],
                 'projected_records': len(projection.records), 'incident_persisted': False}))
+            assert batch.status == 'SUCCEEDED', 'Hubble probe has incomplete collection'
+            assert not draft.facts['observation_gaps'], 'Hubble observation gaps remain'
+            assert not draft.facts['truncated'], 'Hubble probe reached its flow budget'
       register: collection_worker_hubble_probe
       changed_when: false
 

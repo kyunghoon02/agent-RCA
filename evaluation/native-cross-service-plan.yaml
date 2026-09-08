@@ -1,0 +1,46 @@
+schema_version: "1.0.0"
+plan_id: native-checkout-missing-configmap-v1
+status: implemented-runtime-unverified
+
+target:
+  environment: development
+  namespace: online-boutique
+  deployment: checkoutservice
+  container: server
+  replicas: 1
+
+fault:
+  cause_id: kubernetes.missing-configmap
+  strategy: Recreate
+  configmap_name: checkoutservice-agent-rca-native-missing
+  volume_name: agent-rca-native-required-config
+  mount_path: /var/run/agent-rca-native-required-config
+  optional: false
+
+trigger:
+  alert_name: OnlineBoutiqueCheckoutHighFailureRate
+  service: frontend
+  krca_profile: checkout-full
+  failure_rate_threshold: 0.05
+  request_rate_minimum: 0.1
+  hold_seconds: 120
+
+# Warmup is outside the fault deadline. Budget values are design allowances,
+# not measured latency or a guarantee that the unchanged Alert will fire.
+timing:
+  baseline_seconds: 900
+  activation_seconds: 90
+  telemetry_seconds: 30
+  metric_window_seconds: 120
+  alert_hold_seconds: 120
+  delivery_seconds: 30
+  investigation_seconds: 90
+  safety_margin_seconds: 20
+  maximum_active_seconds: 600
+  recovery_timeout_seconds: 300
+
+workload:
+  profile: path-weighted
+  seed: 342
+  operations_per_second: 4
+  timeout_seconds: 5

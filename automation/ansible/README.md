@@ -1,5 +1,8 @@
 # GCP kubeadm bootstrap automation
 
+The GCP reference runtime was retired on 2026-09-08. Provision new infrastructure
+and regenerate the ignored inventories before using these deployment commands.
+
 This layer configures the already-provisioned Compute Engine VM. Terraform
 continues to own the GCP network, firewall, identity, VM, disk and address; this
 Ansible layer owns host prerequisites, containerd, pinned Kubernetes packages,

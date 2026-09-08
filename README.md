@@ -35,7 +35,7 @@ Incident를 `REPORTED`로 전환한다. 근거 부족을 명시한 `INCONCLUSIVE
 
 ## Runtime Walkthrough
 
-아래 세 Viewer 화면은 GCP reference runtime에 저장된 실제 Incident를 read-only로 조회한 것이다.
+아래 세 Viewer 화면은 GCP 검증 환경에서 실제 Incident를 read-only로 조회해 저장한 캡처다.
 첫 두 화면은 통제된 OOM 장애를 **Prometheus가 직접 감지한 사례**이고, 세 번째 화면은
 **평가용 Alert로 시작한 no-fault 대조군**이다. 공개 캡처의 식별자는 별칭 처리하거나 숨겼다.
 
@@ -104,10 +104,10 @@ Agent가 참조하는 것은 이 이미지가 아니라 수집·정규화된 Evi
 
 ### Five-minute Demo
 
-새 장애를 주입하지 않고 위 두 종류의 저장된 Incident를 조회한다. Viewer에서
-`OnlineBoutiqueRecentOOMRestart`를 검색해 2026-09-05에 생성된 `REPORTED` 사례를 선택한다.
-공개 캡처의 별칭 ID는 검색용 실제 ID가 아니다. 아래 시연 시간은 설명 순서이며 실제 장애
-감지·분석 소요 시간이 아니다.
+아래는 위 캡처와 평가 기록으로 설명하는 순서다. Viewer를 직접 시연하려면 실행 환경을
+재배포하고 보존한 데이터를 복원해야 한다. 당시 대표 사례는 2026-09-05 생성된
+`OnlineBoutiqueRecentOOMRestart`의 `REPORTED` Incident다. 공개 캡처의 별칭 ID는
+검색용 실제 ID가 아니며, 시연 시간은 실제 장애 감지·분석 소요 시간이 아니다.
 
 | Time | Viewer에서 확인할 내용 | 설명할 핵심 |
 |---|---|---|
@@ -133,8 +133,8 @@ PrometheusRule → Alertmanager → Receiver로 Incident를 생성했다. 평가
 
 ## Architecture
 
-> 논리 아키텍처는 cloud-neutral이며, 현재 reference runtime은 GCP Compute Engine의
-> 독립된 single-node kubeadm Kubernetes 세 개다.
+> 논리 아키텍처는 cloud-neutral이며, 검증에는 GCP Compute Engine의
+> 독립된 single-node kubeadm Kubernetes 세 개를 사용했다.
 
 ```mermaid
 flowchart LR
@@ -215,12 +215,6 @@ Alert 이름을 원인에 대응시키는 분기는 없으며, 원본 Alert 이�
 | Evidence Gate | Agent draft와 inspected Evidence | citation, scope와 원인별 등록 Evidence 조건 재검증 | 초안 수락 또는 fail-closed rejection |
 | Viewer | 저장된 Incident artifacts | Incident, Evidence, Context, work와 Report 조회 | read-only UI/API |
 
-`krca_profile`이 있는 Incident는 `LOCALIZING`에서 Top-N service를 먼저 resolve하고,
-선택된 하위 서비스 최대 3개의 상세 Evidence를 기존 Provider로 추가 수집한 뒤 Context를
-고정한다. 초기 Alert의 source는 유지하며, 추가 수집 실패와 완료 checkpoint도 저장한다.
-이 경로는 로컬 fixture·PostgreSQL contract로 검증했으며, GCP cross-service fault 재실행은
-아직 남아 있다. 상세 경계는 [KRCA contract](contracts/krca-drilldown.md)에 둔다.
-
 Provider가 Graph record를 직접 만들지는 않는다. 모든 Provider output은
 `EvidenceBuilder`를 통과한 후에만 저장되고, domain Projector만 검증된 Evidence를
 StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 Neo4j에 저장하며,
@@ -228,7 +222,7 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 
 ## Evidence Sources
 
-| Source | 현재 Incident 경로 | 역할 |
+| Source | 검증 당시 Incident 경로 | 역할 |
 |---|---|---|
 | Prometheus | 연결됨 | service 오류율·latency, Pod memory ratio와 restart delta, KRCA API dependency feature |
 | Kubernetes API | 연결됨 | Service, Deployment, ReplicaSet, Pod와 EndpointSlice 상태 |
@@ -249,7 +243,7 @@ Hubble의 `정책 차단 관측`은 곧바로 application root cause 확정을 �
 정책 차단 관측 18건이 Evidence → Neo4j → Frozen Context → Agent 조회 도구까지
 동일하게 전달됨을 확인했다. 이는 평가용 Alert를 사용한 연결성 검증이며 LLM 호출이나
 네트워크 원인 정답률 평가는 아니다. [검증 범위와 안전장치](platform/observability/README.md#controlled-network-evidence-verification)를 참고한다.
-운영 지표는 중앙 Grafana의 `Agent RCA · Cilium & Hubble`에서 조회한다.
+재배포 시 운영 지표는 중앙 Grafana의 `Agent RCA · Cilium & Hubble`에서 조회한다.
 [접속·재배포 안내](platform/observability/README.md#cilium-and-hubble-dashboard)를 참고한다.
 서비스 통신 지도와 개별 flow는 fault target의 별도 [비공개 Hubble UI](platform/observability/README.md#hubble-ui)에서 확인한다.
 
@@ -275,6 +269,9 @@ Hubble의 `정책 차단 관측`은 곧바로 application root cause 확정을 �
 
 ## Reference Runtime
 
+검증용 GCP 실행 환경은 **2026-09-08 비용 관리를 위해 철거**했다. 아래는 검증 당시의
+구성이며, 화면·평가 기록과 재배포 코드는 보존한다. 상시 제공되는 데모 서비스는 아니다.
+
 | Layer | Implementation |
 |---|---|
 | Cloud | Google Cloud Compute Engine |
@@ -285,9 +282,9 @@ Hubble의 `정책 차단 관측`은 곧바로 application root cause 확정을 �
 | Reference workload | [Google Online Boutique](platform/online-boutique/README.md) `v0.10.6` |
 | Provisioning | Terraform이 GCP foundation, Ansible이 host/cluster와 pinned workload 배포 담당 |
 
-실제 reference runtime은 독립된 single-node Kubernetes 세 개로 나뉜다.
+검증 환경은 독립된 single-node Kubernetes 세 개로 나누었다.
 
-| Failure domain | Active responsibility |
+| Failure domain | Responsibility |
 |---|---|
 | RCA control | Receiver, PostgreSQL queue, Evidence/Agent workers, Neo4j StateGraph, Viewer |
 | Fault target | Online Boutique, Chaos Mesh, Kubernetes/Cilium Evidence source, telemetry forwarders |
@@ -295,8 +292,7 @@ Hubble의 `정책 차단 관측`은 곧바로 application root cause 확정을 �
 
 도메인 간 endpoint는 public ingress가 아니라 GCP VPC의 tag 기반 firewall과 고정 private
 NodePort만 사용한다. RCA worker의 Kubernetes credential은 fault target에서 발급한 read-only
-ServiceAccount이며 Secret 읽기는 거부된다. 전환 전에 존재하던 fault-target control plane과
-control-domain Online Boutique는 삭제하지 않고 `0 replicas`로 내렸고 PVC는 보존했다.
+ServiceAccount이며 Secret 읽기는 거부된다.
 
 Chaos evaluation은 기존 v1.36 runtime을 제자리에서 내리지 않는다. Terraform의 기본값이
 꺼진 병렬 VM을 명시적으로 생성해 Kubernetes v1.35.8을 부트스트랩했고, Chaos Mesh 2.8.4는
@@ -333,7 +329,6 @@ native 검증의 첫 OOM 실행에서는 기존 오류율 규칙의 `for: 2m`을
 생성되지 않았다. 이 실패는 보존했다. 이후 별도 OOM/restart 규칙을 검증·배포하고
 2026-09-05 후속 1회에서 Report와 resource 복구, 자연 resolved webhook을 확인했다.
 27초는 **Incident 수신 이후** 시간이며 장애 발생부터의 감지 지연이나 운영 SLO가 아니다.
-frontend 영향에서 하위 서비스 원인을 찾는 경로도 이 단일 사례의 검증 범위가 아니다.
 이 실행은 OOM 신호를 감지하는 전용 Alert의 처리 경로를 검증한 것이며, 원인에 대한
 사전 단서가 없는 장애 식별 평가가 아니다.
 
@@ -346,12 +341,7 @@ frontend 영향에서 하위 서비스 원인을 찾는 경로도 이 단일 사
 ## Known Limitations
 
 - 세 failure domain은 분리됐지만 각 도메인은 single-node이며 observability domain 자체는 HA가 아니다.
-- VM1의 기존 observability stack은 control-plane queue/dashboard 관측용 shadow로 남아 있다.
-  control telemetry까지 VM3로 통합한 뒤 제거 여부를 별도로 결정해야 한다.
-- fault target의 `forwarder` profile도 전환기에는 base Prometheus/Loki/Tempo/Grafana
-  구성 요소를 유지한다. target telemetry의 authoritative 저장·조회는 VM3지만,
-  경량 forwarder-only profile과 기존 local telemetry PVC 정리는 후속 작업이다.
-- PostgreSQL, Neo4j와 local PV의 backup/restore 및 HA가 구현되지 않았다.
+- PostgreSQL, Neo4j와 local PV의 정기 backup/restore 운영 및 HA는 구현하지 않았다.
 - fault-target 원격 조회 credential은 제한된 RBAC의 장기 ServiceAccount token이며,
   production workload identity와 자동 rotation은 아직 구현되지 않았다.
 - 일반 application log와 trace를 Incident Evidence로 수집하는 Provider가 없다.

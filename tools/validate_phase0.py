@@ -355,7 +355,11 @@ def validate_versions_and_manifests() -> None:
             "deb_version": "1.36.4-1.1",
         },
         "cilium": {"chart_version": "1.20.1", "cli_version": "v0.19.7"},
-        "hubble": {"cli_version": "v1.19.4"},
+        "hubble": {
+            "cli_version": "v1.19.4",
+            "worker_cli_version": "v1.20.1",
+            "worker_cli_source_image": "quay.io/cilium/cilium:v1.20.1@sha256:ae9ea21f7427fe24bc6ea7247eb552157a1b0a431744045d3f641545ca71d11b",
+        },
     }
     for boundary, expected in expected_runtime_versions.items():
         if versions.get(boundary) != expected:
@@ -1281,9 +1285,9 @@ def validate_incident_platform_manifest() -> None:
             "alert_matcher": "rca_enabled=true",
         },
         "worker": {
-            "image_tag": "runtime-2acc54540260",
+            "image_tag": "runtime-440ff2af8e8e",
             "image_digest": (
-                "sha256:edf1bfb3e8034cfe8b4fd512c8319143ade8f3e8410541cdec2ddcf361d5e097"
+                "sha256:d8a53a7f90bf94d99dfeb6c808a87098ee85448a95863e5aa4ddd3038e157837"
             ),
             "poll_interval_seconds": 2,
             "lease_seconds": 120,

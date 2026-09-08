@@ -1,0 +1,21 @@
+---
+- name: Verify the pinned control runtime before the native cross-service drill
+  hosts: rca_control
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../../../platform/versions.yaml
+  roles:
+    - role: evaluation_runtime_verify
+
+- name: Verify sustained native frontend detection and downstream ConfigMap RCA
+  hosts: fault_target
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/chaos-eval.yml
+    - ../../../platform/versions.yaml
+  roles:
+    - role: native_cross_service_harness

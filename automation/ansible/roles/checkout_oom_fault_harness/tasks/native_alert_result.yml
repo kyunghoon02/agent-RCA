@@ -8,17 +8,27 @@
   become: false
   no_log: true
 
+- name: Preserve the observed fault identity for replaying the downstream attestation
+  ansible.builtin.copy:
+    dest: "{{ checkout_fault_repo_root }}/evaluation/runs/private/native-prometheus/{{ checkout_fault_id }}-fault-postcondition.json"
+    mode: "0600"
+    content: "{{ checkout_fault_oom_state.stdout | trim }}\n"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
 - name: Attest native detection and report identity without rewriting predictions
   ansible.builtin.command:
     argv:
       - .venv/bin/python
       - tools/verify_native_alert.py
-      - --phase=attest
+      - "--phase={{ 'attest-downstream' if checkout_native_alert_name | default('OnlineBoutiqueCheckoutHighFailureRate') == 'OnlineBoutiqueCheckoutHighFailureRate' else 'attest' }}"
       - --cluster-id
       - "{{ cluster_name }}"
     chdir: "{{ checkout_fault_repo_root }}"
     stdin: >-
       {{ {'capture': checkout_fault_native_capture,
+          'fault_postcondition': checkout_fault_oom_state.stdout | from_json,
           'bundle': checkout_fault_bundle_result.stdout | from_json} | to_json }}
   delegate_to: localhost
   become: false

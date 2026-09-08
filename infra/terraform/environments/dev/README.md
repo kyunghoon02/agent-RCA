@@ -1,5 +1,8 @@
 # Agent RCA GCP dev environment
 
+The reference deployment was retired on 2026-09-08 after evaluation. These files
+describe the reproducible infrastructure, not an active cloud deployment.
+
 This Terraform root owns only the GCP foundation for the single-node reference
 runtime:
 

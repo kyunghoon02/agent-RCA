@@ -39,7 +39,7 @@ NATIVE_ALERT_NAME ?= OnlineBoutiqueCheckoutHighFailureRate
 	verify-evaluation-runtime plan-evaluation-matrix evaluate-matrix \
 	verify-structured-output-boundary plan-structured-output-evaluation \
 	evaluate-structured-output-evaluation score-structured-output-evaluation \
-	plan-holdout-matrix evaluate-holdout-matrix summarize-evaluation-matrix
+	plan-holdout-matrix evaluate-holdout-matrix summarize-evaluation-matrix plan-native-cross-service verify-native-cross-service
 
 bootstrap-dev:
 	$(DEV_PYTHON) -m venv .venv
@@ -223,6 +223,11 @@ ansible-syntax:
 		-i automation/ansible/inventories/chaos-eval.example.yml \
 		-i automation/ansible/inventories/observability.example.yml \
 		--syntax-check automation/ansible/playbooks/verify-prometheus-rca.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/dev.example.yml \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml \
+		--syntax-check automation/ansible/playbooks/verify-native-cross-service.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/dev.example.yml \
 		-i automation/ansible/inventories/chaos-eval.example.yml \
@@ -428,6 +433,20 @@ verify-evaluation-runtime:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_CONTROL_INVENTORY) \
 		automation/ansible/playbooks/verify-evaluation-runtime.yml
+
+verify-native-cross-service:
+	@test "$(CONFIRM_CONTROLLED_FAULT)" = "yes" || \
+		(echo "Refusing native cross-service fault: set CONFIRM_CONTROLLED_FAULT=yes" >&2; exit 2)
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		-i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/verify-native-cross-service.yml \
+		--extra-vars confirm_controlled_fault=yes \
+		--extra-vars controlled_fault_environment=development
+
+plan-native-cross-service:
+	@PYTHONPATH=src:. .venv/bin/python tools/plan_native_cross_service.py
 
 plan-evaluation-matrix:
 	@PYTHONPATH=src:. .venv/bin/python tools/run_evaluation_matrix.py

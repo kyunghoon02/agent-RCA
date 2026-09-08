@@ -857,6 +857,32 @@
             transport_errors: >-
               {{ no_fault_control_workload_summary.transport_errors | int }}
 
+    - name: Create the private no-fault observation directory
+      ansible.builtin.file:
+        path: "{{ no_fault_control_repo_root }}/evaluation/runs/private/no-fault"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Preserve the unmodified no-fault bundle before applying scoring gates
+      ansible.builtin.copy:
+        dest: "{{ no_fault_control_repo_root }}/evaluation/runs/private/no-fault/{{ no_fault_control_id }}-bundle.json"
+        mode: "0600"
+        content: "{{ no_fault_control_bundle_result.stdout | trim }}\n"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Preserve the no-fault postconditions separately from the Agent prediction
+      ansible.builtin.copy:
+        dest: "{{ no_fault_control_repo_root }}/evaluation/runs/private/no-fault/{{ no_fault_control_id }}-attestation.json"
+        mode: "0600"
+        content: "{{ no_fault_control_attestation | to_nice_json }}\n"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
     - name: Build local-only no-fault Ground Truth and score artifacts
       ansible.builtin.command:
         argv:

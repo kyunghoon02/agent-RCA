@@ -1,6 +1,14 @@
 # GCP Terraform Boundary
 
-Status: **dev root applied; three independent Ansible kubeadm/Cilium domains verified**
+Status: **reference deployment verified; dev cloud resources retired on 2026-09-08**
+
+The three-domain runtime was removed after evaluation to stop ongoing cloud
+usage. The reviewed destroy removed 29 Terraform-managed entries; the separate
+state/backend and remaining build buckets were also removed. VM, disk, external
+IP, Artifact Registry and active bucket inventories were empty before project
+billing was disabled. Configuration and historical validation evidence are retained.
+Recreate a private state bucket and refresh ignored backend/inventory inputs
+before intentionally provisioning a new environment.
 
 Terraform will own two explicit state boundaries:
 

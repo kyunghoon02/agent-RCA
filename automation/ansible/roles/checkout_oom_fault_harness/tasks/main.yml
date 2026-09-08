@@ -774,6 +774,16 @@
                 FROM evidence_items evidence
                 WHERE evidence.incident_id = incident.incident_id
               ),
+              'audit_events', (
+                SELECT COALESCE(json_agg(json_build_object(
+                  'event_type', audit.event_type,
+                  'occurred_at', audit.occurred_at,
+                  'details', audit.details
+                ) ORDER BY audit.event_id), '[]'::json)
+                FROM incident_audit_events audit
+                WHERE audit.incident_id = incident.incident_id
+                  AND audit.event_type = 'LOCALIZATION_COLLECTION_COMPLETED'
+              ),
               'report', (
                 SELECT report.document FROM rca_reports report
                 WHERE report.incident_id = incident.incident_id

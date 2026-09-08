@@ -322,6 +322,195 @@ resolved webhook은 alert window를 닫았고 Incident는 `REPORTED` 상태를 �
 앞선 영향 규칙의 감지 실패와 기존 matrix는 그대로 보존하며, 이번 성공을 합산하지 않는다.
 원본 detection/bundle/result/recovery와 별도 postcheck는 ignored private 경로에 보관한다.
 
+### Cross-Service Precheck: Collection Quality Blocker
+
+2026-09-08에 frontend 영향 기반 cross-service 검증에 앞서
+`make smoke-krca-coverage`를 실행했다. 이 명령은 15분 정상 traffic과 6개 KRCA profile
+조회에 더해, `browse-home` profile의 **평가용 Alert 1건**을 제출한다. native 감지나
+등록된 no-fault 평가 명령과는 다르며, 이 결과를 정확도 matrix에 합산하지 않는다.
+
+| Boundary | Observed result |
+|---|---|
+| Metric / collection | 6개 profile `CONNECTED`; 제출된 Incident의 KRCA feature 5/5 `HAS_DATA`, collection·localization 완료 |
+| Agent / Gate | 기존 키와 배포 runtime 사용; `SUCCEEDED` / `REPORT_ACCEPTED`, root-cause 없는 `inconclusive` Report → ABSTAIN |
+| Usage | Agent run 1건, LLM 2회, read-only tool 3회, 14,459 tokens |
+| Collection quality | Hubble `PARTIAL`: `CLI_RELAY_VERSION_MISMATCH`; Context completeness 0.84375 |
+| Scope / cleanup | `source-entity-krca-fallback`; 장애 주입 없음, 평가용 Alert resolved 수신, Deployment 12/12 Ready, Chaos·CiliumNetworkPolicy·fault lock 0 |
+
+실제 수집 worker의 Hubble CLI는 `v1.19.4`, fault target Relay는 `v1.20.1`이었다.
+CLI가 출력한 호환성 경고를 Provider가 수집 품질 누락으로 보존한 것이며, flow가 전혀
+수집되지 않았다는 뜻은 아니다. Agent의 유효한 판단 유보와 별개로, 현재 등록된 no-fault
+평가는 `collector_failures_maximum: 0`을 요구하므로 이 상태로 평가 성공을 주장할 수 없다.
+별도 no-fault 실행과 계획했던 OOM 재주입은 진행하지 않았다. 다음 순서는 CLI/Relay
+호환성 정합화와 수집 품질 재확인이다. Alert 임계값·Agent prompt·Evidence Gate는 변경하지 않았다.
+
+frontend native 검증기에는 원인 이름 일치 외에 **KRCA 선택 checkpoint → 추가 수집 →
+Frozen Context → 실제 장애 Pod UID → Agent 조회·인용**을 연결하는 검사를 추가했다.
+검증 입력은 private artifact로 보존하며, no-fault bundle도 scoring gate 적용 전에 보존하도록
+보강했다. 이 검증기 변경은 로컬 테스트로 확인했으며 cross-service fault의 runtime 성공은
+아직 입증되지 않았다.
+
+### Hubble CLI Compatibility Repair
+
+2026-09-08에 수집 worker만 새 digest-pinned 이미지로 교체했다. 별도 Hubble CLI
+릴리스는 `v1.19.4`까지지만, [공식 Cilium `v1.20.1` 이미지](https://github.com/cilium/cilium/discussions/48043)에
+포함된 `/usr/bin/hubble`은 `v1.20.1`이다. 이 바이너리만 Python runtime으로 복사해
+기존 Relay와 맞췄다. VM의 별도 진단 CLI는 그대로이며 RCA Provider가 사용하지 않는다.
+
+첫 배포 probe는 버전 경고가 사라졌지만 100건의 독자적인 flow 한도에 걸려 `PARTIAL`로
+중단됐다. probe 한도를 실제 collection worker와 동일한 500건으로 정합화한 뒤,
+이미 배포된 worker에 read-only probe만 다시 실행했다. 운영 Provider의 한도와
+누락·잘림에 대한 실패 기준은 변경하지 않았다.
+
+| Boundary | Observed result |
+|---|---|
+| Version | 수집 CLI / 기존 Relay 모두 `v1.20.1` |
+| Read-only probe | `frontend`, 최근 60초, flow 119건, `SUCCEEDED`, observation gap 0, `truncated=false` |
+| Normalization / projection | `hubble-network-flow-summary-v2` EvidenceBuilder 검증과 Graph projection 2개 record 생성; DB 저장 없음 |
+| Deployment isolation | `incident-worker`만 교체; 나머지 control Deployment, Relay와 Cilium template 및 application Pod fingerprint 불변 |
+
+정상 HTTP GET 3건은 모두 200이었다. 새 Incident·Agent run·장애 주입 없이 검증했으며,
+기존 Report와 실패 기록은 수정하지 않았다. `retention_status=UNKNOWN`은 유지된다.
+이는 현재 읽기 경로의 호환성과 수집 품질 검증이며, 과거 전체 flow 보존, network 원인
+확정, 정상 대조군 평가 또는 frontend→하위 서비스 fault RCA 성공의 증거는 아니다.
+
+### Post-Repair Control and Native Cross-Service Check
+
+2026-09-08에 위 Hubble 호환성 수정 이후 등록된 정상 대조군 1건과 native frontend
+감지용 OOM 주입 1건을 순서대로 실행했다. 기존 키와 배포된 Agent를 사용했으며,
+Alert 임계값·Agent prompt·Evidence Gate는 변경하지 않았다. 기존 frozen matrix에는
+합산하지 않는다.
+
+| Boundary | Observed result |
+|---|---|
+| No-fault control | 900초 정상 traffic, 요청 1,998/1,998 성공, transport error 0; Deployment·Pod fingerprint 불변, restart delta 0 |
+| Collection quality | 6개 collector 모두 `SUCCEEDED`, collector failure 0, Context completeness 0.9375; Hubble 400 flows, observation gap 0, `truncated=false` |
+| Agent / scorer | root-cause 없는 `inconclusive` → ABSTAIN, `REPORT_ACCEPTED`; Agent와 deterministic baseline 모두 abstention correctness 1.0, unsupported citation 0 |
+| No-fault usage | LLM 2회, read-only tool 1회, 14,641 tokens; Agent wall time 15.18초 |
+
+정상 대조군은 `CONFIRM_NO_FAULT_CONTROL=yes make evaluate-no-fault-control`로
+실행했다. 장애 없이 관찰한 뒤 **평가용 Alert**로 Agent를 호출하는 방식이며, 정상
+상태에서 native 장애 감지가 일어났다는 뜻은 아니다. Hubble의 수집 성공도 전체 과거
+flow 보존이나 모든 네트워크 장애의 증명 가능성을 뜻하지 않는다.
+
+이후 `checkout-full`의 11개 edge가 모두 `HAS_DATA`임을 read-only로 확인한 뒤,
+추가 warmup을 생략하고 `OnlineBoutiqueCheckoutHighFailureRate`를 기다리는 native
+검증을 1회 실행했다. [등록된 180초 OOM variant](scenarios/holdout-v1/checkoutservice-oom-c.yaml)의
+resource·StressChaos·workload 설정을 재사용했으나, 이는 새 holdout 정확도 측정이
+아닌 standalone 감지 실험이며 scenario의 synthetic 장애 Alert는 제출하지 않았다.
+
+| Boundary | Observed result |
+|---|---|
+| Fault injection | checkoutservice의 동일 Pod UID에서 `OOMKilled`, restart 1 확인 |
+| Frontend native detection | **실패**: `OnlineBoutiqueCheckoutHighFailureRate` inactive, capture 없음, 해당 Incident 0건 |
+| Failure-rate observation | UTC `07:38:42–07:47:14`, 15초 간격 35개 표본의 최댓값 약 3.72%; 5% 초과 표본 0개. 기존 조건은 5% 초과를 120초 유지 |
+| Cross-service RCA | frontend Incident가 없어 KRCA 선택 → 추가 수집 → Frozen Context → Agent 인용 연결 검증에 도달하지 못함 |
+| Separate native OOM event | 이미 활성화된 `OnlineBoutiqueRecentOOMRestart`에서 checkoutservice Incident 1건 → `REPORTED`, Agent `REPORT_ACCEPTED`, `kubernetes.container-oomkilled` 확정 |
+| OOM Evidence / usage | Loki·Prometheus 인용 2개 모두 실제 fault Pod UID, Frozen Context와 Agent inspected set에 일치; LLM 2회, tool 2회, 15,097 tokens |
+| Recovery | Deployment 12/12 Ready, 장애 객체·lock·marker 0; 원래 requests 100m/64Mi·limits 200m/128Mi 복원, 새 checkout Pod Ready/restart 0, frontend 규칙 inactive |
+
+별도 OOM 이벤트 Incident의 수신 → Report는 19초, Agent wall time은 10.53초였다.
+이는 동일 서비스의 native RCA 연결성 결과이며 frontend 영향에서 하위 원인을 찾은
+성공으로 계산하지 않는다. 해당 Report의 근거는 read-only 사후 점검으로 확인했고,
+OOM 이벤트 Alert의 자연 resolved 수신에 따른 Incident window 종료도 확인했다.
+
+StressChaos의 설정 지속시간과 서비스 오류의 지속시간은 같지 않다. 이번에는 OOM은
+발생했지만 관측된 frontend 오류율이 감지 조건에 미달했다. 따라서 실패 지점은 Agent의
+원인 선택이 아닌 **사용자 영향 Alert의 감지 단계**다. 재주입이나 임계값 완화는 하지
+않았으며, 다음 검증에는 현재 Alert 정책 안에서 충분히 지속되는 서비스 영향을 만드는
+bounded fault 설계가 필요하다.
+
+이번 두 실행의 실제 Agent run은 총 2건, LLM 4회·tool 3회·29,738 tokens였다.
+정상 대조군 bundle·attestation·scorer 결과와 native detection·recovery·postcheck는
+ignored private 경로에 보관한다. frontend capture가 없으므로 해당 cross-service bundle과
+성공 attestation은 생성되지 않았다. 이 기록은 작은 표본의 통과·실패 경계를 설명하며
+반복 정확도나 production SLO를 일반화하지 않는다.
+
+### Sustained Native Impact Plan
+
+앞선 짧은 OOM 영향과 구분해, 기존 taxonomy의 `kubernetes.missing-configmap`을 사용하는
+[standalone 계획](native-cross-service-plan.yaml)과 opt-in 실행 harness를 추가했다.
+실행 경로는 구현했으며 기존 frozen matrix의 scenario registry에는 넣지 않았다.
+첫 runtime 실행은 아래처럼 관측 단계에서 중단됐고, cross-service RCA 성공은 미검증이다.
+
+단일 checkoutservice에 존재하지 않는 필수 ConfigMap volume을 참조시키고, 실험 동안
+배포 전략을 `Recreate`로 바꾸는 안이다. 기본 RollingUpdate에서는 정상 구 Pod가 남아
+요청을 처리할 수 있다. Recreate는 새 revision을 만들기 전에 구 Pod를 종료하므로,
+필수 ConfigMap 누락으로 새 Pod가 시작되지 않는 동안 서비스 영향이 유지될 것으로
+예상한다. 이 방식은 Chaos Mesh가 아니라 Kubernetes Deployment patch를 사용한다.
+([Deployment 전략](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy),
+[필수 ConfigMap 참조](https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/#restrictions))
+
+`make plan-native-cross-service`는 로컬 설정만 읽는다. [계획 검증기](../tools/plan_native_cross_service.py)는
+target·원인·트래픽 범위를 고정하고, repository의 Alert 정책 `5% / 2분 / 0.1 requests/s`와
+metric의 2분 rate window를 확인한다. 15분 정상 baseline은 장애 시간 밖에 두고,
+활성화·telemetry·rate window·Alert 유지·전달·조사·여유 시간을 합쳐 500초를 배정한다.
+최대 600초 deadline 안의 나머지 100초는 미배정 여유이며, 재시도로 deadline을 연장하지
+않는 설계다. 이 값들은 실측 지연이나 Alert 발화 보장이 아니다.
+
+snapshot 기반 patch preview는 UID·resourceVersion·spec을 검사하고 template과 전략만
+변경한다. 원래 두 값을 정확히 복원하며 동시 spec 변경은 덮어쓰지 않는지 로컬 테스트했다.
+단, Kubernetes admission 검증이나 실제 watchdog·복구 실행의 증거는 아니다.
+
+이후 [Ansible playbook](../automation/ansible/playbooks/verify-native-cross-service.yml)에 다음 실행 경로를 연결했다.
+
+| Component | Responsibility |
+|---|---|
+| [Native controller](../tools/run_native_cross_service.py) | pinned runtime·정상 baseline·KRCA 11개 edge 확인, private tunnel·workload 관리, 자연 Alert capture와 원본 bundle 보존 |
+| [Target-local watchdog](../tools/native_fault_remote.py) | server-side dry run, root-only snapshot·실행별 복구 코드 보존, 주입 전 watchdog handshake, 절대 deadline과 독립 복구 |
+| [Downstream attestation](../tools/verify_native_alert.py) | exact Pod UID·필수 ConfigMap 참조·FailedMount, KRCA 선택 checkpoint → 추가 수집 → Frozen Context → 실제 Agent 인용 연결 확인 |
+
+watchdog은 로컬 SSH 세션이 아닌 VM의 systemd service로 실행한다. 준비·주입 응답이
+유실돼도 재주입하지 않고 복구를 시도한다. 동시 사용자 변경이 있으면 그것을 덮어쓰지
+않고 소유한 volume·mount·전략 변경만 제거하며, 정확한 원상복구·Ready를 확인하기
+전에는 잠금을 해제하거나 watchdog을 중단하지 않는다. 잠금 삭제에도 UID와
+resourceVersion precondition을 사용한다.
+([systemd 실행 모델](https://github.com/systemd/systemd/blob/v255/man/systemd-run.xml),
+[kubectl raw DELETE](https://github.com/kubernetes/kubectl/blob/v0.35.0/pkg/cmd/delete/delete.go))
+
+로컬 unit test에서 응답 유실·중복 주입 차단·deadline 만료·동시 변경 보존·복구 실패 시
+잠금 유지와 ConfigMap용 proof chain을 검증했다. VM 정지·재부팅 또는 Kubernetes API
+불능 상황에서 복구 시점을 보장하지는 않는다. transient watchdog의 재부팅 후 자동
+재등록도 구현하지 않았다. 아래 첫 실행에서 admission·watchdog 기동과 controller의
+복구 경로를 확인했지만, deadline에 의한 독립 복구와 자연 Alert·RCA 연결은 미검증이다.
+
+계획 조회는 `make plan-native-cross-service`, **새 장애를 주입하는** 명령은
+`CONFIRM_CONTROLLED_FAULT=yes make verify-native-cross-service`다. 후자는 15분 정상
+baseline 후 1회만 주입하며, synthetic Alert 제출·임계값 완화·자동 재주입은 하지 않는다.
+Endpoint 부재만으로 ConfigMap 원인을 확정하거나 설정된 workload 속도를 실제 frontend
+요청률로 간주하지 않는다.
+
+### Native Harness First Runtime Check
+
+2026-09-08에 위 harness로 GCP에서 **1회 주입**했다. 결과는 **harness observation failure /
+recovery verified**이며, Agent의 정답·오답 평가가 아니다.
+
+| Stage | Observed result |
+|---|---|
+| Baseline | 900초, 3,848/3,848 HTTP 2xx, transport 오류 0, Pod fingerprint·Deployment spec 유지, KRCA 11/11 edge `HAS_DATA` |
+| Preparation and injection | server-side dry run, 원격 watchdog handshake와 소유권 확인 후 1회 patch |
+| Observation | Recreate 전환 중 EndpointSlice의 `endpoints: null` 처리에서 `TypeError` 재현; 당시 API watch 이력에서도 실제 null 응답 확인 |
+| Native detection and Agent | capture 단계 미도달, 새 frontend native Incident 0·Agent run 0; LLM 호출 없음 |
+| Recovery | controller `finally`가 원래 spec·Ready 복원; 12개 Deployment Ready, checkout restart 0, 잠금·표식 없음, 대상 rule inactive |
+
+실패 직후의 원본 result는 `TypeError`만 남겼으므로 당시 traceback 위치 자체를 소급해
+복원한 것은 아니다. retained Kubernetes Event와 EndpointSlice watch 이력을 읽기 전용으로
+조회하고, 동일한 null 입력으로 기존 관측 함수의 오류를 재현했다. 원래 실패 기록은
+덮어쓰지 않고 baseline·injection·recovery·postcheck와 함께 ignored private 경로에 보관한다.
+
+수정은 harness에 한정했다. null을 빈 endpoint 목록으로 처리하되 잘못된 타입은 거부하고,
+다른 slice의 serving endpoint나 불명확한 상태를 무시하지 않도록 회귀 테스트했다.
+이는 EndpointSlice의 여러 slice를 합쳐 조회하고 unknown readiness를 정상 endpoint처럼
+보수적으로 취급하는 경계와 일치한다
+([Kubernetes EndpointSlice API](https://github.com/kubernetes/api/blob/v0.35.8/discovery/v1/types.go)).
+다음 실행에는 해석 직전의 관측 입력을 private artifact로 남기며, 오류에는 원문·locals
+없이 단계와 코드 함수·행 번호를 기록한다. 진행 단계와 watchdog/apply 응답도 별도 보존한다.
+
+실제 확인한 안전 경로는 **watchdog 기동 후 controller 오류 → 즉시 원상복구**다.
+watchdog의 600초 deadline이 복구를 수행한 실행은 아니다. Alert 임계값·Agent prompt·Gate는
+변경하지 않았고, 재주입하지 않았다. 수정 후 runtime 성공 여부는 다음 승인된 1회 실행의
+결과로 판단하며 기존 matrix 정확도에 합산하지 않는다.
+
 ## Reproduce
 
 ### Native Alert Check

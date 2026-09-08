@@ -1,0 +1,61 @@
+---
+- name: Require explicit authorization for the single native development drill
+  ansible.builtin.assert:
+    that:
+      - confirm_controlled_fault | default('') == 'yes'
+      - controlled_fault_environment | default('') == 'development'
+      - cluster_name == 'agent-rca-chaos-eval'
+      - groups['fault_target'] | length == 1
+      - groups['rca_control'] | length == 1
+      - groups['observability_domain'] | length == 1
+    fail_msg: Native cross-service execution requires explicit development-only authorization.
+
+- name: Validate the native plan locally before installing its target helper
+  ansible.builtin.command: .venv/bin/python tools/plan_native_cross_service.py
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Install the target-local deadline and restoration helper
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../tools/native_fault_remote.py"
+    dest: /usr/local/lib/agent-rca-native-fault.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Run one native drill with independent remote restoration and private artifacts
+  ansible.builtin.command:
+    argv:
+      - .venv/bin/python
+      - tools/run_native_cross_service.py
+      - --execute
+      - --confirm-controlled-fault
+      - development
+      - --target-host
+      - "{{ hostvars[inventory_hostname].ansible_host }}"
+      - --target-user
+      - "{{ hostvars[inventory_hostname].ansible_user }}"
+      - --target-key
+      - "{{ hostvars[inventory_hostname].ansible_ssh_private_key_file }}"
+      - --control-host
+      - "{{ hostvars[groups['rca_control'][0]].ansible_host }}"
+      - --control-user
+      - "{{ hostvars[groups['rca_control'][0]].ansible_user }}"
+      - --control-key
+      - "{{ hostvars[groups['rca_control'][0]].ansible_ssh_private_key_file }}"
+      - --observability-host
+      - "{{ hostvars[groups['observability_domain'][0]].ansible_host }}"
+      - --observability-user
+      - "{{ hostvars[groups['observability_domain'][0]].ansible_user }}"
+      - --observability-key
+      - "{{ hostvars[groups['observability_domain'][0]].ansible_ssh_private_key_file }}"
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  delegate_to: localhost
+  become: false
+  async: 2700
+  poll: 10
+  no_log: true

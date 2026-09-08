@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from incident_platform.incidents import AlertmanagerNormalizer
+from incident_platform.repository import context_evidence_ids
 
 ALERT_NAME = "OnlineBoutiqueCheckoutHighFailureRate"
 OOM_ALERT_NAME = "OnlineBoutiqueRecentOOMRestart"
@@ -29,6 +30,7 @@ RULE_FILES = {
     OOM_ALERT_NAME: "remote-workload-alerts.yaml",
 }
 EXPECTED_CAUSE = "kubernetes.container-oomkilled"
+MISSING_CONFIGMAP_CAUSE = "kubernetes.missing-configmap"
 
 
 class NativeAlertError(ValueError):
@@ -245,7 +247,8 @@ def capture(payload: dict, cluster_id: str, alert_name: str = ALERT_NAME) -> dic
     }
 
 
-def attest(payload: dict) -> dict:
+def attest(payload: dict, *, expected_cause: str = EXPECTED_CAUSE) -> dict:
+    _require(expected_cause in {EXPECTED_CAUSE, MISSING_CONFIGMAP_CAUSE}, "unregistered_fault_family")
     captured, bundle = payload["capture"], payload["bundle"]
     incident = bundle["incident"]
     _require(captured["trigger"] == "prometheus-rule", "wrong_trigger")
@@ -316,7 +319,7 @@ def attest(payload: dict) -> dict:
         "report_accepted": accepted,
         "report_status": (report or {}).get("status"),
         "reported_cause_id": cause.get("cause_id"),
-        "expected_cause_match": accepted and cause.get("cause_id") == EXPECTED_CAUSE,
+        "expected_cause_match": accepted and cause.get("cause_id") == expected_cause,
         "usage": run.get("usage", {}),
         "ingest_to_report_seconds": (
             (
@@ -328,19 +331,153 @@ def attest(payload: dict) -> dict:
     }
 
 
+def attest_downstream(payload: dict, *, fault_family: str = EXPECTED_CAUSE) -> dict:
+    """Attest the frontend -> checkout proof chain, not merely a cause label.
+
+    The observed fault Pod UID is supplied by the harness only after prediction.
+    Neither this attestation nor its expected target is sent to the Agent.
+    """
+    result = attest(payload, expected_cause=fault_family)
+    captured, bundle = payload["capture"], payload["bundle"]
+    incident, context, run = bundle["incident"], bundle["context"], bundle["agent_run"]
+    labels = captured["alert_labels"]
+    cluster, namespace = labels.get("cluster_id"), labels.get("namespace")
+    target = payload.get("fault_postcondition", {})
+    target_uid = target.get("pod_uid")
+    if fault_family == MISSING_CONFIGMAP_CAUSE:
+        event = target.get("event", {})
+        observed_identity = (
+            payload.get("plan_id") == "native-checkout-missing-configmap-v1"
+            and bool(target_uid)
+            and target.get("configmap_name") == "checkoutservice-agent-rca-native-missing"
+            and target.get("configmap_absent") is True and target.get("required_reference") is True
+            and target.get("old_pod_absent") is True and target.get("ready_endpoints") == 0
+            and event.get("involvedObject", {}).get("uid") == target_uid
+            and event.get("involvedObject", {}).get("name") == target.get("pod_name")
+            and event.get("involvedObject", {}).get("namespace") == namespace
+            and event.get("reason") == "FailedMount"
+            and 'configmap "checkoutservice-agent-rca-native-missing" not found'
+                in event.get("message", "").lower()
+        )
+    else:
+        observed_identity = bool(target_uid) and target.get("last_termination_reason") == "OOMKilled" and target.get("restart_count", 0) >= 1
+    evidence_items = bundle.get("evidence", [])
+    evidence = {item["evidence_id"]: item for item in evidence_items}
+    checkpoints = [
+        event for event in bundle.get("audit_events", [])
+        if event.get("event_type") == "LOCALIZATION_COLLECTION_COMPLETED"
+    ]
+    checkpoint = checkpoints[0] if len(checkpoints) == 1 else {}
+    details = checkpoint.get("details", {})
+    selection = details.get("selection", {})
+    services = selection.get("services", [])
+    features = selection.get("feature_evidence_ids", [])
+    collected = set(details.get("evidence_ids", []))
+    frozen = context_evidence_ids(context)
+    root = (bundle.get("report") or {}).get("root_cause") or {}
+    entity = root.get("entity", {})
+    cited = set(root.get("supporting_evidence_ids", []))
+    source = context.get("source_entity", {})
+    keys = context.get("scope", {}).get("correlation_keys", {})
+    profile = next(
+        item for item in yaml.safe_load(
+            (ROOT / "config/online-boutique-krca.yaml").read_text()
+        )["profiles"] if item["profile_id"] == "checkout-full"
+    )
+    edges = {item["edge_id"]: item for item in profile["dependencies"]}
+
+    def same_scope(value: dict) -> bool:
+        return bool(cluster and namespace) and (
+            value.get("cluster_id") == cluster and value.get("namespace") == namespace
+        )
+
+    def target_evidence(key: str) -> bool:
+        item = evidence.get(key, {})
+        subject = item.get("subject", {})
+        return bool(target_uid) and (
+            item.get("incident_id") == incident["incident_id"]
+            and subject.get("kind") == "Pod"
+            and subject.get("uid") == target_uid
+            and same_scope(subject)
+        )
+
+    def profile_feature(key: str) -> bool:
+        item = evidence.get(key, {})
+        facts = item.get("facts", {})
+        edge = edges.get(facts.get("edge_id"), {})
+        return bool(edge) and (
+            item.get("incident_id") == incident["incident_id"]
+            and item.get("source") == "prometheus"
+            and same_scope(item.get("subject", {}))
+            and facts.get("metric") == "krca_api_edge_features"
+            and facts.get("parent") == edge["parent"]
+            and facts.get("child") == edge["child"]
+        )
+
+    checks = {
+        "unique_evidence_identity": len(evidence) == len(evidence_items),
+        "frontend_native_trigger": captured["alert_name"] == ALERT_NAME
+        and labels.get("service") == "frontend"
+        and labels.get("krca_profile") == "checkout-full",
+        "original_source_preserved": incident.get("source_entity", {}).get("name")
+        == "frontend" and incident.get("source_entity", {}).get("namespace") == namespace,
+        "context_uses_selected_seed": source.get("name") in {"frontend", *services}
+        and source.get("entity_id") in context.get("scope", {}).get("seed_entity_ids", [])
+        and same_scope(source.get("scope", {})),
+        "krca_top_services_used": keys.get("seed_source") == "krca-top-services"
+        and keys.get("krca_profile") == "checkout-full" and same_scope(keys),
+        "bounded_downstream_checkpoint": len(checkpoints) == 1
+        and selection.get("profile_id") == "checkout-full" and same_scope(selection)
+        and 1 <= len(services) <= 3 and len(services) == len(set(services))
+        and set(services) <= set(profile["resource_names"])
+        and "checkoutservice" in services and "frontend" not in services,
+        "feature_provenance_present": bool(features)
+        and len(features) == len(set(features))
+        and all(profile_feature(key) for key in features)
+        and {evidence[key]["facts"]["edge_id"] for key in features if key in evidence} == set(edges),
+        "checkpoint_before_freeze": bool(checkpoint.get("occurred_at"))
+        and _time(incident["created_at"]) <= _time(checkpoint["occurred_at"])
+        <= _time(context["frozen_at"]) <= _time(run["started_at"]),
+        "downstream_evidence_frozen": bool(collected & frozen)
+        and any(target_evidence(key) for key in collected & frozen),
+        "observed_fault_identity": observed_identity,
+        "report_targets_fault_pod": bool(target_uid) and entity.get("entity_type") == "Pod"
+        and entity.get("external_ref") == target_uid and same_scope(entity.get("scope", {})),
+        "citations_from_downstream_collection": bool(cited) and cited <= collected
+        and cited <= frozen and all(target_evidence(key) for key in cited),
+        "citations_inspected_by_agent": bool(cited)
+        and cited <= set(run.get("candidate_evidence_ids", []))
+        and cited <= set(run.get("inspected_evidence_ids", []))
+        and cited <= set(run.get("cited_evidence_ids", [])),
+        "expected_report_accepted": result["expected_cause_match"]
+        and incident.get("status") == "REPORTED"
+        and (bundle.get("report") or {}).get("path") == "deep",
+    }
+    result.update(
+        boundary="native-cross-service-proof-chain-single-run-not-accuracy-matrix",
+        cross_service_verified=all(checks.values()),
+        cross_service_checks=checks,
+        failed_cross_service_checks=[name for name, passed in checks.items() if not passed],
+    )
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--phase", required=True, choices=("preflight", "capture", "attest")
+        "--phase", required=True, choices=("preflight", "capture", "attest", "attest-downstream")
     )
     parser.add_argument("--cluster-id", required=True)
     parser.add_argument("--alert-name", choices=tuple(RULE_FILES), default=ALERT_NAME)
+    parser.add_argument("--fault-family", choices=(EXPECTED_CAUSE, MISSING_CONFIGMAP_CAUSE), default=EXPECTED_CAUSE)
     arguments = parser.parse_args()
     try:
         payload = json.load(sys.stdin)
         result = (
-            attest(payload)
-            if arguments.phase == "attest"
+            (attest_downstream(payload, fault_family=arguments.fault_family)
+             if arguments.phase == "attest-downstream"
+             else attest(payload, expected_cause=arguments.fault_family))
+            if arguments.phase in {"attest", "attest-downstream"}
             else {
                 "preflight": preflight,
                 "capture": capture,
@@ -357,7 +494,7 @@ def main() -> int:
         print(json.dumps({"status": "FAILED", "reason": reason}))
         return 1
     print(json.dumps(result, sort_keys=True))
-    return 0
+    return 0 if result.get("cross_service_verified", True) else 1
 
 
 if __name__ == "__main__":
