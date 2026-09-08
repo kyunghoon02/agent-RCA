@@ -84,7 +84,130 @@ restoration and the natural resolved webhook were verified. This is a single-run
 connectivity check, not an accuracy result or downstream impact-localization test;
 see the [runtime record](../../evaluation/REPORT.md#native-alert-runtime-check).
 
+## Cilium and Hubble dashboard
+
+The central Grafana dashboard **Agent RCA · Cilium & Hubble** has the stable URL
+`/d/agent-rca-cilium-hubble`. Select `agent-rca-chaos-eval` in the Cluster selector.
+Its [JSON source](dashboards/cilium-hubble.json) is provisioned through a labeled
+ConfigMap, so it survives Pod replacement and does not depend on manual imports.
+
+Start with scrape health and sample age, then check endpoint state, BPF map
+pressure, flow verdicts, drop reason/protocol, and observation loss. All panels are
+cluster-scoped. The existing Hubble exporter does not attach application workload
+labels; `namespace=kube-system` identifies the exporter, not traffic ownership.
+This is an operations dashboard, not Hubble UI's service map or an RCA Report.
+
+The fault target forwards `cilium_*` and `hubble_*` metrics to the central
+Prometheus with its `cluster_id`. Local receiver series without that label are
+excluded. The readout does not replace missing data with zero or treat all drops
+as outages. For example, unsupported ICMPv6 drops need not indicate an application
+failure. Freshness and collection quality must be checked alongside any signal.
+See the [Cilium metric reference](https://docs.cilium.io/en/stable/observability/metrics/).
+
+```bash
+make deploy-network-observability
+make deploy-incident-worker
+```
+
+The first updates only the target monitoring release's remote-write override and
+the central dashboard ConfigMap, preserving other Helm values and the Cilium
+dataplane. The second patches only the independently pinned collection worker
+image and runs a bounded Hubble read/normalization/projection probe; it creates no
+Incident, injects no fault, and makes no LLM call. The full observability deploy
+also provisions this dashboard in receiver/local profiles.
+
+On 2026-09-08, all 12 metric panel queries returned live target series through
+Grafana's Prometheus datasource. This proves dashboard connectivity, not network
+fault RCA accuracy. The Hubble CLI/Relay version warning remains explicit as
+described in the [Provider contract](../../contracts/providers.md#networkflowprovider).
+
 ## Private access
+
+### Hubble UI
+
+The fault target also runs the upstream **Hubble UI**, separate from Grafana.
+Select `online-boutique` to inspect the service map and individual recent flows.
+UI frontend/backend images are digest-pinned by the Cilium 1.20.1 chart.
+
+`make deploy-hubble-ui` enables only the target's UI with a server-side Helm
+preview that refuses changes to existing non-UI Deployments, DaemonSets, and
+ConfigMaps. The regular Cilium bootstrap shares the same UI values. The UI has
+one replica with bounded resources, a ClusterIP Service, no Ingress, and an
+ingress-deny NetworkPolicy for Pod traffic. The built-in UI identity is read-only;
+verification rejects Secret-read and Pod-patch access. Egress is not restricted
+by this ingress-only policy. Access relies on trusted SSH/Kubernetes port-forward
+permissions; there is no separate end-user login or tenant isolation in this UI.
+
+From an SSH session on the **fault-target** VM:
+
+```bash
+sudo kubectl --kubeconfig /etc/kubernetes/admin.conf \
+  --namespace kube-system port-forward \
+  service/hubble-ui 32000:80 --address 127.0.0.1
+```
+
+Tunnel local port `12000` to that VM's loopback port `32000`, then open
+`http://127.0.0.1:12000`. Flow details can contain internal Pod names and addresses;
+do not publish raw screenshots or treat this live stream as durable Incident
+Evidence. See the [official Hubble UI guide](https://docs.cilium.io/en/stable/observability/hubble/hubble-ui/).
+
+### Controlled network Evidence verification
+
+`tools/verify_hubble_evidence.py` runs one development-only verification of
+`frontend -> productcatalogservice:3550/TCP`. It requires three distinct reference
+hosts, healthy workloads, and no existing target/clusterwide policy, Chaos object,
+or controlled-fault lock. It creates only a namespaced Cilium deny rule with
+`enableDefaultDeny` disabled; it does not replace existing policies or alter the
+Cilium release. Explicit deny semantics are described in the
+[Cilium policy guide](https://docs.cilium.io/en/stable/security/policy/deny/).
+
+```bash
+PYTHONPATH=src:. .venv/bin/python tools/verify_hubble_evidence.py \
+  --target-host "$RCA_TARGET_HOST" \
+  --control-host "$RCA_CONTROL_HOST" \
+  --observability-host "$RCA_OBSERVABILITY_HOST" \
+  --ssh-user "$RCA_SSH_USER" --ssh-key "$RCA_SSH_KEY" \
+  --execute --confirm-controlled-fault development
+```
+
+An independently armed target-side systemd timer removes this run's exact owned
+policy and lock after 150 seconds. A local `finally` block also restores them on
+completion/error; loss of the target VM or its Kubernetes API can delay cleanup.
+Do not start another drill until policy removal and application recovery are
+verified. The normal fault window is bounded to approximately 95 seconds plus
+in-flight bounded commands, and the target watchdog remains independent of SSH.
+
+This drill **submits an evaluation alert to Alertmanager**, with
+`agent_rca_enabled=false`; it is not native Prometheus detection, an LLM run, or
+network root-cause accuracy evaluation. It verifies actual stored Hubble Evidence,
+the Neo4j Service event, the Frozen Context, and the deployed Agent's normal
+candidate selector/read-only inspection tool without invoking the model. It does
+not create an RCA Report or force the verification Incident past `ANALYZING`.
+Hubble retention remains `UNKNOWN`, and warnings/partial collection stay visible.
+
+Private before/fault/recovery probes, metric snapshots, identifiers and audit
+results are saved under ignored `tmp/hubble-evidence-*/result.json`. Failed runs
+remain failed artifacts; raw results/screenshots must not be published. Use a
+redacted summary only after inspecting the actual outcome. This standalone check
+does not change the frozen three-fault/no-fault accuracy matrices or taxonomy.
+
+For an existing run, replace the two fault-authorization flags with
+`--audit-only RUN_ID`. This performs no alert submission or policy write; it
+checks cleanup, unchanged Pod identities/restarts and Deployment specs, the
+`ANALYZING` state, the original Context hash, Neo4j facts and Agent tool access.
+It writes a separate `read-only-followup.json`, preserving the original result.
+
+The 2026-09-08 reference check observed three successful product requests before
+the fault, three approximately five-second client timeouts during the fault, and
+three successful requests after restoration. The stored sample contained 431
+flows including 18 policy denials. Initial API metric series had not yet arrived;
+the error counter appeared in later samples. These are client-timeout observations,
+not three observed HTTP 5xx responses. The harness now waits for API baseline
+series before applying a policy; this added preflight gate was locally tested,
+not used to repeat the already completed fault. The collection retained its
+compatibility warning and partial quality; no LLM diagnosis was requested.
+
+### Grafana and telemetry
 
 No endpoint uses a LoadBalancer, public Ingress, or open public firewall. The
 receiver exposes fixed Prometheus, Loki, and Tempo NodePorts only inside the

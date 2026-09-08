@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import re
+import selectors
 import subprocess
 import time
 from collections import Counter
@@ -15,29 +16,78 @@ from typing import Any, Mapping, Protocol, Sequence, Tuple
 
 from ..errors import PermanentProviderError, RetryableProviderError
 from ..evidence import CollectionRequest, EvidenceDraft, ProviderBatch, parse_time
-
+from ..hubble_contract import (
+    FEATURE_SET,
+    OBSERVATION_GAPS,
+    POLICY_DROP_REASONS,
+    PROTOCOLS as _PROTOCOLS,
+    VERDICTS as _VERDICTS,
+    flow_signal,
+)
 
 _DNS_NAME = re.compile(r"^[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$")
 _DROP_REASON = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-_VERDICTS = frozenset(
-    {
-        "FORWARDED",
-        "DROPPED",
-        "AUDIT",
-        "REDIRECTED",
-        "ERROR",
-        "TRACED",
-        "TRANSLATED",
-        "UNKNOWN",
-    }
+_RESOURCE_NAME = re.compile(r"^[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?$")
+_FLOW_FIELDS = (
+    "uuid,time,verdict,drop_reason_desc,l4,source.namespace,source.pod_name,"
+    "source.workloads,destination.namespace,destination.pod_name,destination.workloads"
 )
-_PROTOCOLS = frozenset({"TCP", "UDP", "ICMPv4", "ICMPv6", "SCTP", "UNKNOWN"})
+
+
+def _run_bounded(
+    argv: Sequence[str],
+    *,
+    timeout_seconds: float,
+    max_output_bytes: int,
+) -> subprocess.CompletedProcess:
+    """Drain both pipes under one byte/time cap, killing the child on failure."""
+    deadline = time.monotonic() + timeout_seconds
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout_seconds)
+                for key, _ in selector.select(remaining):
+                    chunk = os.read(key.fd, min(65536, max_output_bytes - total + 1))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    total += len(chunk)
+                    if total > max_output_bytes:
+                        raise PermanentProviderError(
+                            "Hubble response exceeded the byte limit"
+                        )
+                    buffers[key.data].extend(chunk)
+        code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        return subprocess.CompletedProcess(
+            argv,
+            code,
+            stdout=bytes(buffers["stdout"]),
+            stderr=bytes(buffers["stderr"]),
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=1.0)
+        finally:
+            process.stdout.close()
+            process.stderr.close()
 
 
 def _format_time(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
-        "+00:00", "Z"
-    )
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _validate_private_server(value: str) -> str:
@@ -56,9 +106,7 @@ def _validate_private_server(value: str) -> str:
             or host.endswith(".svc")
             or host.endswith(".svc.cluster.local")
         ):
-            raise ValueError(
-                "Hubble server must be private IPv4 or cluster-local DNS"
-            )
+            raise ValueError("Hubble server must be private IPv4 or cluster-local DNS")
     else:
         if address.version != 4 or not (address.is_private or address.is_loopback):
             raise ValueError("Hubble server IP must be private IPv4")
@@ -69,6 +117,11 @@ def _validate_private_server(value: str) -> str:
 class HubbleFlowResult:
     flows: Tuple[Mapping[str, Any], ...]
     truncated: bool = False
+    observation_gaps: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not set(self.observation_gaps) <= OBSERVATION_GAPS:
+            raise ValueError("unsupported Hubble observation gap")
 
 
 class HubbleFlowClient(Protocol):
@@ -82,8 +135,7 @@ class HubbleFlowClient(Protocol):
         end: str,
         limit: int,
         timeout_seconds: float,
-    ) -> HubbleFlowResult:
-        ...
+    ) -> HubbleFlowResult: ...
 
 
 class HubbleCLIClient:
@@ -121,8 +173,16 @@ class HubbleCLIClient:
     ) -> HubbleFlowResult:
         if direction not in {"from", "to"}:
             raise PermanentProviderError("Hubble direction is unsupported")
-        if limit <= 0:
+        if limit <= 0 or timeout_seconds <= 0:
             raise PermanentProviderError("Hubble flow limit must be positive")
+        if (
+            not _RESOURCE_NAME.fullmatch(namespace)
+            or len(namespace) > 63
+            or not _RESOURCE_NAME.fullmatch(pod_prefix)
+        ):
+            raise PermanentProviderError("Hubble resource selector is malformed")
+        if parse_time(start, "Hubble start") > parse_time(end, "Hubble end"):
+            raise PermanentProviderError("Hubble time window is reversed")
         scoped_pod = f"{namespace}/{pod_prefix}"
         argv = [
             self._binary,
@@ -139,13 +199,14 @@ class HubbleCLIClient:
             str(limit + 1),
             "--output",
             "jsonpb",
+            "--field-mask",
+            _FLOW_FIELDS,
         ]
         try:
-            completed = subprocess.run(
+            completed = _run_bounded(
                 argv,
-                check=False,
-                capture_output=True,
-                timeout=timeout_seconds,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=self._max_output_bytes,
             )
         except FileNotFoundError as error:
             raise PermanentProviderError("Hubble CLI binary is unavailable") from error
@@ -169,34 +230,74 @@ class HubbleCLIClient:
             ):
                 raise RetryableProviderError("Hubble Relay is unavailable")
             raise PermanentProviderError("Hubble Relay rejected the bounded query")
-        if len(completed.stdout) > self._max_output_bytes:
+        if len(completed.stdout) + len(completed.stderr) > self._max_output_bytes:
             raise PermanentProviderError("Hubble response exceeded the byte limit")
 
         flows = []
-        for raw_line in completed.stdout.splitlines():
-            if not raw_line.strip():
-                continue
-            try:
-                payload = json.loads(raw_line)
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise PermanentProviderError("Hubble JSONPB output is malformed") from error
-            if not isinstance(payload, Mapping) or not isinstance(
-                payload.get("flow"), Mapping
-            ):
-                raise PermanentProviderError("Hubble JSONPB flow is malformed")
-            flows.append(payload["flow"])
+        gaps = set()
+        # The pinned CLI writes node_status JSONPB to stderr, lost_events to stdout.
+        for output, diagnostic in ((completed.stdout, False), (completed.stderr, True)):
+            for raw_line in output.splitlines():
+                if not raw_line.strip():
+                    continue
+                try:
+                    payload = json.loads(raw_line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    if diagnostic:
+                        gaps.add(
+                            "CLI_RELAY_VERSION_MISMATCH"
+                            if b"Hubble CLI version is lower than Hubble Relay, API compatibility is not guaranteed"
+                            in raw_line
+                            else "CLI_DIAGNOSTIC"
+                        )
+                        continue
+                    raise PermanentProviderError(
+                        "Hubble JSONPB output is malformed"
+                    ) from error
+                if not isinstance(payload, Mapping):
+                    raise PermanentProviderError("Hubble JSONPB response is malformed")
+                variants = set(payload) & {"flow", "lost_events", "node_status"}
+                if len(variants) != 1:
+                    raise PermanentProviderError(
+                        "Hubble JSONPB response type is malformed"
+                    )
+                variant = next(iter(variants))
+                body = payload[variant]
+                if not isinstance(body, Mapping):
+                    raise PermanentProviderError(
+                        "Hubble JSONPB response body is malformed"
+                    )
+                if variant == "flow":
+                    flows.append(body)
+                elif variant == "lost_events":
+                    # A notification is a coverage gap, not a scoped packet drop.
+                    gaps.add("FLOW_EVENTS_LOST")
+                else:
+                    state = body.get("state_change", "UNKNOWN_NODE_STATE")
+                    if not isinstance(state, str):
+                        raise PermanentProviderError("Hubble node status is malformed")
+                    if state != "NODE_CONNECTED":
+                        gaps.add(
+                            {
+                                "NODE_UNAVAILABLE": "RELAY_NODE_UNAVAILABLE",
+                                "NODE_ERROR": "RELAY_NODE_ERROR",
+                                "NODE_GONE": "RELAY_NODE_GONE",
+                            }.get(state, "RELAY_NODE_STATE_UNKNOWN")
+                        )
         flows.sort(key=lambda item: str(item.get("time", "")))
         truncated = len(flows) > limit
         if truncated:
             flows = flows[-limit:]
-        return HubbleFlowResult(tuple(flows), truncated=truncated)
+        return HubbleFlowResult(
+            tuple(flows), truncated=truncated, observation_gaps=tuple(sorted(gaps))
+        )
 
 
 class HubbleNetworkFlowProvider:
     """Aggregate exact root-Pod flow queries into Service-scoped Evidence."""
 
     provider_name = "hubble-relay-network-flow-provider"
-    feature_set = "hubble-network-flow-summary-v1"
+    feature_set = FEATURE_SET
 
     def __init__(
         self,
@@ -225,29 +326,47 @@ class HubbleNetworkFlowProvider:
             raise PermanentProviderError(
                 "Hubble resource scope exceeded the Evidence item budget"
             )
+        # One Provider budget across every root and both directions. The client
+        # uses one extra sentinel record per query to detect truncation.
+        per_query_limit = self._max_raw_flows // (2 * len(resource_names))
+        if per_query_limit < 1:
+            raise PermanentProviderError(
+                "Hubble flow budget cannot cover all scoped queries"
+            )
 
         deadline = time.monotonic() + request.timeout_seconds
         drafts = []
         partial_reasons = []
+        successful_queries = 0
         for resource_name in resource_names:
             by_uuid: dict[str, Mapping[str, Any]] = {}
             resource_truncated = False
+            observation_gaps = set()
             for direction in ("from", "to"):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RetryableProviderError(
-                        "Hubble collection deadline exhausted"
+                    observation_gaps.add("QUERY_BUDGET_EXHAUSTED")
+                    continue
+                try:
+                    result = self._client.observe(
+                        namespace=request.scope.namespace,
+                        pod_prefix=resource_name,
+                        direction=direction,
+                        start=request.window.start,
+                        end=request.window.end,
+                        limit=per_query_limit,
+                        timeout_seconds=remaining,
                     )
-                result = self._client.observe(
-                    namespace=request.scope.namespace,
-                    pod_prefix=resource_name,
-                    direction=direction,
-                    start=request.window.start,
-                    end=request.window.end,
-                    limit=self._max_raw_flows,
-                    timeout_seconds=remaining,
-                )
+                except RetryableProviderError:
+                    observation_gaps.add("RELAY_QUERY_UNAVAILABLE")
+                    continue
+                successful_queries += 1
                 resource_truncated = resource_truncated or result.truncated
+                observation_gaps.update(result.observation_gaps)
+                if len(result.flows) > per_query_limit:
+                    raise PermanentProviderError(
+                        "Hubble client exceeded the assigned flow budget"
+                    )
                 for flow in result.flows:
                     flow_uuid = flow.get("uuid")
                     if not isinstance(flow_uuid, str) or not flow_uuid:
@@ -258,6 +377,10 @@ class HubbleNetworkFlowProvider:
                         resource_name=resource_name,
                         direction=direction,
                     )
+                    if flow_uuid in by_uuid and by_uuid[flow_uuid] != flow:
+                        raise PermanentProviderError(
+                            "Hubble duplicate UUID has conflicting content"
+                        )
                     by_uuid[flow_uuid] = flow
 
             draft, no_data_unknown = self._summarize(
@@ -265,17 +388,22 @@ class HubbleNetworkFlowProvider:
                 request=request,
                 resource_name=resource_name,
                 truncated=resource_truncated,
+                observation_gaps=tuple(sorted(observation_gaps)),
             )
             drafts.append(draft)
-            if resource_truncated:
+            if observation_gaps:
                 partial_reasons.append(
-                    f"{resource_name}: flow limit reached"
+                    f"{resource_name}: " + ", ".join(sorted(observation_gaps))
                 )
+            if resource_truncated:
+                partial_reasons.append(f"{resource_name}: flow limit reached")
             if no_data_unknown:
                 partial_reasons.append(
                     f"{resource_name}: no matching flow; retention coverage unknown"
                 )
 
+        if not successful_queries:
+            raise RetryableProviderError("All bounded Hubble queries were unavailable")
         if partial_reasons:
             return ProviderBatch(
                 items=tuple(drafts),
@@ -321,7 +449,9 @@ class HubbleNetworkFlowProvider:
         try:
             observed_at = parse_time(timestamp, "Hubble flow time")
         except Exception as error:
-            raise PermanentProviderError("Hubble flow timestamp is malformed") from error
+            raise PermanentProviderError(
+                "Hubble flow timestamp is malformed"
+            ) from error
         window_start = parse_time(request.window.start, "EvidenceWindow.start")
         window_end = parse_time(request.window.end, "EvidenceWindow.end")
         if observed_at < window_start or observed_at > window_end:
@@ -356,6 +486,7 @@ class HubbleNetworkFlowProvider:
         request: CollectionRequest,
         resource_name: str,
         truncated: bool,
+        observation_gaps: Tuple[str, ...],
     ) -> tuple[EvidenceDraft, bool]:
         verdicts: Counter[str] = Counter()
         protocols: Counter[str] = Counter()
@@ -371,14 +502,20 @@ class HubbleNetworkFlowProvider:
             protocols[self._protocol(flow)] += 1
             if verdict == "DROPPED":
                 reason = flow.get("drop_reason_desc")
-                if not isinstance(reason, str) or not _DROP_REASON.fullmatch(reason):
+                if (
+                    not isinstance(reason, str)
+                    or not _DROP_REASON.fullmatch(reason)
+                    or reason == "DROP_REASON_UNKNOWN"
+                ):
                     reason = "UNKNOWN"
                 drop_reasons[reason] += 1
             source_root_count += int(
                 self._matches_root(flow.get("source"), resource_name)
+                and flow["source"].get("namespace") == request.scope.namespace
             )
             destination_root_count += int(
                 self._matches_root(flow.get("destination"), resource_name)
+                and flow["destination"].get("namespace") == request.scope.namespace
             )
             observed_times.append(parse_time(flow["time"], "Hubble flow time"))
 
@@ -386,7 +523,7 @@ class HubbleNetworkFlowProvider:
             observed_at = _format_time(max(observed_times))
             first_flow_at = _format_time(min(observed_times))
             result_status = "HAS_DATA"
-            retention_status = "NOT_APPLICABLE"
+            retention_status = "UNKNOWN"
             reason_codes = []
         else:
             observed_at = request.window.end
@@ -394,6 +531,9 @@ class HubbleNetworkFlowProvider:
             result_status = "NO_DATA"
             retention_status = "UNKNOWN"
             reason_codes = ["RETENTION_WINDOW_NOT_PROVABLE"]
+        policy_denied_count = sum(
+            drop_reasons[reason] for reason in POLICY_DROP_REASONS
+        )
         facts = {
             "feature_set": self.feature_set,
             "result_status": result_status,
@@ -408,11 +548,24 @@ class HubbleNetworkFlowProvider:
             "truncated": truncated,
             "retention_status": retention_status,
             "reason_codes": reason_codes,
+            "observation_gaps": list(observation_gaps),
+            "policy_denied_count": policy_denied_count,
+            "other_drop_count": sum(
+                value
+                for key, value in drop_reasons.items()
+                if key not in POLICY_DROP_REASONS and key != "UNKNOWN"
+            ),
+            "unknown_drop_count": drop_reasons.get("UNKNOWN", 0),
+            "flow_signal": flow_signal(
+                len(flows),
+                verdicts.get("DROPPED", 0),
+                policy_denied_count,
+            ),
         }
         query = (
             f"hubble observe namespace={request.scope.namespace} "
             f"pod-prefix={resource_name} directions=from,to "
-            f"limit={self._max_raw_flows}"
+            f"provider-flow-budget={self._max_raw_flows}"
         )
         return (
             EvidenceDraft(
@@ -429,8 +582,11 @@ class HubbleNetworkFlowProvider:
                     "exists": True,
                 },
                 summary=(
-                    f"Hubble observed {len(flows)} bounded network flow(s) for "
-                    f"Service {resource_name}."
+                    f"Hubble observed {len(flows)} flow(s), including "
+                    f"{verdicts.get('DROPPED', 0)} drop(s) and "
+                    f"{policy_denied_count} policy denial(s) for "
+                    f"Service {resource_name}. This sample does not prove network health "
+                    "or an application root cause; retention coverage is unknown."
                     if flows
                     else (
                         f"Hubble returned no matching bounded network flows for "
@@ -444,8 +600,10 @@ class HubbleNetworkFlowProvider:
                     f"hubble://{self._cluster_id}/{request.scope.namespace}/"
                     f"Service/{resource_name}"
                 ),
-                completeness=0.5 if truncated else (1.0 if flows else 0.0),
-                confidence=1.0 if flows and not truncated else 0.5,
+                completeness=0.5 if flows else 0.0,
+                confidence=(
+                    1.0 if flows and not truncated and not observation_gaps else 0.5
+                ),
             ),
             not bool(flows),
         )

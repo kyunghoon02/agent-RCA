@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 from ..contracts import validate_contract
 from ..errors import ContractViolation
 from ..evidence import parse_time
+from ..hubble_contract import (
+    FEATURE_SET,
+    LEGACY_FEATURE_SET,
+    OBSERVATION_GAPS,
+    POLICY_DROP_REASONS,
+    VERDICTS,
+    PROTOCOLS,
+    flow_signal,
+)
 from ..stategraph import (
     EntityIdentity,
     GraphProjection,
@@ -20,7 +30,7 @@ class HubbleNetworkFlowEvidenceProjector:
 
     projector_name = "hubble-network-flow-evidence-projector"
     provider_name = "hubble-relay-network-flow-provider"
-    feature_set = "hubble-network-flow-summary-v1"
+    feature_set = FEATURE_SET
     event_type = "HUBBLE_NETWORK_FLOW_SUMMARY"
     fact_names = frozenset(
         {
@@ -39,6 +49,13 @@ class HubbleNetworkFlowEvidenceProjector:
             "reason_codes",
         }
     )
+    v2_fact_names = fact_names | {
+        "flow_signal",
+        "policy_denied_count",
+        "other_drop_count",
+        "unknown_drop_count",
+        "observation_gaps",
+    }
 
     def supports(self, evidence: Mapping[str, Any]) -> bool:
         subject = evidence.get("subject")
@@ -54,7 +71,7 @@ class HubbleNetworkFlowEvidenceProjector:
             and isinstance(subject.get("cluster_id"), str)
             and bool(subject.get("cluster_id"))
             and isinstance(facts, Mapping)
-            and facts.get("feature_set") == self.feature_set
+            and facts.get("feature_set") in {FEATURE_SET, LEGACY_FEATURE_SET}
         )
 
     def project(self, evidence: Mapping[str, Any]) -> GraphProjection:
@@ -65,10 +82,12 @@ class HubbleNetworkFlowEvidenceProjector:
             )
         subject = evidence["subject"]
         facts = evidence["facts"]
-        unexpected = set(facts) - self.fact_names
+        v2 = facts["feature_set"] == FEATURE_SET
+        expected = self.v2_fact_names if v2 else self.fact_names
+        unexpected = set(facts) ^ expected
         if unexpected:
             raise ContractViolation(
-                "Hubble flow facts are not allowlisted: "
+                "Hubble flow facts do not match their version: "
                 + ", ".join(sorted(unexpected))
             )
         flow_count = self._non_negative_integer(facts.get("flow_count"), "flow_count")
@@ -79,8 +98,12 @@ class HubbleNetworkFlowEvidenceProjector:
             facts.get("destination_root_flow_count"),
             "destination_root_flow_count",
         )
-        if source_count > flow_count or destination_count > flow_count:
-            raise ContractViolation("Hubble root flow count exceeds flow_count")
+        if (
+            source_count > flow_count
+            or destination_count > flow_count
+            or source_count + destination_count < flow_count
+        ):
+            raise ContractViolation("Hubble root flow counts contradict flow_count")
         verdict_counts = self._count_map(facts.get("verdict_counts"), "verdict_counts")
         protocol_counts = self._count_map(
             facts.get("protocol_counts"), "protocol_counts"
@@ -92,8 +115,18 @@ class HubbleNetworkFlowEvidenceProjector:
             raise ContractViolation("Hubble verdict counts contradict flow_count")
         if sum(protocol_counts.values()) != flow_count:
             raise ContractViolation("Hubble protocol counts contradict flow_count")
-        if sum(drop_reason_counts.values()) > flow_count:
-            raise ContractViolation("Hubble drop reason counts exceed flow_count")
+        if (
+            not set(verdict_counts) <= VERDICTS
+            or not set(protocol_counts) <= PROTOCOLS
+            or not all(
+                re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key) for key in drop_reason_counts
+            )
+        ):
+            raise ContractViolation("Hubble count map labels are not allowlisted")
+        if sum(drop_reason_counts.values()) != verdict_counts.get("DROPPED", 0):
+            raise ContractViolation(
+                "Hubble drop reason counts contradict DROPPED verdicts"
+            )
         if not isinstance(facts.get("truncated"), bool):
             raise ContractViolation("Hubble truncated flag is malformed")
         reason_codes = facts.get("reason_codes")
@@ -104,7 +137,8 @@ class HubbleNetworkFlowEvidenceProjector:
 
         result_status = facts.get("result_status")
         if result_status == "HAS_DATA":
-            if flow_count <= 0 or facts.get("retention_status") != "NOT_APPLICABLE":
+            retention = "UNKNOWN" if v2 else "NOT_APPLICABLE"
+            if flow_count <= 0 or facts.get("retention_status") != retention:
                 raise ContractViolation("Hubble HAS_DATA facts are contradictory")
             if reason_codes:
                 raise ContractViolation("Hubble HAS_DATA cannot have reason_codes")
@@ -127,10 +161,51 @@ class HubbleNetworkFlowEvidenceProjector:
         else:
             raise ContractViolation("Hubble result_status is unsupported")
 
+        if v2:
+            if "DROP_REASON_UNKNOWN" in drop_reason_counts:
+                raise ContractViolation("Hubble unknown drop reason must be normalized")
+            gaps = facts["observation_gaps"]
+            if (
+                not isinstance(gaps, list)
+                or not all(isinstance(code, str) for code in gaps)
+                or len(gaps) != len(set(gaps))
+                or not set(gaps) <= OBSERVATION_GAPS
+            ):
+                raise ContractViolation("Hubble observation gaps are malformed")
+            counts = {
+                name: self._non_negative_integer(facts[name], name)
+                for name in (
+                    "policy_denied_count",
+                    "other_drop_count",
+                    "unknown_drop_count",
+                )
+            }
+            if (
+                counts["policy_denied_count"]
+                != sum(
+                    drop_reason_counts.get(reason, 0) for reason in POLICY_DROP_REASONS
+                )
+                or counts["unknown_drop_count"] != drop_reason_counts.get("UNKNOWN", 0)
+                or sum(counts.values()) != verdict_counts.get("DROPPED", 0)
+                or facts["flow_signal"]
+                != flow_signal(
+                    flow_count,
+                    verdict_counts.get("DROPPED", 0),
+                    counts["policy_denied_count"],
+                )
+            ):
+                raise ContractViolation(
+                    "Hubble observed drop signal contradicts the aggregate"
+                )
+            if evidence["quality"]["completeness"] > (0.5 if flow_count else 0.0):
+                raise ContractViolation("Hubble retention coverage is not proven")
+
         window_start = parse_time(evidence["window"]["start"], "Evidence window start")
         window_end = parse_time(evidence["window"]["end"], "Evidence window end")
         if first_seen < window_start or last_seen > window_end:
-            raise ContractViolation("Hubble flow aggregate is outside the Evidence window")
+            raise ContractViolation(
+                "Hubble flow aggregate is outside the Evidence window"
+            )
 
         identity = EntityIdentity.logical_service(
             cluster_id=subject["cluster_id"],
@@ -171,7 +246,7 @@ class HubbleNetworkFlowEvidenceProjector:
             "first_seen_at": evidence["window"]["start"],
             "last_seen_at": evidence["window"]["end"],
             "count": max(1, flow_count),
-            "attributes": {name: facts[name] for name in sorted(self.fact_names)},
+            "attributes": {name: facts[name] for name in sorted(expected)},
             "evidence_ids": [evidence["evidence_id"]],
         }
         validate_graph_record(entity)
@@ -187,9 +262,7 @@ class HubbleNetworkFlowEvidenceProjector:
     @classmethod
     def _count_map(cls, value: object, field: str) -> Mapping[str, int]:
         if not isinstance(value, Mapping) or not all(
-            isinstance(key, str)
-            and bool(key)
-            and cls._is_non_negative_integer(count)
+            isinstance(key, str) and bool(key) and cls._is_non_negative_integer(count)
             for key, count in value.items()
         ):
             raise ContractViolation(f"Hubble {field} is malformed")

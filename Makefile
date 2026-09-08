@@ -30,7 +30,7 @@ NATIVE_ALERT_NAME ?= OnlineBoutiqueCheckoutHighFailureRate
 	render-chaos-mesh deploy-chaos-mesh verify-chaos-mesh \
 	render-stategraph deploy-stategraph verify-stategraph \
 	render-viewer-frontend build-viewer-frontend-image \
-	deploy-incident-platform verify-incident-platform \
+	deploy-incident-platform deploy-incident-worker deploy-network-observability deploy-hubble-ui verify-incident-platform \
 	deploy-viewer-api deploy-viewer-frontend verify-viewer-frontend evaluate-checkout-oom verify-prometheus-rca \
 	evaluate-payment-image-pull \
 	evaluate-checkout-missing-configmap \
@@ -151,6 +151,16 @@ bootstrap-ansible:
 	.venv-ansible/bin/python -m pip install --requirement automation/ansible/requirements.txt
 
 ansible-syntax:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/chaos-eval.example.yml --syntax-check \
+		automation/ansible/playbooks/deploy-hubble-ui.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_EXAMPLE_INVENTORY) --syntax-check \
+		automation/ansible/playbooks/deploy-incident-worker.yml
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i automation/ansible/inventories/chaos-eval.example.yml \
+		-i automation/ansible/inventories/observability.example.yml --syntax-check \
+		automation/ansible/playbooks/deploy-network-observability.yml
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i automation/ansible/inventories/chaos-eval.example.yml \
 		-i automation/ansible/inventories/observability.example.yml \
@@ -308,6 +318,21 @@ deploy-viewer-api:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
 		-i $(ANSIBLE_CONTROL_INVENTORY) \
 		automation/ansible/playbooks/deploy-incident-viewer-api.yml
+
+deploy-incident-worker:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_CONTROL_INVENTORY) \
+		automation/ansible/playbooks/deploy-incident-worker.yml
+
+deploy-network-observability:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_TARGET_INVENTORY) -i $(ANSIBLE_OBSERVABILITY_INVENTORY) \
+		automation/ansible/playbooks/deploy-network-observability.yml
+
+deploy-hubble-ui:
+	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \
+		-i $(ANSIBLE_TARGET_INVENTORY) \
+		automation/ansible/playbooks/deploy-hubble-ui.yml
 
 deploy-viewer-frontend:
 	ANSIBLE_CONFIG=$(ANSIBLE_CONFIG_PATH) .venv-ansible/bin/ansible-playbook \

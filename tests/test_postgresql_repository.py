@@ -9,11 +9,13 @@ from pathlib import Path
 from incident_platform.evidence import (
     EvidenceBuilder,
     EvidenceDraft,
+    EvidenceWindow,
 )
-from incident_platform.errors import ContractViolation
+from incident_platform.errors import ContractViolation, InvalidTransition
 from incident_platform.incidents import AlertmanagerNormalizer
 from incident_platform.postgresql import (
     PostgreSQLIncidentAnalysisWorkRepository,
+    PostgreSQLIncidentLocalizationWorkRepository,
     PostgreSQLIncidentRepository,
     PostgreSQLIncidentWorkQueueTelemetryRepository,
     PostgreSQLStateGraphObservationRepository,
@@ -598,6 +600,102 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
             lambda: PostgreSQLIncidentRepository(self.connection_factory),
             incident,
             evidence,
+        )
+
+    def test_downstream_checkpoint_is_atomic_durable_and_lease_fenced(self) -> None:
+        from tests.test_downstream_collection import (
+            DownstreamProvider,
+            prepare_incident,
+        )
+        from tests.test_incident_worker_runtime import NOW, config
+        from incident_platform.collectors import CollectorOrchestrator, CollectorSpec
+        from incident_platform.evidence import ResourceScope
+
+        repository = PostgreSQLIncidentRepository(self.connection_factory)
+        incident, request, initial_evidence = prepare_incident(repository)
+        work = PostgreSQLIncidentLocalizationWorkRepository(self.connection_factory)
+        now = NOW + timedelta(seconds=1)
+        claim = work.claim_next(
+            worker_id="downstream-contract",
+            now=now,
+            lease_duration=timedelta(seconds=30),
+            max_attempts=3,
+        )
+        self.assertEqual(claim.incident_id, incident["incident_id"])
+        run = CollectorOrchestrator(
+            (CollectorSpec("kubernetes", DownstreamProvider()),)
+        ).collect(
+            incident_id=incident["incident_id"],
+            window=request.window,
+            scope=ResourceScope(
+                namespace=config().target_namespace,
+                resource_names=("checkoutservice",),
+                resource_name_prefixes=("checkoutservice-",),
+            ),
+            observed_at=now,
+        )
+        selection = {
+            "cluster_id": config().cluster_id,
+            "namespace": config().target_namespace,
+            "profile_id": "checkout-fixture",
+            "services": ["checkoutservice"],
+            "feature_evidence_ids": [initial_evidence[1]["evidence_id"]],
+        }
+        kwargs = dict(
+            selection=selection,
+            window=request.window,
+            collector_statuses=run.collector_statuses,
+            evidence_items=run.evidence,
+            now=now,
+        )
+        # Invalid Evidence is rejected before writes.
+        invalid = dict(run.evidence[-1], incident_id="inc-unrelated-fixture")
+        with self.assertRaises(InvalidTransition):
+            work.store_collection(
+                claim, **dict(kwargs, evidence_items=(*run.evidence, invalid))
+            )
+        self.assertIsNone(
+            repository.get_localization_collection(incident["incident_id"])
+        )
+        self.assertEqual(
+            len(repository.list_evidence(incident["incident_id"])),
+            len(initial_evidence),
+        )
+        # A collision on the second INSERT also rolls back the first INSERT.
+        collision = dict(run.evidence[-1], evidence_id=initial_evidence[0]["evidence_id"])
+        with self.assertRaisesRegex(InvalidTransition, "collision"):
+            work.store_collection(
+                claim, **dict(kwargs, evidence_items=(run.evidence[0], collision))
+            )
+        self.assertEqual(
+            len(repository.list_evidence(incident["incident_id"])), len(initial_evidence)
+        )
+        self.assertIsNone(repository.get_localization_collection(incident["incident_id"]))
+        self.assertEqual(repository.get(incident["incident_id"])["collector_statuses"], incident["collector_statuses"])
+        checkpoint = work.store_collection(claim, **kwargs)
+        self.assertEqual(work.store_collection(claim, **kwargs), checkpoint)
+        self.assertEqual(
+            PostgreSQLIncidentRepository(
+                self.connection_factory
+            ).get_localization_collection(incident["incident_id"]),
+            checkpoint,
+        )
+        # Expiry itself rejects writes, even before another worker reclaims.
+        with self.assertRaisesRegex(InvalidTransition, "expired"):
+            work.store_collection(
+                claim, **dict(kwargs, now=now + timedelta(seconds=31))
+            )
+        reclaimed = work.claim_next(
+            worker_id="replacement-contract",
+            now=now + timedelta(seconds=31),
+            lease_duration=timedelta(seconds=30),
+            max_attempts=3,
+        )
+        self.assertEqual(reclaimed.incident_id, claim.incident_id)
+        with self.assertRaisesRegex(InvalidTransition, "stale"):
+            work.store_collection(claim, **kwargs)
+        self.assertEqual(
+            repository.get_localization_collection(incident["incident_id"]), checkpoint
         )
 
     def test_viewer_search_and_filtered_pagination_execute_in_postgresql(self) -> None:

@@ -36,6 +36,7 @@ hubble_cli_linux_amd64_sha256: >-
   c7c37a5f27ed2ae2d5495c6ddbecc61cebbb841508e77af3c131e96f005ed247
 hubble_relay_service_type: ClusterIP
 hubble_relay_node_port: 31234
+hubble_ui_enabled: false
 
 chaos_mesh_namespace: chaos-mesh
 chaos_mesh_target_namespace: online-boutique

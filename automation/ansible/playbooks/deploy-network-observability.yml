@@ -1,0 +1,57 @@
+---
+- name: Forward Cilium metrics without changing the dataplane or other releases
+  hosts: fault_target
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/chaos-eval.yml
+  tasks:
+    - name: Read the current Prometheus remote-write boundary
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get prometheus monitoring-kube-prometheus-prometheus
+        --namespace {{ observability_namespace }} --output json
+      register: network_prometheus_before
+      changed_when: false
+
+    - name: Require the existing reviewed private remote-write destination
+      ansible.builtin.assert:
+        that:
+          - (network_prometheus_before.stdout | from_json).spec.remoteWrite | length == 1
+          - (network_prometheus_before.stdout | from_json).spec.remoteWrite[0].url == observability_prometheus_remote_write_url
+        fail_msg: Reconcile the reviewed three-domain remote-write destination first.
+
+    - name: Render only the forwarder override
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../../platform/observability/kube-prometheus-stack-forwarder-values.yaml"
+        dest: "{{ observability_remote_values_directory }}/kube-prometheus-stack-forwarder-values.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+        variable_start_string: "[["
+        variable_end_string: "]]"
+      register: network_forwarder_values
+
+    - name: Reconcile only the existing monitoring release override
+      ansible.builtin.command: >-
+        helm --kubeconfig /etc/kubernetes/admin.conf upgrade
+        {{ kube_prometheus_release_name }} {{ kube_prometheus_chart_ref }}
+        --version {{ kube_prometheus_chart_version }}
+        --namespace {{ observability_namespace }} --reuse-values
+        --values {{ observability_remote_values_directory }}/kube-prometheus-stack-forwarder-values.yaml
+        --atomic --wait --timeout {{ observability_wait_timeout }}
+      when: >-
+        network_forwarder_values.changed
+        or 'cilium_.+' not in ((network_prometheus_before.stdout | from_json).spec.remoteWrite | to_json)
+      changed_when: true
+
+- name: Provision the central private network operations dashboard
+  hosts: observability_domain
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/observability.yml
+  roles:
+    - role: network_dashboard

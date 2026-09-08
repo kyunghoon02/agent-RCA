@@ -400,6 +400,8 @@ class IncidentViewerQueryService:
             return "DETECTION"
         if audit.event_type == "COLLECTION_COMPLETED":
             return "COLLECTION"
+        if audit.event_type == "LOCALIZATION_COLLECTION_COMPLETED":
+            return "LOCALIZATION"
         # Queue lifecycle events belong to the work they describe, including
         # retries and lease reaping; they are not all Agent analysis events.
         for prefix, stage in (

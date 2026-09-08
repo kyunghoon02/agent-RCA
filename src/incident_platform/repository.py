@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Set
 
 from .contracts import validate_contract
 from .errors import InvalidTransition
+from .evidence import EvidenceWindow
+from .localization_collection import (
+    LOCALIZATION_COLLECTION_EVENT,
+    prepare_localization_collection,
+)
 
 
 ALLOWED_TRANSITIONS = {
@@ -99,6 +104,23 @@ class IncidentRepository(Protocol):
         ...
 
     def list_evidence(self, incident_id: str) -> List[Dict[str, Any]]:
+        ...
+
+    def get_localization_collection(
+        self, incident_id: str
+    ) -> Optional[Dict[str, Any]]:
+        ...
+
+    def store_localization_collection(
+        self,
+        incident_id: str,
+        *,
+        selection: Mapping[str, Any],
+        window: EvidenceWindow,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        now: datetime,
+    ) -> Dict[str, Any]:
         ...
 
     def store_context(self, context: Mapping[str, Any]) -> None:
@@ -306,6 +328,66 @@ class InMemoryIncidentRepository:
             return copy.deepcopy(
                 list(self._evidence_by_incident[incident_id].values())
             )
+
+    def get_localization_collection(self, incident_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            self._require_incident_locked(incident_id)
+            for event in self._audit_events[incident_id]:
+                if event.event_type == LOCALIZATION_COLLECTION_EVENT:
+                    return copy.deepcopy(dict(event.details))
+        return None
+
+    def store_localization_collection(
+        self,
+        incident_id: str,
+        *,
+        selection: Mapping[str, Any],
+        window: EvidenceWindow,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        now: datetime,
+    ) -> Dict[str, Any]:
+        """Atomic checkpoint; concurrent workers must also hold their claim lock."""
+        with self._lock:
+            incident = self._require_incident_locked(incident_id)
+            updated, candidates, details = prepare_localization_collection(
+                incident,
+                selection=selection,
+                window=window,
+                collector_statuses=collector_statuses,
+                evidence_items=evidence_items,
+                now=now,
+            )
+            previous = self.get_localization_collection(incident_id)
+            if previous is not None:
+                if previous != details:
+                    raise InvalidTransition(
+                        "localization collection checkpoint conflict"
+                    )
+                return previous
+            if any(
+                item["incident_id"] == incident_id for item in self._contexts.values()
+            ):
+                raise InvalidTransition("cannot collect after Context freeze")
+            stored = copy.deepcopy(self._evidence_by_incident[incident_id])
+            if not set(selection["feature_evidence_ids"]) <= set(stored):
+                raise InvalidTransition(
+                    "selection references unstored feature Evidence"
+                )
+            for candidate in candidates:
+                evidence_id = candidate["evidence_id"]
+                if evidence_id in stored and stored[evidence_id] != candidate:
+                    raise InvalidTransition("supplemental evidence_id collision")
+                stored[evidence_id] = candidate
+            self._evidence_by_incident[incident_id] = stored
+            self._incidents[incident_id] = updated
+            self._append_audit_event_locked(
+                incident_id,
+                LOCALIZATION_COLLECTION_EVENT,
+                now,
+                details,
+            )
+            return copy.deepcopy(details)
 
     def store_context(self, context: Mapping[str, Any]) -> None:
         candidate = copy.deepcopy(dict(context))

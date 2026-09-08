@@ -51,7 +51,32 @@ hubble:
         labels:
           release: monitoring
   ui:
-    enabled: false
+    enabled: {{ hubble_ui_enabled | bool | lower }}
+    replicas: 1
+    service:
+      type: ClusterIP
+    ingress:
+      enabled: false
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+    frontend:
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+    backend:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 300m
+          memory: 256Mi
   redact:
     enabled: true
     http:

@@ -515,6 +515,7 @@ def validate_versions_and_manifests() -> None:
         "kubernetes_deb_version": expected_chaos_evaluation["kubernetes_release"]["deb_version"],
         "observability_domain_mode": "forwarder",
         "hubble_relay_service_type": "NodePort",
+        "hubble_ui_enabled": True,
     }:
         raise ValidationFailure(
             "Chaos evaluation profile must select Kubernetes 1.35 and telemetry forwarding"
@@ -1280,9 +1281,9 @@ def validate_incident_platform_manifest() -> None:
             "alert_matcher": "rca_enabled=true",
         },
         "worker": {
-            "image_tag": "runtime-fb9f4af89d71",
+            "image_tag": "runtime-2acc54540260",
             "image_digest": (
-                "sha256:2ae294b3a92187e528b4708cec696d788fd35c72bdd745b240f748d5162a875b"
+                "sha256:edf1bfb3e8034cfe8b4fd512c8319143ade8f3e8410541cdec2ddcf361d5e097"
             ),
             "poll_interval_seconds": 2,
             "lease_seconds": 120,
@@ -2074,6 +2075,26 @@ def validate_observability_values() -> None:
     tempo_documents = load_yaml_documents(tempo_directory / "tempo.yaml")
     alloy = load_yaml_documents(directory / "alloy-values.yaml")[0]
 
+    network_dashboard = json.loads(
+        (directory / "dashboards" / "cilium-hubble.json").read_text(encoding="utf-8")
+    )
+    network_panels = network_dashboard.get("panels", [])
+    network_queries = [
+        target.get("expr", "")
+        for panel in network_panels for target in panel.get("targets", [])
+    ]
+    if (
+        network_dashboard.get("uid") != "agent-rca-cilium-hubble"
+        or network_dashboard.get("editable") is not False
+        or len(network_queries) != 12
+        or len({panel.get("id") for panel in network_panels}) != len(network_panels)
+        or any('cluster_id="$cluster"' not in query for query in network_queries)
+        or any("vector(0)" in query for query in network_queries)
+        or any(panel.get("datasource", {}).get("uid") != "prometheus"
+               for panel in network_panels if panel.get("targets"))
+    ):
+        raise ValidationFailure("Cilium/Hubble dashboard scope or no-data boundary drifted")
+
     storage_class = local_path.get("storageClass", {})
     if (
         storage_class.get("name") != "agent-rca-local"
@@ -2220,6 +2241,17 @@ def validate_observability_values() -> None:
     ):
         raise ValidationFailure("Cilium/Hubble ServiceMonitor gate drifted")
 
+    ui_policy = load_yaml_documents(directory / "hubble-ui-networkpolicy.yaml")[0]
+    if (
+        "enabled: {{ hubble_ui_enabled | bool | lower }}" not in cilium_template
+        or ui_policy.get("metadata", {}).get("namespace") != "kube-system"
+        or ui_policy.get("spec") != {
+            "podSelector": {"matchLabels": {"k8s-app": "hubble-ui"}},
+            "policyTypes": ["Ingress"],
+        }
+    ):
+        raise ValidationFailure("Hubble UI private opt-in boundary drifted")
+
 
 def validate_three_domain_runtime() -> None:
     observability_directory = ROOT / "platform" / "observability"
@@ -2252,6 +2284,7 @@ def validate_three_domain_runtime() -> None:
         "remoteWrite:" not in forwarder_values
         or "observability_prometheus_remote_write_url" not in forwarder_values
         or "agent_rca_.+" not in forwarder_values
+        or "cilium_.+" not in forwarder_values
         or "enableRemoteWriteReceiver: true" not in receiver_values
         or "type: NodePort" not in receiver_values
         or "default(30090)" not in receiver_values
@@ -3077,7 +3110,7 @@ def validate_host_and_chaos_command_boundaries() -> None:
         raise ValidationFailure("Kubernetes host inotify setting is not persisted")
 
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    for target in ("deploy-chaos-mesh", "verify-chaos-mesh"):
+    for target in ("deploy-chaos-mesh", "verify-chaos-mesh", "deploy-hubble-ui"):
         match = re.search(
             rf"(?m)^{re.escape(target)}:\n(?P<body>(?:\t.*\n)+)",
             makefile,

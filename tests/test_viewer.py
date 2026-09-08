@@ -74,6 +74,15 @@ def add_incident(
 
 
 class IncidentViewerQueryServiceTests(unittest.TestCase):
+    def test_downstream_collection_checkpoint_belongs_to_localization(self) -> None:
+        audit = AuditEvent(
+            incident_id="inc-viewer-stage-fixture",
+            event_type="LOCALIZATION_COLLECTION_COMPLETED",
+            occurred_at="2026-08-12T01:05:10Z",
+            details={"selection": {"services": ["checkoutservice"]}},
+        )
+        self.assertEqual(IncidentViewerQueryService._audit_stage(audit), "LOCALIZATION")
+
     def test_work_audit_events_keep_their_pipeline_stage_and_stored_time(self) -> None:
         for prefix, expected_stage in (
             ("INCIDENT_WORK_", "COLLECTION"),

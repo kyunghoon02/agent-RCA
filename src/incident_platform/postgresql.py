@@ -27,8 +27,12 @@ from typing import (
 )
 
 from .contracts import validate_contract
-from .evidence import parse_time
+from .evidence import EvidenceWindow, parse_time
 from .errors import InvalidTransition
+from .localization_collection import (
+    LOCALIZATION_COLLECTION_EVENT,
+    prepare_localization_collection,
+)
 from .incident_work import (
     IncidentAnalysisWorkClaim,
     IncidentWorkClaim,
@@ -325,35 +329,128 @@ class PostgreSQLIncidentRepository:
         with _connection(self._connection_factory) as connection:
             with connection.cursor() as cursor:
                 self._locked_incident(cursor, incident_id)
-                for candidate in candidates:
-                    cursor.execute(
-                        """
-                        INSERT INTO evidence_items (
-                            evidence_id, incident_id, content_hash, observed_at, document
-                        ) VALUES (%s, %s, %s, %s, %s::jsonb)
-                        ON CONFLICT (evidence_id) DO NOTHING
-                        RETURNING evidence_id
-                        """,
-                        (
-                            candidate["evidence_id"],
-                            incident_id,
-                            candidate["provenance"]["content_hash"],
-                            candidate["observed_at"],
-                            _json(candidate),
-                        ),
-                    )
-                    if cursor.fetchone() is not None:
-                        continue
-                    cursor.execute(
-                        "SELECT document FROM evidence_items WHERE evidence_id = %s",
-                        (candidate["evidence_id"],),
-                    )
-                    row = cursor.fetchone()
-                    if row is None or _decode_document(row[0]) != candidate:
-                        raise InvalidTransition(
-                            "evidence_id collision with different content: "
-                            f"{candidate['evidence_id']}"
-                        )
+                self._store_evidence(cursor, incident_id, candidates)
+
+    @staticmethod
+    def _store_evidence(
+        cursor: Any, incident_id: str, candidates: Sequence[Mapping[str, Any]]
+    ) -> None:
+        for candidate in candidates:
+            cursor.execute(
+                """
+                INSERT INTO evidence_items (
+                    evidence_id, incident_id, content_hash, observed_at, document
+                ) VALUES (%s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (evidence_id) DO NOTHING
+                RETURNING evidence_id
+                """,
+                (
+                    candidate["evidence_id"],
+                    incident_id,
+                    candidate["provenance"]["content_hash"],
+                    candidate["observed_at"],
+                    _json(candidate),
+                ),
+            )
+            if cursor.fetchone() is not None:
+                continue
+            cursor.execute(
+                "SELECT document FROM evidence_items WHERE evidence_id = %s",
+                (candidate["evidence_id"],),
+            )
+            row = cursor.fetchone()
+            if row is None or _decode_document(row[0]) != candidate:
+                raise InvalidTransition(
+                    "evidence_id collision with different content: "
+                    f"{candidate['evidence_id']}"
+                )
+
+    def get_localization_collection(self, incident_id: str) -> Optional[Dict[str, Any]]:
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                self._require_incident(cursor, incident_id)
+                return self._localization_collection(cursor, incident_id)
+
+    @staticmethod
+    def _localization_collection(
+        cursor: Any, incident_id: str
+    ) -> Optional[Dict[str, Any]]:
+        cursor.execute(
+            """SELECT details FROM incident_audit_events
+               WHERE incident_id = %s AND event_type = %s ORDER BY event_id LIMIT 1""",
+            (incident_id, LOCALIZATION_COLLECTION_EVENT),
+        )
+        row = cursor.fetchone()
+        return _decode_document(row[0]) if row is not None else None
+
+    def store_localization_collection(
+        self,
+        incident_id: str,
+        *,
+        selection: Mapping[str, Any],
+        window: EvidenceWindow,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        now: datetime,
+    ) -> Dict[str, Any]:
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                return self._store_localization_collection(
+                    cursor,
+                    incident_id,
+                    selection=selection,
+                    window=window,
+                    collector_statuses=collector_statuses,
+                    evidence_items=evidence_items,
+                    now=now,
+                )
+
+    @classmethod
+    def _store_localization_collection(
+        cls,
+        cursor: Any,
+        incident_id: str,
+        *,
+        selection: Mapping[str, Any],
+        window: EvidenceWindow,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        now: datetime,
+    ) -> Dict[str, Any]:
+        incident = cls._locked_incident(cursor, incident_id)
+        updated, candidates, details = prepare_localization_collection(
+            incident,
+            selection=selection,
+            window=window,
+            collector_statuses=collector_statuses,
+            evidence_items=evidence_items,
+            now=now,
+        )
+        previous = cls._localization_collection(cursor, incident_id)
+        if previous is not None:
+            if previous != details:
+                raise InvalidTransition("localization collection checkpoint conflict")
+            return previous
+        cursor.execute(
+            "SELECT 1 FROM context_packages WHERE incident_id = %s LIMIT 1",
+            (incident_id,),
+        )
+        if cursor.fetchone() is not None:
+            raise InvalidTransition("cannot collect after Context freeze")
+        cursor.execute(
+            "SELECT evidence_id FROM evidence_items WHERE incident_id = %s AND evidence_id = ANY(%s)",
+            (incident_id, list(selection["feature_evidence_ids"])),
+        )
+        if {row[0] for row in cursor.fetchall()} != set(
+            selection["feature_evidence_ids"]
+        ):
+            raise InvalidTransition("selection references unstored feature Evidence")
+        cls._store_evidence(cursor, incident_id, candidates)
+        cls._update_incident(cursor, updated)
+        cls._append_audit_event(
+            cursor, incident_id, LOCALIZATION_COLLECTION_EVENT, now, details
+        )
+        return details
 
     def list_evidence(self, incident_id: str) -> List[Dict[str, Any]]:
         with _connection(self._connection_factory) as connection:
@@ -1227,6 +1324,41 @@ class PostgreSQLIncidentLocalizationWorkRepository:
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connection_factory = connection_factory
+
+    def store_collection(
+        self,
+        claim: IncidentWorkClaim,
+        *,
+        selection: Mapping[str, Any],
+        window: EvidenceWindow,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        now: datetime,
+    ) -> Dict[str, Any]:
+        if now.tzinfo is None:
+            raise ValueError("collection completion time must be timezone-aware")
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT lease_expires_at FROM incident_localization_work_items
+                       WHERE incident_id = %s AND state = 'RUNNING'
+                         AND claim_token = %s AND worker_id = %s FOR UPDATE""",
+                    (claim.incident_id, claim.claim_token, claim.worker_id),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise InvalidTransition("Incident localization work claim is stale")
+                if row[0] <= now:
+                    raise InvalidTransition("Incident localization work lease expired")
+                return PostgreSQLIncidentRepository._store_localization_collection(
+                    cursor,
+                    claim.incident_id,
+                    selection=selection,
+                    window=window,
+                    collector_statuses=collector_statuses,
+                    evidence_items=evidence_items,
+                    now=now,
+                )
 
     def claim_next(
         self,

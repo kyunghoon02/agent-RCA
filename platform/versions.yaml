@@ -132,8 +132,8 @@ incident_platform:
     alert_matcher: rca_enabled=true
   worker:
     # Collection/localization updates must not roll the Agent or reconciler.
-    image_tag: runtime-fb9f4af89d71
-    image_digest: sha256:2ae294b3a92187e528b4708cec696d788fd35c72bdd745b240f748d5162a875b
+    image_tag: runtime-2acc54540260
+    image_digest: sha256:edf1bfb3e8034cfe8b4fd512c8319143ade8f3e8410541cdec2ddcf361d5e097
     poll_interval_seconds: 2
     lease_seconds: 120
     max_attempts: 3

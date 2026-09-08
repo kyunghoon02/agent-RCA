@@ -171,11 +171,49 @@ StateGraph의 탐색 seed, depth와 entity budget만 제한적으로 확장한�
 | 식 4의 live multi-look-back baseline PromQL | query template/runtime 미검증 |
 | 식 5의 QPS·latency fluctuation 계산 | adapter 구현·fixture 검증 |
 | feature Evidence → Top-N → Entity seed | Incident worker 연결·contract 검증, active-traffic Provider smoke 검증 |
+| Top-N 하위 서비스 Evidence 추가 수집 → 최종 Context | worker 연결·로컬 fixture 검증, GCP fault runtime 미검증 |
 | feature Evidence → logical Service `CALLS` projection | Incident Context에서 profile 9개 edge live 검증 |
 | Top-N 불완전 또는 무후보 시 exact source fallback | 무 recent traffic 제어 Incident에서 live 검증 |
 
 정상 traffic의 live smoke는 Prometheus 연결성과 feature 생성만 증명한다. Top-N 결과는
 root cause가 아니며 fault-RCA 정확도는 별도 controlled-fault 평가가 필요하다.
+
+## 최종 Context 이전의 하위 서비스 수집
+
+Incident worker는 profiled Incident에서 다음 순서를 사용한다.
+
+```text
+COLLECTING: source 서비스 Evidence + allowlisted API dependency feature
+LOCALIZING: KRCA plan → exact Top-N Entity resolution
+            → 선택된 하위 서비스 상세 Evidence 추가 수집
+            → Evidence·수집 상태·완료 checkpoint 원자적 저장
+            → Projectors → 최종 Frozen Context
+ANALYZING: 기존 bounded Agent → Evidence Gate
+```
+
+- 원래 Incident source는 유지한다. Top-N은 조사 후보이지 root cause 확정 결과가 아니다.
+- trusted profile 안에서 exact resolution이 모두 성공한 경우에만 추가 수집한다.
+  무후보·불완전 resolution은 기존 exact source fallback을 유지한다.
+- 원래 source를 제외한 최대 3개 service를 한 batch로 조회한다. Kubernetes,
+  Prometheus service/workload metric, Loki kernel OOM, deployment history와 Hubble만
+  허용하며 일반 application log·trace Provider를 새로 연결하는 것은 아니다.
+- cluster·namespace는 worker 설정에 고정한다. Pod prefix는 선택된 service에서 파생하고,
+  ConfigMap은 UID-backed Pod reference가 입증된 경우에만 허용한다. 각 Provider의 기존
+  timeout·retry·item budget을 전체 후보 batch에 적용하며 service별로 예산을 곱하지 않는다.
+- KRCA 점수는 최초 feature window를 사용한다. 추가 조회와 최종 scope는 Incident 조사
+  window를 사용하고, Context freeze 시각은 추가 수집의 저장 이후다.
+- 초기 수집과 추가 수집 중 하나라도 실패하면 해당 collector의 완전 성공으로 덮지 않는다.
+  합산 상태는 Context의 `collector_failures`로 전달되어 기존 Gate 제한을 유지한다.
+- PostgreSQL에서는 활성 localization claim을 잠그고 token·worker·lease를 확인한 뒤
+  Evidence, 합산 상태와 `LOCALIZATION_COLLECTION_COMPLETED` audit checkpoint를 같은
+  transaction에 저장한다. 저장 완료 후 worker가 재시작되면 같은 selection의 checkpoint를
+  재사용한다. 저장 전 중단된 read-only 외부 조회까지 exactly-once를 보장하지는 않는다.
+- `plan()`과 `freeze()`를 분리했으며 continuous worker가 그 사이 수집을 연결한다.
+  기존 `localize()` convenience API는 이미 필요한 Evidence가 저장된 호출자를 위한 경로다.
+
+이는 한 번의 bounded 추가 수집이다. Agent가 Provider를 호출하거나 Frozen Context를
+다시 수정하는 adaptive investigation loop는 포함하지 않는다. 로컬 Agent/Gate 연결
+테스트는 fake model을 사용하며 실제 LLM 정답률·native 감지 성공을 증명하지 않는다.
 
 ## Runtime 미구현 경계
 

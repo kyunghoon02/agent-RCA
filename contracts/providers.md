@@ -191,17 +191,62 @@ find_drops(time_window, source_scope, destination_scope, reason_limit)
 
 - 현재 `HubbleNetworkFlowProvider`는 trusted runtime 설정의 private Relay endpoint만
   허용하고, 각 root Pod prefix에 대해 from/to 방향과 Incident time window를 CLI
-  argument로 고정한다. shell은 사용하지 않으며 query 수, flow 수, 출력 byte와 실행
-  시간을 제한한다.
+  argument로 고정한다. shell은 사용하지 않는다. 최대 retained flow 예산을 모든 root와
+  from/to query에 나눠 적용하고, 각 query는 truncation 판별용 sentinel 1개를 추가 요청한다.
+  stdout·stderr는 스트리밍 중 합산 byte·time cap을 적용해 초과 시 subprocess를 종료한다.
+  CLI field mask는 IP·L7 payload·endpoint label을 요청에서 제외한다.
 - 반환 flow도 timestamp, namespace와 root Pod prefix를 다시 검증하고 UUID로 중복을
-  제거한다. 원본 flow, endpoint IP, port, label, L7 URL/header/payload는 Evidence나
-  StateGraph에 복사하지 않는다.
+  제거한다. 같은 UUID의 내용이 충돌하면 fail-closed 처리한다. 반대편 endpoint도 같은
+  namespace에 속할 때만 해당 root count에 포함한다. 원본 flow, endpoint IP, port,
+  label, L7 URL/header/payload는 Evidence나 StateGraph에 복사하지 않는다.
 - Evidence에는 verdict/protocol/drop reason과 source/destination root count, first/last
-  time, truncation 여부만 집계한다. Projector는 이를 논리적 Service Entity의
-  `HUBBLE_NETWORK_FLOW_SUMMARY` event로 변환한다.
-- matching flow 없음과 provider 실패는 구분한다. 다만 현재 Relay retention coverage를
-  입증할 수 없으므로 no-data는 retention `UNKNOWN`인 `PARTIAL` 결과다.
-- Hubble evidence만으로 application root cause를 단정하지 않는다.
+  time, truncation을 집계한다. v2는 `policy_denied_count`, `other_drop_count`,
+  `unknown_drop_count`와 다음 관측 signal을 추가한다. `AUDIT`는 실제 drop으로 세지 않는다.
+
+  | `flow_signal` | 의미 |
+  |---|---|
+  | `POLICY_DENIAL_OBSERVED` | `DROPPED` + `POLICY_DENIED` 또는 `POLICY_DENY` flow가 존재 |
+  | `DROPS_OBSERVED` | 정책 차단 이외 또는 사유 미상의 drop이 관측됨 |
+  | `NO_DROPS_OBSERVED` | 반환된 flow 표본에서 drop이 관측되지 않음. 정상 판정이 아님 |
+  | `NO_FLOW_DATA` | matching flow 없음. 통신 부재나 정상 상태를 입증하지 않음 |
+
+- `DROP_REASON_UNKNOWN`·누락·해석 불가능한 drop reason은 `UNKNOWN`으로 정규화한다.
+- JSONPB `lost_events`와 stderr의 `node_status`를 처리한다. 유실·노드 unavailable/error·
+  알 수 없는 diagnostic은 raw message 없이 `observation_gaps` reason code로 보존한다.
+  이미 받은 flow를 유지한 `PARTIAL`로 반환하며, 일부 query의 일시 실패도 동일하게 처리한다.
+  모든 query가 실패하면 retryable Provider 오류다. 유실 통지는 필터·시각을 벗어날 수 있어
+  해당 service의 packet drop 수로 합산하지 않는다.
+- v2의 retention은 flow 유무와 관계없이 `UNKNOWN`이다. `HAS_DATA`도 완전한 과거 coverage를
+  입증하지 않으므로 Evidence completeness는 최대 `0.5`, no-data는 `0.0`이다. known gap이나
+  truncation 없는 bounded 표본 조회는 `SUCCEEDED`일 수 있지만 전체 네트워크 정상의 증거는
+  아니다. no-data·유실·truncation은 `PARTIAL`이며 Context의 collector failure로 전달된다.
+- Projector는 v1·v2를 구분해 검증하고 논리적 Service의 `HUBBLE_NETWORK_FLOW_SUMMARY`
+  event로 변환한다. 기존 v1 Evidence는 수정하지 않는다. v2는 signal과 count의 일치,
+  reason allowlist와 quality 상한도 검사한다.
+- KRCA 하위 서비스 추가 수집 → Frozen Context → Agent candidate catalog 연결과 failure
+  전달은 로컬 fixture로 검증한다. GCP control Worker의 실제 bounded Hubble 조회와
+  EvidenceBuilder·Projector 처리는 검증했다. 이 read-only probe는 Incident를 저장하거나
+  LLM을 호출하지 않는다.
+- 별도의 GCP controlled network Evidence 검증은 frontend → productcatalogservice:3550/TCP
+  경로만 약 40초 차단했다. 상품 조회는 정상 3/3 HTTP 200 → 차단 3/3 client timeout
+  → 복구 3/3 HTTP 200이었고, health endpoint는 차단 중에도 HTTP 200이었다.
+  실제 Worker가 저장한 표본 431 flow 중 `POLICY_DENY` 18건이 같은 `evidence_id`와
+  facts로 Neo4j Service event, Frozen Context, 배포된 Agent의 기본 candidate selector와
+  read-only inspection tool까지 전달됐다. Context hash는 복구 후 재조회에서도 같았다.
+  `CLI_RELAY_VERSION_MISMATCH`, collector `PARTIAL`, retention `UNKNOWN`도 유지됐다.
+  이 실행은 `agent_rca_enabled=false`인 평가용 Alert를 Alertmanager에 제출했으며
+  LLM은 호출하지 않았다. KRCA profile/downstream 선택이나 native 감지, 네트워크 원인
+  확정 정확도를 검증한 것은 아니다. Hubble Evidence만으로 application root cause를
+  단정하지 않으며 네트워크 원인 ID를
+  기존 3종 taxonomy에 추가한 것은 아니다. 정책 객체·변경·영향 근거와 별도 평가가 필요하다.
+- CLI가 Relay보다 오래됐다는 호환성 경고는 `CLI_RELAY_VERSION_MISMATCH`로 기록하고
+  `PARTIAL`을 유지한다. 현재 CLI 1.19.4 / Relay 1.20.1 조합에서 실제 경고를 확인했다.
+  검증 시점에 공개된 CLI 안정 릴리스는 1.19.4이므로 경고를 숨기거나 Cilium을
+  downgrade하지 않는다. 정상 flow가 반환됐어도 전체 API 호환성을 보장하지 않는다.
+
+프로토콜 기준은 [Cilium 1.20.1 GetFlows](https://github.com/cilium/cilium/blob/v1.20.1/api/v1/observer/observer.proto),
+[LostEvent](https://github.com/cilium/cilium/blob/v1.20.1/api/v1/flow/flow.proto),
+[pinned Hubble 1.19.4 JSONPB printer](https://github.com/cilium/hubble/blob/v1.19.4/vendor/github.com/cilium/cilium/hubble/pkg/printer/printer.go)다.
 
 ### DeploymentHistoryProvider
 

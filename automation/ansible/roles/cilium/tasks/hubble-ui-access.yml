@@ -1,0 +1,7 @@
+---
+- name: Restrict Hubble UI ingress before creating the UI Pod
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, /etc/kubernetes/admin.conf, apply, --filename=-]
+    stdin: "{{ lookup('ansible.builtin.file', playbook_dir + '/../../../platform/observability/hubble-ui-networkpolicy.yaml') }}"
+  register: hubble_ui_ingress_policy
+  changed_when: "'unchanged' not in hubble_ui_ingress_policy.stdout"

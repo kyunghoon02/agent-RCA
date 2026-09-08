@@ -10,5 +10,5 @@ prometheus:
           maxShards: 4
         writeRelabelConfigs:
           - sourceLabels: [__name__]
-            regex: "agent_rca_.+|hubble_.+|up|container_memory_working_set_bytes|kube_pod_.+|kube_deployment_.+|kube_replicaset_.+"
+            regex: "agent_rca_.+|cilium_.+|hubble_.+|up|container_memory_working_set_bytes|kube_pod_.+|kube_deployment_.+|kube_replicaset_.+"
             action: keep

@@ -8,9 +8,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import RLock
-from typing import Any, Dict, Mapping, Optional, Protocol, Tuple
+from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 
 from .errors import InvalidTransition
+from .evidence import EvidenceWindow
 from .repository import IncidentRepository
 
 
@@ -222,6 +223,18 @@ class IncidentWorkRepository(Protocol):
 
 class IncidentLocalizationWorkRepository(IncidentWorkRepository, Protocol):
     """Durable LOCALIZING work boundary using the shared fenced claim contract."""
+
+    def store_collection(
+        self,
+        claim: IncidentWorkClaim,
+        *,
+        selection: Mapping[str, Any],
+        window: EvidenceWindow,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        now: datetime,
+    ) -> Dict[str, Any]:
+        ...
 
 
 class IncidentAnalysisWorkRepository(Protocol):
@@ -518,6 +531,29 @@ class InMemoryIncidentLocalizationWorkRepository:
         self._incidents = incident_repository
         self._items: Dict[str, Dict[str, Any]] = {}
         self._lock = RLock()
+
+    def store_collection(
+        self,
+        claim: IncidentWorkClaim,
+        *,
+        selection: Mapping[str, Any],
+        window: EvidenceWindow,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        now: datetime,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            item = self._current_item(claim)
+            if now.tzinfo is None or item["lease_expires_at"] <= now:
+                raise InvalidTransition("Incident localization work lease expired")
+            return self._incidents.store_localization_collection(
+                claim.incident_id,
+                selection=selection,
+                window=window,
+                collector_statuses=collector_statuses,
+                evidence_items=evidence_items,
+                now=now,
+            )
 
     def enqueue(self, incident_id: str, *, available_at: datetime) -> None:
         if available_at.tzinfo is None:

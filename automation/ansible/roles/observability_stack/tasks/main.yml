@@ -207,6 +207,11 @@
   register: grafana_helm_repository
   changed_when: false
 
+- name: Provision the network operations dashboard
+  ansible.builtin.include_role:
+    name: network_dashboard
+  when: observability_domain_mode != 'forwarder'
+
 - name: Update the Grafana Helm repository index
   ansible.builtin.command: helm repo update {{ alloy_chart_repository_name }}
   changed_when: false

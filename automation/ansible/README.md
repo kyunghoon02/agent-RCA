@@ -127,6 +127,19 @@ runtime pin. The full stack deploy replaces the `agent-rca-collection-runtime`
 image placeholder with this pin; changing collection code does not require
 changing the Agent image pin.
 
+After building and updating that pin, `make deploy-incident-worker` rolls only the
+existing collection worker and verifies a bounded live Hubble query through
+EvidenceBuilder and its Projector. The probe does not persist an Incident or call
+the LLM. `make deploy-network-observability` separately updates target metric
+forwarding and provisions the central Cilium/Hubble dashboard, without restarting
+the Cilium dataplane or rewiring the Alertmanager route.
+
+`make deploy-hubble-ui` adds the upstream service-map UI only on the fault target.
+It compares a server-side Helm preview before applying a UI-only override, checks
+private Service exposure and read-only RBAC, and keeps the shared bootstrap values
+consistent. Use the [private access guide](../../platform/observability/README.md#hubble-ui);
+this UI is distinct from the central Grafana metrics dashboard.
+
 `CONFIRM_CONTROLLED_FAULT=yes make verify-prometheus-rca` is a separate one-run
 native-alert release check: fill the 15-minute normal traffic window, execute the
 registered checkout OOM fault, and wait for the existing Prometheus rule to fire.

@@ -173,6 +173,12 @@ Alert 이름을 원인에 대응시키는 분기는 없으며, 원본 Alert 이�
 | Evidence Gate | Agent draft와 inspected Evidence | citation, scope와 원인별 등록 Evidence 조건 재검증 | 초안 수락 또는 fail-closed rejection |
 | Viewer | 저장된 Incident artifacts | Incident, Evidence, Context, work와 Report 조회 | read-only UI/API |
 
+`krca_profile`이 있는 Incident는 `LOCALIZING`에서 Top-N service를 먼저 resolve하고,
+선택된 하위 서비스 최대 3개의 상세 Evidence를 기존 Provider로 추가 수집한 뒤 Context를
+고정한다. 초기 Alert의 source는 유지하며, 추가 수집 실패와 완료 checkpoint도 저장한다.
+이 경로는 로컬 fixture·PostgreSQL contract로 검증했으며, GCP cross-service fault 재실행은
+아직 남아 있다. 상세 경계는 [KRCA contract](contracts/krca-drilldown.md)에 둔다.
+
 Provider가 Graph record를 직접 만들지는 않는다. 모든 Provider output은
 `EvidenceBuilder`를 통과한 후에만 저장되고, domain Projector만 검증된 Evidence를
 StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 Neo4j에 저장하며,
@@ -188,12 +194,22 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 | Loki/Alloy | 부분 연결 | Pod UID에 귀속된 kernel memcg OOM Evidence |
 | Deployment history | 연결됨 | retained ReplicaSet 기반 image/resource 변경과 변경 부재 |
 | Tempo | telemetry 검증 연결 | trace 저장과 service graph 생성, Incident trace Provider는 미연결 |
-| Cilium/Hubble | 연결됨 | namespace·Pod root·time window로 제한한 flow/verdict/drop 집계. 원본 flow, IP와 L7 payload는 저장하지 않음 |
+| Cilium/Hubble | 정책 차단 Evidence 경로 검증, 원인 확정은 미구현 | bounded flow·정책 차단/drop 관측과 수집 품질 구분. 중앙 Grafana network dashboard 연결. 원본 flow, IP와 L7 payload는 저장하지 않음 |
 | Application log | 계획 | 일반 application/container log Incident Provider는 미연결 |
 
 새 Provider도 동일한 `EvidenceDraft → EvidenceBuilder → EvidenceItem` 경계를 사용한다.
 새 오류 유형을 지원하려면 Provider뿐 아니라 schema, Projector, localization policy와
 평가 scenario를 함께 추가해야 한다.
+
+Hubble의 `정책 차단 관측`은 곧바로 application root cause 확정을 뜻하지 않는다.
+`drop 미관측`도 전체 네트워크 정상의 증거는 아니다. 수집 품질과 v1/v2 호환 경계는
+[Provider contract](contracts/providers.md)에 정의한다. GCP의 단일 통신 경로 차단에서
+정책 차단 관측 18건이 Evidence → Neo4j → Frozen Context → Agent 조회 도구까지
+동일하게 전달됨을 확인했다. 이는 평가용 Alert를 사용한 연결성 검증이며 LLM 호출이나
+네트워크 원인 정답률 평가는 아니다. [검증 범위와 안전장치](platform/observability/README.md#controlled-network-evidence-verification)를 참고한다.
+운영 지표는 중앙 Grafana의 `Agent RCA · Cilium & Hubble`에서 조회한다.
+[접속·재배포 안내](platform/observability/README.md#cilium-and-hubble-dashboard)를 참고한다.
+서비스 통신 지도와 개별 flow는 fault target의 별도 [비공개 Hubble UI](platform/observability/README.md#hubble-ui)에서 확인한다.
 
 ## Evidence and Safety Boundaries
 

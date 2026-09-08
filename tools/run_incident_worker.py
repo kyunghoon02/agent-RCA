@@ -26,7 +26,14 @@ from incident_platform.incident_work import (
     validate_claim_request,
 )
 from incident_platform.localization import IncidentLocalizationService
-from incident_platform.krca_pipeline import KRCAGuidedIncidentLocalizationService
+from incident_platform.krca_pipeline import (
+    KRCAGuidedIncidentLocalizationService,
+    KRCAGuidedLocalizationPlan,
+)
+from incident_platform.localization_collection import (
+    LOCALIZATION_COLLECTORS,
+    MAX_ADDITIONAL_SERVICES,
+)
 from incident_platform.krca_runtime import (
     KRCARuntimeConfig,
     KRCARuntimeProfile,
@@ -300,6 +307,17 @@ class ClaimedIncidentCollectionService(Protocol):
     ) -> CollectionRun:
         ...
 
+    def collect_localization_candidates(
+        self,
+        request: EntityResolutionRequest,
+        *,
+        profile_id: str,
+        service_names: tuple[str, ...],
+        max_items: int,
+        observed_at: datetime,
+    ) -> CollectionRun:
+        ...
+
 
 def _selected_krca_profile(
     incident: Mapping[str, Any],
@@ -318,11 +336,11 @@ def _selected_krca_profile(
 
 
 class ProfileAwareIncidentCollectionService:
-    """Add one isolated KRCA feature collector only for an explicit profile label."""
+    """Profile features first; selected downstream workloads before Context freeze."""
 
     def __init__(
         self,
-        repository: PostgreSQLIncidentRepository,
+        repository: IncidentRepository,
         base_specs: tuple[CollectorSpec, ...],
         prometheus_client: PrometheusHTTPAPI,
         krca_config: KRCARuntimeConfig,
@@ -341,28 +359,7 @@ class ProfileAwareIncidentCollectionService:
     ) -> CollectionRun:
         incident = self._repository.get(incident_id)
         profile = _selected_krca_profile(incident, self._krca_config)
-        specs = []
-        for spec in self._base_specs:
-            if spec.name not in {
-                "kubernetes",
-                "prometheus-workload",
-                "loki-kernel-oom",
-                "hubble",
-            }:
-                specs.append(spec)
-                continue
-            rooted_scope = ResourceScope(
-                namespace=scope.namespace,
-                resource_names=scope.resource_names,
-                resource_name_prefixes=tuple(
-                    f"{name}-" for name in scope.resource_names
-                ),
-                related_resource_kinds=("ConfigMap",)
-                if spec.name == "kubernetes"
-                else (),
-                max_items=scope.max_items,
-            )
-            specs.append(replace(spec, request_scope=rooted_scope))
+        specs = list(self._rooted_specs(scope))
         if profile is not None:
             specs.append(
                 CollectorSpec(
@@ -384,6 +381,74 @@ class ProfileAwareIncidentCollectionService:
         )
         return service.collect_claimed_incident(
             incident_id,
+            scope=scope,
+            observed_at=observed_at,
+        )
+
+    def _rooted_specs(self, scope: ResourceScope) -> tuple[CollectorSpec, ...]:
+        specs = []
+        for spec in self._base_specs:
+            if spec.name not in {
+                "kubernetes",
+                "prometheus-workload",
+                "loki-kernel-oom",
+                "hubble",
+            }:
+                specs.append(replace(spec, request_scope=scope))
+                continue
+            rooted_scope = ResourceScope(
+                namespace=scope.namespace,
+                resource_names=scope.resource_names,
+                resource_name_prefixes=tuple(
+                    f"{name}-" for name in scope.resource_names
+                ),
+                related_resource_kinds=(
+                    ("ConfigMap",) if spec.name == "kubernetes" else ()
+                ),
+                max_items=scope.max_items,
+            )
+            specs.append(replace(spec, request_scope=rooted_scope))
+        return tuple(specs)
+
+    def collect_localization_candidates(
+        self,
+        request: EntityResolutionRequest,
+        *,
+        profile_id: str,
+        service_names: tuple[str, ...],
+        max_items: int,
+        observed_at: datetime,
+    ) -> CollectionRun:
+        incident = self._repository.get(request.incident_id)
+        profile = _selected_krca_profile(incident, self._krca_config)
+        if (
+            incident["status"] != "LOCALIZING"
+            or profile is None
+            or profile.profile_id != profile_id
+            or request.service_name != incident["source_entity"]["name"]
+            or request.namespace != self._krca_config.namespace
+            or request.cluster_id != self._krca_config.cluster_id
+            or not 1 <= len(service_names) <= MAX_ADDITIONAL_SERVICES
+            or len(set(service_names)) != len(service_names)
+            or request.service_name in service_names
+            or not set(service_names) <= set(profile.resource_names)
+        ):
+            raise ValueError(
+                "downstream collection is outside the resolved KRCA profile"
+            )
+        scope = ResourceScope(
+            namespace=request.namespace,
+            resource_names=service_names,
+            max_items=max_items,
+        )
+        specs = tuple(
+            spec
+            for spec in self._rooted_specs(scope)
+            if spec.name in LOCALIZATION_COLLECTORS
+        )
+        return CollectorOrchestrator(specs).collect(
+            incident_id=request.incident_id,
+            window=request.window,
             scope=scope,
             observed_at=observed_at,
         )
@@ -691,7 +756,7 @@ class IncidentWorker:
             krca_run = None
             if profile is not None:
                 assert self._krca_localization is not None
-                krca_run = self._krca_localization.localize(
+                plan = self._krca_localization.plan(
                     resolution_request,
                     profile_id=profile.profile_id,
                     alerting_api=profile.alerting_api,
@@ -700,10 +765,13 @@ class IncidentWorker:
                         for edge in profile.dependencies
                     },
                     evidence=self._incidents.list_evidence(claim.incident_id),
-                    frozen_at=frozen_at,
                     max_entities=self._config.localization_max_entities,
                     max_depth=self._config.localization_max_depth,
                 )
+                self._collect_krca_candidates(claim, plan, profile)
+                # Query cutoff precedes collection; Context freeze follows its
+                # durable Evidence and completeness checkpoint.
+                krca_run = self._krca_localization.freeze(plan, frozen_at=self._clock())
                 localization = krca_run.localization
                 resolution = (
                     krca_run.source_resolution
@@ -798,6 +866,56 @@ class IncidentWorker:
                 "error_code": error_code,
                 "reaped": reaped,
             }
+
+    def _collect_krca_candidates(
+        self,
+        claim: Any,
+        plan: KRCAGuidedLocalizationPlan,
+        profile: KRCARuntimeProfile,
+    ) -> None:
+        if not plan.additional_services:
+            return
+        assert self._localization_work is not None
+        selection = {
+            "profile_id": profile.profile_id,
+            "cluster_id": plan.request.cluster_id,
+            "namespace": plan.request.namespace,
+            "services": list(plan.additional_services),
+            "feature_evidence_ids": sorted(
+                (
+                    *plan.feature_run.consumed_evidence_ids,
+                    *plan.feature_run.unavailable_feature_evidence_ids,
+                )
+            ),
+        }
+        checkpoint = self._incidents.get_localization_collection(claim.incident_id)
+        if checkpoint is not None:
+            if checkpoint["selection"] != selection:
+                raise ValueError("downstream collection checkpoint selection changed")
+        else:
+            run = self._collection.collect_localization_candidates(
+                plan.request,
+                profile_id=profile.profile_id,
+                service_names=plan.additional_services,
+                max_items=self._config.max_evidence_items,
+                observed_at=self._clock(),
+            )
+            self._localization_work.store_collection(
+                claim,
+                selection=selection,
+                window=plan.request.window,
+                collector_statuses=run.collector_statuses,
+                evidence_items=run.evidence,
+                now=self._clock(),
+            )
+        now = self._clock()
+        if now >= claim.lease_expires_at:
+            raise ValueError("localization work lease expired before Context freeze")
+        self._localization_work.renew(
+            claim,
+            now=now,
+            lease_duration=timedelta(seconds=self._config.lease_seconds),
+        )
 
 
 def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:

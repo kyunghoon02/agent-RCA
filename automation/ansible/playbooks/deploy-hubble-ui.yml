@@ -1,0 +1,153 @@
+---
+- name: Add private Hubble UI without changing the existing dataplane
+  hosts: fault_target
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/chaos-eval.yml
+  tasks:
+    - name: Require an explicit fault-target UI opt-in
+      ansible.builtin.assert:
+        that:
+          - hubble_ui_enabled | bool
+          - cluster_name == 'agent-rca-chaos-eval'
+
+    - name: Check the existing ServiceMonitor CRD for shared values rendering
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        get customresourcedefinition servicemonitors.monitoring.coreos.com
+      register: prometheus_service_monitor_crd
+      changed_when: false
+
+    - name: Read the existing Cilium release before the UI-only update
+      ansible.builtin.command: >-
+        helm --kubeconfig /etc/kubernetes/admin.conf get manifest cilium
+        --namespace kube-system
+      register: hubble_ui_release_before
+      changed_when: false
+      no_log: true
+
+    - name: Read the current UI values without displaying credentials
+      ansible.builtin.command: >-
+        helm --kubeconfig /etc/kubernetes/admin.conf get values cilium
+        --namespace kube-system --output json
+      register: hubble_ui_values_before
+      changed_when: false
+      no_log: true
+
+    - name: Select only UI values from the shared Cilium template
+      ansible.builtin.set_fact:
+        hubble_ui_overlay: >-
+          {{ {'hubble': {'ui': (lookup('ansible.builtin.template', playbook_dir + '/../roles/cilium/templates/cilium-values.yaml.j2') | from_yaml).hubble.ui}} }}
+      no_log: true
+
+    - name: Render the UI-only Helm override
+      ansible.builtin.copy:
+        content: "{{ hubble_ui_overlay | to_nice_yaml }}"
+        dest: /etc/kubernetes/hubble-ui-values.yaml
+        owner: root
+        group: root
+        mode: "0600"
+      register: hubble_ui_values
+
+    - name: Preview the pinned Helm update against the live API
+      ansible.builtin.command: >-
+        helm --kubeconfig /etc/kubernetes/admin.conf upgrade cilium {{ cilium_chart_ref }}
+        --version {{ cilium_chart_version }} --namespace kube-system --reuse-values
+        --values /etc/kubernetes/hubble-ui-values.yaml --dry-run=server --output json
+      register: hubble_ui_preview
+      changed_when: false
+      no_log: true
+
+    - name: Extract existing non-UI workload and dataplane configuration
+      ansible.builtin.set_fact:
+        hubble_ui_protected_before: >-
+          {{ (hubble_ui_release_before.stdout | from_yaml_all | select('mapping')
+              | selectattr('kind', 'in', ['DaemonSet', 'Deployment', 'ConfigMap'])
+              | rejectattr('metadata.name', 'in', ['hubble-ui', 'hubble-ui-nginx']) | list) }}
+        hubble_ui_protected_after: >-
+          {{ ((hubble_ui_preview.stdout | from_json).manifest | from_yaml_all | select('mapping')
+              | selectattr('kind', 'in', ['DaemonSet', 'Deployment', 'ConfigMap'])
+              | rejectattr('metadata.name', 'in', ['hubble-ui', 'hubble-ui-nginx']) | list) }}
+      no_log: true
+
+    - name: Refuse UI deployment if Cilium or Relay configuration would change
+      ansible.builtin.assert:
+        that:
+          - hubble_ui_protected_before | length > 0
+          - hubble_ui_protected_before == hubble_ui_protected_after
+        fail_msg: The UI-only Helm update would change existing dataplane resources.
+      no_log: true
+
+    - name: Apply the private ingress boundary before enabling Hubble UI
+      ansible.builtin.include_tasks: ../roles/cilium/tasks/hubble-ui-access.yml
+
+    - name: Apply the pinned UI-only Helm override
+      ansible.builtin.command: >-
+        helm --kubeconfig /etc/kubernetes/admin.conf upgrade cilium {{ cilium_chart_ref }}
+        --version {{ cilium_chart_version }} --namespace kube-system --reuse-values
+        --values /etc/kubernetes/hubble-ui-values.yaml
+        --atomic --wait --timeout {{ cluster_wait_timeout }}
+      when: >-
+        hubble_ui_values.changed
+        or not ((hubble_ui_values_before.stdout | from_json).hubble.ui.enabled | default(false))
+      changed_when: true
+
+    - name: Reconcile the shared values file for subsequent bootstrap runs
+      ansible.builtin.template:
+        src: ../roles/cilium/templates/cilium-values.yaml.j2
+        dest: /etc/kubernetes/cilium-values.yaml
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Wait for the private Hubble UI Deployment
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf --namespace kube-system
+        rollout status deployment/hubble-ui --timeout={{ cluster_wait_timeout }}
+      changed_when: false
+
+    - name: Read Hubble UI Service exposure
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf --namespace kube-system
+        get service hubble-ui --output json
+      register: hubble_ui_service
+      changed_when: false
+
+    - name: Require ClusterIP without external addresses or node ports
+      ansible.builtin.assert:
+        that:
+          - (hubble_ui_service.stdout | from_json).spec.type == 'ClusterIP'
+          - ((hubble_ui_service.stdout | from_json).spec.externalIPs | default([])) | length == 0
+          - (hubble_ui_service.stdout | from_json).spec.ports | selectattr('nodePort', 'defined') | list | length == 0
+
+    - name: Verify Cilium and Relay remain healthy
+      ansible.builtin.command: >-
+        cilium status --kubeconfig /etc/kubernetes/admin.conf
+        --wait --wait-duration {{ cluster_wait_timeout }}
+      changed_when: false
+
+    - name: Verify Hubble UI cannot read Secrets or mutate Pods
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf auth can-i
+        {{ item }} --namespace online-boutique
+        --as=system:serviceaccount:kube-system:hubble-ui
+      loop:
+        - get secrets
+        - patch pods
+      register: hubble_ui_denied_access
+      changed_when: false
+      failed_when: hubble_ui_denied_access.stdout | trim != 'no'
+
+    - name: Read kube-system Ingress resources
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf --namespace kube-system
+        get ingress --output json
+      register: hubble_ui_ingresses
+      changed_when: false
+
+    - name: Require the reference system namespace to have no Ingress
+      ansible.builtin.assert:
+        that:
+          - (hubble_ui_ingresses.stdout | from_json)['items'] | length == 0

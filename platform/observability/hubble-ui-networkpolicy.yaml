@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hubble-ui-private-ingress
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: agent-rca
+spec:
+  podSelector:
+    matchLabels:
+      k8s-app: hubble-ui
+  policyTypes:
+    - Ingress
+  # No ingress rules: deny Pod ingress. Omit the API-pruned empty array.

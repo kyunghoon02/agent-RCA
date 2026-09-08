@@ -1,0 +1,33 @@
+---
+- name: Require the existing private Grafana
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    get service monitoring-grafana --namespace {{ observability_namespace }}
+    --output jsonpath={.spec.type}
+  register: network_dashboard_grafana_service
+  changed_when: false
+  failed_when: network_dashboard_grafana_service.stdout != 'ClusterIP'
+
+- name: Provision the Cilium and Hubble dashboard through the Grafana sidecar
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --filename=-
+    stdin: >-
+      {{ {
+        'apiVersion': 'v1',
+        'kind': 'ConfigMap',
+        'metadata': {
+          'name': 'agent-rca-cilium-hubble-dashboard',
+          'namespace': observability_namespace,
+          'labels': {'grafana_dashboard': '1', 'app.kubernetes.io/part-of': 'agent-rca'}
+        },
+        'data': {
+          'cilium-hubble.json': lookup('ansible.builtin.file', playbook_dir + '/../../../platform/observability/dashboards/cilium-hubble.json')
+        }
+      } | to_json }}
+  register: network_dashboard_apply
+  changed_when: "'unchanged' not in network_dashboard_apply.stdout"
