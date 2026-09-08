@@ -208,17 +208,12 @@ series before applying a policy. The collection retained its compatibility
 warning and partial quality; no LLM diagnosis was requested.
 
 A second run at **2026-09-08 03:48:12–03:48:52 UTC** verified that baseline gate
-live and supplied the [root README's Hubble fault-detail screenshot](../../README.md#network-fault-evidence-hubble-ui).
+live.
 Three baseline requests returned HTTP 200 in 45–54 ms; all three fault probes
 timed out in 5,029–5,033 ms while `/_healthz` still returned HTTP 200. After
 policy removal, three product requests returned HTTP 200 in 42–44 ms.
 The bounded stored sample contained **205 flows and 18 `POLICY_DENY` observations**;
 these are flow observations, not a count of failed application requests.
-The screenshot selects the actual 03:48:30.509Z policy-denied egress flow within
-this fault and collection window. Presentation cleanup and the final capture
-occurred after recovery: retained UI drops do not imply an ongoing fault.
-Private identifier/label fields are hidden and table width is adjusted; service
-names, timestamps, verdicts and drop reasons are unchanged.
 
 The run and a separate read-only follow-up both passed: policy/lock absent,
 unchanged Pod identities/restarts and Deployment specs, matching Neo4j facts,
@@ -228,13 +223,24 @@ remained visible. The evaluation alert was resolved, the verification Incident
 remained `ANALYZING`, and the Agent run count was zero. This is not a network
 root-cause accuracy result and does not change the existing fault matrices.
 
-The root README also includes a separate namespace-wide overview captured at
-05:05 UTC, after three ordinary page reads at 05:02 UTC (home, product and cart;
-all HTTP 200, no order or fault creation). It shows the actual observed service
-and telemetry connections. Blue A/B outlines are explanatory annotations for
-the earlier drill's endpoints, not native Hubble verdicts. This later topology
-view must not be presented as a fault-time snapshot or proof of full business
-transaction coverage.
+The [root README's combined full-map capture](../../README.md#network-fault-evidence-hubble-ui)
+comes from a third run at **2026-09-08 05:25:32–05:26:14 UTC**. The three baseline
+requests returned HTTP 200 in 40–44 ms, the fault probes timed out in
+5,025–5,034 ms, and three recovery requests returned HTTP 200 in 39–47 ms.
+`/_healthz` remained HTTP 200. The stored sample contained **210 flows and
+18 `POLICY_DENY` observations**; the same graph/Context/tool checks and a
+separate cleanup/immutability follow-up passed with zero Agent runs.
+
+Selecting the actual **05:25:50.893Z** policy-denied Flow in the unfiltered
+namespace map displays Hubble's native red dashed marker at destination port
+3550 alongside Flow Details. The marker's color, dash pattern and width are
+unchanged; explanatory callouts merely point to it. Private identifier fields
+are hidden, the flow table is omitted and the map/detail panel layout is fitted
+for readability. No service, connection, timestamp or verdict is fabricated.
+The final capture is after recovery and the map contains session-accumulated
+observations: it is not an atomic fault-time topology snapshot, the stored
+Frozen Context, or proof that a fault remains active. Both this run and earlier
+verification records remain independent of the frozen accuracy matrices.
 
 ### Grafana and telemetry
 

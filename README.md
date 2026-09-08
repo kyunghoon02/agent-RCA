@@ -62,49 +62,40 @@ root cause를 만들지 않고 `ABSTAIN`한다. 화면의 6개 누락 조건은 
 
 ### Network Fault Evidence: Hubble UI
 
-#### 1. 전체 통신 지도에서 조사 대상 찾기
+#### 1. 전체 서비스 지도에서 실제 정책 차단 확인하기
 
-![Hubble namespace service map with the investigated frontend and productcatalogservice endpoints annotated](assets/hubble-service-map-overview.png)
+![Hubble full service map showing the native red dashed drop marker at productcatalogservice port 3550 and Policy denied Flow Details](assets/hubble-policy-denied-full-map.png)
 
-Pod 필터를 해제한 namespace 관측 지도에서 여러 애플리케이션, Redis, OTel Collector와
-관측 시스템의 연결을 함께 확인한다. **A는 `frontend`, B는 `productcatalogservice`**로,
-아래 정책 차단 실험에서 조사한 경로의 양 끝이다. 파란 테두리는 README 설명용 표시이며
-Hubble의 장애 판정이 아니다. API 호출과 telemetry 전송이 함께 보이므로 모든 선을
-애플리케이션 간 API 의존성으로 해석하지 않는다.
+**오른쪽 `productcatalogservice`의 `3550/TCP` 앞 빨간 점선**이 Hubble 자체의 drop 표시다.
+같은 화면의 `Flow Details`에서 **05:25:50.893Z · dropped · Policy denied · egress**를
+대조한다. 설명용 `Native drop marker ↓` 표시는 위치만 안내하며, 빨간 선의 색·점선·굵기는
+임의로 바꾸지 않았다. Pod·verdict 필터를 적용하지 않아 다른 서비스, Redis와 telemetry
+연결도 함께 보인다. 모든 선을 애플리케이션 간 API 의존성으로 해석하지 않는다.
 
-이 전체 지도는 **복구 후 05:02 UTC에 홈페이지·상품·장바구니를 각각 한 번 정상 조회한
-뒤 05:05 UTC에 캡처**했다. 세 조회는 HTTP 200이었으며 새 장애나 주문을 생성하지 않았다.
-아래 장애 시간창의 화면과는 관측 시점이 다르다.
+위 OOM 사례와 별도로, 2026-09-08 **05:25:32–05:26:14 UTC**에 `CiliumNetworkPolicy`로
+`frontend → productcatalogservice:3550/TCP` 한 경로만 차단했다. 위 화면은 그 시간창의
+실제 drop Flow를 선택한 것으로 **캡처는 복구 후** 진행했다. 전체 지도는 UI 세션의 누적
+관측이며, 그 시각의 Frozen Context 자체나 현재 장애가 지속된다는 증거는 아니다.
 
-#### 2. 해당 경로의 장애 시간창에서 근거 확인하기
-
-위 OOM 사례와 별도로, 2026-09-08 **03:48:12–03:48:52 UTC**에
-`CiliumNetworkPolicy`로 `frontend → productcatalogservice:3550/TCP` 한 경로만 차단했다.
-
-![Hubble UI showing frontend to productcatalogservice egress drops with Policy denied details](assets/hubble-network-observability.png)
-
-빨간 연결선과 `dropped` 목록에서 차단된 경로를 확인하고, 오른쪽 `Flow Details`에서
-**03:48:30.509Z · egress · Policy denied · 3550/TCP**를 대조한다. 이는 장애 시간창에
-실제로 수신한 Flow를 선택한 화면이며, 화면 정리와 최종 캡처는 복구 후 진행했다.
-남아 있는 drop 목록을 현재 장애가 지속된다는 의미로 해석하지 않는다.
+#### 2. 같은 재현의 요청 실패와 복구 대조하기
 
 | 단계 | 상품 조회 `/product/0PUK6V6EV0` 실측 | 함께 확인한 상태 |
 |---|---|---|
-| 차단 전 | 3/3 HTTP 200, 45–54 ms | 정상 baseline과 metric 수신 확인 |
+| 차단 전 | 3/3 HTTP 200, 40–44 ms | 정상 baseline과 metric 수신 확인 |
 | 차단 중 | 3/3 client timeout, 약 5.03초 | 같은 시간창에 정책 차단 관측 18건, `/_healthz`는 HTTP 200 |
-| 정책 제거 후 | 3/3 HTTP 200, 42–44 ms | 정책·lock 제거, Pod 재시작·Deployment 변경 없음 |
+| 정책 제거 후 | 3/3 HTTP 200, 39–47 ms | 정책·lock 제거, Pod 재시작·Deployment 변경 없음 |
 
 즉, **프로세스 health check는 통과해도 특정 의존 서비스로 가는 통신이 차단되어 상품
 요청은 실패할 수 있다.** timeout은 클라이언트에서 측정한 결과이며 HTTP 5xx가 아니다.
-18건은 수집된 205개 Flow 중 정책 차단 관측 수이지, 실패 요청 수가 아니다.
+18건은 수집된 210개 Flow 중 정책 차단 관측 수이지, 실패 요청 수가 아니다.
 
 #### 3. 관측을 RCA가 사용할 Evidence로 연결하기
 
-03:48 UTC 재현에서는 화면 확인에 그치지 않고, 같은 근거가 저장·고정·조회되는지 검증했다.
+05:25 UTC 재현에서는 화면 확인에 그치지 않고, 같은 근거가 저장·고정·조회되는지 검증했다.
 
 | 경계 | 확인한 결과 |
 |---|---|
-| Hubble Provider → Evidence | 205개 Flow 중 정책 차단 관측 18건을 `POLICY_DENIAL_OBSERVED`로 정규화 |
+| Hubble Provider → Evidence | 210개 Flow 중 정책 차단 관측 18건을 `POLICY_DENIAL_OBSERVED`로 정규화 |
 | Evidence → Neo4j StateGraph | 해당 Service의 Event에 같은 `evidence_id`와 facts가 투영됨 |
 | StateGraph → Frozen Context | 해당 Evidence가 포함되고 복구 후 재검사에도 Context hash가 동일함 |
 | Frozen Context → Agent 조회 도구 | 조사 후보에 포함되고 실제 `inspect_candidate` 호출이 `SUCCEEDED`, facts 일치 |
@@ -114,8 +105,8 @@ Agent가 참조하는 것은 이 이미지가 아니라 수집·정규화된 Evi
 수집 품질의 `PARTIAL`과 retention `UNKNOWN`도 그대로 유지했다.
 [검증 범위와 안전장치](platform/observability/README.md#controlled-network-evidence-verification)를 참고한다.
 
-공개 캡처는 내부 IP·Pod·Cilium 식별자와 세부 라벨 필드를 숨기고 확대 배율·표 배치를
-조정했다. 전체 지도에는 A/B 설명 표시만 추가했으며, 관측된 서비스·연결, Flow 시각,
+공개 캡처는 내부 IP·Pod·Cilium 식별자와 세부 라벨 필드를 숨기고 확대 배율·상세 패널
+배치를 조정했다. 설명 배너와 위치 안내만 추가했으며, 관측된 서비스·연결, Flow 시각,
 verdict와 drop reason은 변경하지 않았다.
 
 ### Five-minute Demo
