@@ -18,6 +18,7 @@ from incident_platform.collectors import (
     CollectorSpec,
     IncidentCollectionService,
 )
+from incident_platform.incident_work import InMemoryIncidentWorkRepository
 from incident_platform.contracts import validate_contract
 from incident_platform.errors import (
     ContractViolation,
@@ -386,10 +387,9 @@ class IncidentCollectionServiceTests(unittest.TestCase):
                                 occurred_at=cutoff,
                             )
                         if claimed:
-                            repository.transition(
-                                incident_id, expected_status="RECEIVED",
-                                next_status="COLLECTING", occurred_at=cutoff,
-                            )
+                            work = InMemoryIncidentWorkRepository(repository)
+                            work.enqueue(incident_id, available_at=cutoff)
+                            claim = work.claim_next(worker_id="clock-test", now=cutoff, lease_duration=timedelta(seconds=30), max_attempts=3)
                         query_end = "2026-08-12T01:05:00Z" if closed_window else "2026-08-12T01:05:10Z"
                         request = replace(
                             contract_request(incident_id, "checkoutservice"),
@@ -408,8 +408,8 @@ class IncidentCollectionServiceTests(unittest.TestCase):
                         ),))
                         orchestrator = Mock(spec=CollectorOrchestrator)
                         orchestrator.collect.return_value = run
-                        # Completion is read after collection; the second clock
-                        # read must occur only after Evidence persistence.
+                        # Claimed collection timestamps one atomic commit after
+                        # provider I/O; unqueued collection retains its two writes.
                         persisted = False
                         def clock():
                             return persistence_end if persisted else collection_end
@@ -422,7 +422,9 @@ class IncidentCollectionServiceTests(unittest.TestCase):
                         collect = service.collect_claimed_incident if claimed else service.collect_incident
                         with patch.object(repository, "store_evidence", side_effect=store):
                             self.assertEqual(collect(
-                                incident_id, scope=collection_scope(), observed_at=cutoff,
+                                claim if claimed else incident_id,
+                                **({"work_repository": work} if claimed else {}),
+                                scope=collection_scope(), observed_at=cutoff,
                             ), run)
                         request_args = orchestrator.collect.call_args.kwargs
                         self.assertEqual(request_args["observed_at"], cutoff)
@@ -431,9 +433,10 @@ class IncidentCollectionServiceTests(unittest.TestCase):
                         completed = next(item for item in audits if item.event_type == "COLLECTION_COMPLETED")
                         self.assertEqual(completed.occurred_at, "2026-08-12T01:05:14Z")
                         self.assertEqual(audits[-1].event_type, "STATUS_TRANSITIONED")
-                        self.assertEqual(audits[-1].occurred_at, "2026-08-12T01:05:15Z")
+                        expected_commit = "2026-08-12T01:05:14Z" if claimed else "2026-08-12T01:05:15Z"
+                        self.assertEqual(audits[-1].occurred_at, expected_commit)
                         stored = repository.get(incident_id)
-                        self.assertEqual(stored["updated_at"], "2026-08-12T01:05:15Z")
+                        self.assertEqual(stored["updated_at"], expected_commit)
                         self.assertEqual(stored["status"], "FAILED" if status == "FAILED" else "LOCALIZING")
                         self.assertEqual(stored["collector_statuses"][0]["ended_at"], "2026-08-12T01:05:13Z")
                         self.assertEqual(repository.list_evidence(incident_id), list(run.evidence))

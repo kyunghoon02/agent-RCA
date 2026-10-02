@@ -36,11 +36,14 @@ from incident_platform.knowledge import (
     ReferenceDocument,
 )
 from incident_platform.repository import InMemoryIncidentRepository
+from incident_platform.stategraph import EntityIdentity
 
 
 UTC = timezone.utc
 NOW = datetime(2026, 8, 22, 2, 0, tzinfo=UTC)
-ENTITY_ID = "ent-checkoutservice-pod-0001"
+ENTITY_ID = EntityIdentity.kubernetes_resource(
+    cluster_id="gcp-dev-01", uid="pod-checkoutservice-0001"
+).entity_id
 
 
 class StaticKnowledgeRepository:
@@ -142,6 +145,48 @@ class SuccessfulFakeRunner:
             "read_only": True,
         }
         return AgentModelRun(draft, 3, 900, 240, 1140)
+
+
+class MisattributedFakeRunner(SuccessfulFakeRunner):
+    def __init__(self, *, decision="CONCLUSIVE", leading_only=False):
+        super().__init__()
+        self.decision = decision
+        self.leading_only = leading_only
+
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        unrelated = next(
+            item for item in invocation.investigation_view.package["entity_catalog"]
+            if item["name"] == "unrelated"
+        )
+        draft["decision"] = self.decision
+        if not self.leading_only:
+            draft["root_cause"]["entity_id"] = unrelated["entity_id"]
+        draft["hypotheses"][0]["entity_id"] = unrelated["entity_id"]
+        draft["root_cause"]["summary"] = "untrusted-draft-marker"
+        draft["hypotheses"][0]["summary"] = "untrusted-draft-marker"
+        return AgentModelRun(
+            draft, model_run.llm_calls, model_run.input_tokens,
+            model_run.output_tokens, model_run.total_tokens,
+        )
+
+
+class AbstainingFakeRunner(SuccessfulFakeRunner):
+    def run(self, invocation: AgentInvocation) -> AgentModelRun:
+        model_run = super().run(invocation)
+        draft = copy.deepcopy(dict(model_run.draft))
+        draft["decision"] = "INCONCLUSIVE"
+        draft["root_cause"] = None
+        draft["hypotheses"][0].update(
+            cause_id=None, status="unresolved", supporting_evidence_ids=[],
+            missing_evidence=["No accepted entity-bound root cause."],
+        )
+        draft["remediation"]["suggestions"] = []
+        return AgentModelRun(
+            draft, model_run.llm_calls, model_run.input_tokens,
+            model_run.output_tokens, model_run.total_tokens,
+        )
 
 
 class FailingFakeRunner:
@@ -290,6 +335,7 @@ def prepared_repository(
     agent_enabled: bool = False,
     evidence_profile: str = "oom",
     collector_failures=(),
+    second_pod: bool = False,
 ) -> tuple[InMemoryIncidentRepository, str, str]:
     labels = {
         "alertname": "AgentRCAFixture",
@@ -442,7 +488,7 @@ def prepared_repository(
         "domain": "kubernetes",
         "name": "checkoutservice",
         "scope": {"cluster_id": "gcp-dev-01", "namespace": "online-boutique"},
-        "external_ref": "k8s://online-boutique/Pod/checkoutservice",
+        "external_ref": "pod-checkoutservice-0001",
         "exists": True,
     }
     context = {
@@ -483,6 +529,24 @@ def prepared_repository(
             "context_completeness": 1.0,
         },
     }
+    if second_pod:
+        unrelated = {
+            **entity,
+            "entity_id": EntityIdentity.kubernetes_resource(
+                cluster_id="gcp-dev-01", uid="pod-unrelated-0001"
+            ).entity_id,
+            "name": "unrelated",
+            "external_ref": "pod-unrelated-0001",
+        }
+        context["scope"]["max_entities"] = 2
+        context["localization"]["candidate_entities_before"] = 2
+        context["localization"]["candidate_entities_after"] = 2
+        context["state_paths"].append({
+            "path_id": "path-agent-unrelated-0001",
+            "entities": [unrelated],
+            "relations": [],
+            "evidence_ids": list(context["evidence_ids"]),
+        })
     repository.store_context(context)
     repository.transition(
         incident_id,
@@ -638,6 +702,55 @@ class AgentRCAServiceTests(unittest.TestCase):
         self.assertEqual(
             repository.get_agent_run(run.audit["agent_run_id"]), run.audit
         )
+
+    def test_root_cause_rejects_evidence_for_another_entity(self) -> None:
+        repository, incident_id, context_id = prepared_repository(second_pod=True)
+        with self.assertRaisesRegex(ContractViolation, "claimed Entity"):
+            service(repository, MisattributedFakeRunner()).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(audit["status"], "GATE_REJECTED")
+        self.assertEqual(audit["reason_code"], "GATE_PROOF_INSUFFICIENT")
+        self.assertEqual(repository.query_reports(incident_id=incident_id, limit=10), [])
+        self.assertEqual(repository.get(incident_id)["status"], "FAILED")
+        self.assertNotIn("untrusted-draft-marker", json.dumps(audit))
+
+    def test_partial_root_rejects_evidence_for_another_entity(self) -> None:
+        repository, incident_id, context_id = prepared_repository(second_pod=True)
+        with self.assertRaisesRegex(ContractViolation, "claimed Entity") as raised:
+            service(repository, MisattributedFakeRunner(decision="PARTIAL")).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(audit["status"], "GATE_REJECTED")
+        self.assertEqual(audit["reason_code"], "GATE_PROOF_INSUFFICIENT")
+        self.assertEqual(repository.query_reports(incident_id, limit=10), [])
+        self.assertNotIn("untrusted-draft-marker", json.dumps(audit))
+        self.assertNotIn("untrusted-draft-marker", str(raised.exception))
+
+    def test_root_and_leading_entity_must_align_with_safe_failure_audit(self) -> None:
+        repository, incident_id, context_id = prepared_repository(second_pod=True)
+        with self.assertRaisesRegex(ContractViolation, "Entity must match") as raised:
+            service(repository, MisattributedFakeRunner(leading_only=True)).run(
+                incident_id, context_id=context_id, generated_at=NOW
+            )
+        audit = repository.query_agent_runs(incident_id, limit=1)[0]
+        self.assertEqual(audit["status"], "GATE_REJECTED")
+        self.assertEqual(audit["reason_code"], "GATE_ROOT_LEADING_MISMATCH")
+        self.assertEqual(repository.query_reports(incident_id, limit=10), [])
+        self.assertNotIn("untrusted-draft-marker", json.dumps(audit))
+        self.assertNotIn("untrusted-draft-marker", str(raised.exception))
+
+    def test_rootless_abstention_remains_valid(self) -> None:
+        repository, incident_id, context_id = prepared_repository()
+        run = service(repository, AbstainingFakeRunner()).run(
+            incident_id, context_id=context_id, generated_at=NOW
+        )
+        self.assertEqual(run.audit["status"], "SUCCEEDED")
+        self.assertEqual(run.report["status"], "inconclusive")
+        self.assertIsNone(run.report["root_cause"])
+        self.assertEqual(run.report["remediation"]["suggestions"], [])
 
     def test_invalid_draft_audit_records_only_safe_contract_coordinates(
         self,

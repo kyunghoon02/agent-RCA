@@ -12,7 +12,7 @@ from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 
 from .errors import InvalidTransition
 from .evidence import EvidenceWindow
-from .repository import IncidentRepository
+from .repository import IncidentRepository, InMemoryIncidentRepository
 
 
 _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -221,6 +221,21 @@ class IncidentWorkRepository(Protocol):
         ...
 
 
+class IncidentCollectionWorkRepository(IncidentWorkRepository, Protocol):
+    """Initial collection result persistence fenced by the current lease."""
+
+    def commit_collection(
+        self,
+        claim: IncidentWorkClaim,
+        *,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        outcome: str,
+        now: datetime,
+    ) -> None:
+        ...
+
+
 class IncidentLocalizationWorkRepository(IncidentWorkRepository, Protocol):
     """Durable LOCALIZING work boundary using the shared fenced claim contract."""
 
@@ -323,10 +338,30 @@ class IncidentAnalysisWorkRepository(Protocol):
 class InMemoryIncidentWorkRepository:
     """Thread-safe claim adapter used by deterministic worker contract tests."""
 
-    def __init__(self, incident_repository: IncidentRepository) -> None:
+    def __init__(self, incident_repository: InMemoryIncidentRepository) -> None:
         self._incidents = incident_repository
         self._items: Dict[str, Dict[str, Any]] = {}
         self._lock = RLock()
+
+    def commit_collection(
+        self,
+        claim: IncidentWorkClaim,
+        *,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        outcome: str,
+        now: datetime,
+    ) -> None:
+        if now.tzinfo is None:
+            raise ValueError("collection completion time must be timezone-aware")
+        with self._lock:
+            item = self._current_item(claim)
+            if item["lease_expires_at"] <= now:
+                raise InvalidTransition("Incident collection work lease expired")
+            self._incidents._commit_collection(
+                claim.incident_id, collector_statuses=collector_statuses,
+                evidence_items=evidence_items, outcome=outcome, now=now,
+            )
 
     def enqueue(self, incident_id: str, *, available_at: datetime) -> None:
         if available_at.tzinfo is None:
@@ -650,7 +685,7 @@ class InMemoryIncidentLocalizationWorkRepository:
             raise ValueError("localization completion metadata is invalid")
         with self._lock:
             item = self._current_item(claim)
-            if self._incidents.get(claim.incident_id)["status"] != "ANALYZING":
+            if self._incidents.get(claim.incident_id)["status"] not in {"ANALYZING", "REPORTED"}:
                 raise InvalidTransition(
                     "localization work can complete only after Incident localization"
                 )
@@ -694,7 +729,7 @@ class InMemoryIncidentLocalizationWorkRepository:
                 ):
                     continue
                 incident = self._incidents.get(incident_id)
-                if incident["status"] == "ANALYZING":
+                if incident["status"] in {"ANALYZING", "REPORTED"}:
                     item["state"] = "SUCCEEDED"
                     item["error_code"] = None
                 elif incident["status"] == "FAILED":
