@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+from pathlib import Path
 import unittest
 
 from tools.run_evaluation_matrix import MatrixError
@@ -11,12 +13,14 @@ from tools.verify_structured_output_evaluation import (
 
 
 class StructuredOutputEvaluationTests(unittest.TestCase):
-    def test_current_boundary_matches_frozen_preregistration(self) -> None:
-        result = verify_current_boundary(_load_preregistration())
-
-        self.assertEqual(result["status"], "BOUNDARY_VERIFIED")
-        self.assertTrue(result["strict_json_schema"])
-        self.assertTrue(result["post_output_evidence_gate"])
+    def test_legacy_boundary_is_preserved_but_new_runtime_cannot_reuse_it(self) -> None:
+        registration = _load_preregistration()
+        boundary = registration["implementation_boundary"]
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(hashlib.sha256((root / boundary["frozen_draft_contract_path"]).read_bytes()).hexdigest(),
+                         boundary["frozen_draft_contract_sha256"])
+        with self.assertRaisesRegex(MatrixError, "boundary changed"):
+            verify_current_boundary(registration)
 
     def test_changed_runtime_digest_fails_closed(self) -> None:
         registration = copy.deepcopy(dict(_load_preregistration()))

@@ -1088,6 +1088,7 @@ class AgentRCAServiceTests(unittest.TestCase):
                 "kubernetes.container-oomkilled",
                 "kubernetes.image-pull-failure",
                 "kubernetes.missing-configmap",
+                "network.policy-denied-dependency",
             ],
         )
         self.assertEqual(

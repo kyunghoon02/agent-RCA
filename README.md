@@ -198,8 +198,9 @@ OOM root cause 확정은 여전히 수집된 Evidence와 Gate가 담당한다.
 
 Alert 이름을 원인에 대응시키는 분기는 없으며, 원본 Alert 이름은 현재 모델 입력에도 직접
 포함하지 않는다. Service·namespace와 선택적 `krca_profile` label은 수집·조사 범위를
-결정한다. 다만 확정 가능한 원인 ID는 등록된 세 종류로 제한되므로, 범용적인 미지의 원인
-발견 시스템은 아니다.
+결정한다. 과거 runtime 평가는 Kubernetes 원인 세 종류로 제한했다. 현재 코드는
+`network.policy-denied-dependency`를 추가했으며, 이 경로는 로컬 fixture 검증만 완료했다.
+미지의 원인을 자유롭게 확정하는 시스템은 아니다.
 
 ## Core Components
 
@@ -230,7 +231,7 @@ StateGraph record로 변환한다. Persistent graph는 JSON 파일이 아니라 
 | Loki/Alloy | 부분 연결 | Pod UID에 귀속된 kernel memcg OOM Evidence |
 | Deployment history | 연결됨 | retained ReplicaSet 기반 image/resource 변경과 변경 부재 |
 | Tempo | telemetry 검증 연결 | trace 저장과 service graph 생성, Incident trace Provider는 미연결 |
-| Cilium/Hubble | 정책 차단 Evidence 경로 검증, 원인 확정은 미구현 | bounded flow·정책 차단/drop 관측과 수집 품질 구분. 중앙 Grafana network dashboard 연결. 원본 flow, IP와 L7 payload는 저장하지 않음 |
+| Cilium/Hubble | 정책 차단 Evidence 경로 runtime 검증; 신규 dependency 진단은 로컬 검증 | 기존 서비스 집계와 별도로 opt-in path Provider가 caller/destination/등록 port/TCP를 대조하고 Prometheus CLIENT RPC error와 연결함. retention UNKNOWN으로 신규 Report는 PARTIAL만 허용 |
 | Application log | 계획 | 일반 application/container log Incident Provider는 미연결 |
 
 새 Provider도 동일한 `EvidenceDraft → EvidenceBuilder → EvidenceItem` 경계를 사용한다.
@@ -351,13 +352,35 @@ native 검증의 첫 OOM 실행에서는 기존 오류율 규칙의 `for: 2m`을
   구간의 mTLS는 아직 구성하지 않았다.
 - Prometheus alert rule은 있지만 실제 운영 notification channel은 아직 연결하지 않았다.
 - public Viewer ingress, session authentication과 role authorization이 없다.
-- 현재 root-cause taxonomy는 OOMKilled, image pull failure와 missing ConfigMap 세 종류만 등록돼 있다.
+- 현재 taxonomy는 Kubernetes 세 원인군과 `network.policy-denied-dependency`를 포함한다.
+  신규 네트워크 경로는 로컬 fixture로만 검증했고 runtime에서 활성화하지 않았다.
+  특정 정책 객체나 개별 HTTP 요청에 대한 인과관계는 입증하지 않는다.
 - 평가는 한 reference environment의 작은 표본이다. 알려지지 않은 장애, multi-factor 원인,
   다른 cluster topology와 production 정확도는 검증하지 않았다.
 - 과거 schema 위반 1건은 당시 validation 좌표가 없어 실패 field를 사후 구분할 수 없다.
   현재 새 실패는 원본 draft나 값을 저장하지 않고 JSON/schema Pointer와 keyword만 audit와
   Viewer에 남긴다. 후속 8회 통과도 장기 production reliability를 입증하지 않는다.
 - 자동 remediation은 의도적으로 지원하지 않는다.
+
+### Network dependency diagnosis extension
+
+신규 코드는 trusted dependency config의 `frontend → productcatalogservice:3550/TCP`
+경로에서 Hubble `DROPPED` + `POLICY_DENIED/POLICY_DENY` 관측과 동일 caller RPC의
+Prometheus CLIENT error increase를 대조한다. 같은 Incident·cluster·namespace·directed
+path·operation과 실제 denial 시각이 RPC의 2분 집계 구간 안에서 일치해야 한다.
+관련 Evidence는 StateGraph → Frozen Context → Agent inspection → Evidence Gate → Report로
+연결된다. aggregate 관측의 한계와 retention UNKNOWN 때문에 `PARTIAL`로만 보고한다.
+이 변경을 과거 20/20·12/12·11/12·8/8 또는 native OOM 결과에 합산하지 않는다.
+
+```bash
+make test-network-policy-rca
+```
+
+worker의 `INCIDENT_WORKER_NETWORK_PATHS_CONFIG`를 설정해야 신규 Provider가 활성화된다.
+기본값은 비활성이고, 새 image에는 `/app/config/network-dependency-paths.json`이 포함된다.
+실제 CLIENT span name·status label·수집 주기를 확인한 후 새 runtime을 검증해야 한다.
+기존 네트워크 Evidence harness는 계속 LLM을 호출하지 않으며 native 감지 성능도 포함하지 않는다.
+[설계와 runtime 검증 조건](contracts/network-policy-rca.md)을 참고한다.
 
 ## Quick Start
 

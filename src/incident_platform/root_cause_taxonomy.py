@@ -9,7 +9,8 @@ RootCauseId = Literal[
     "kubernetes.container-oomkilled",
     "kubernetes.image-pull-failure",
     "kubernetes.missing-configmap",
+    "network.policy-denied-dependency",
 ]
 
-ROOT_CAUSE_TAXONOMY_VERSION = "1.0.0"
+ROOT_CAUSE_TAXONOMY_VERSION = "1.1.0"
 ROOT_CAUSE_IDS: Tuple[str, ...] = get_args(RootCauseId)

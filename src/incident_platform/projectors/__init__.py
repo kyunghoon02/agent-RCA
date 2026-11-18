@@ -5,6 +5,7 @@ from .hubble import HubbleNetworkFlowEvidenceProjector
 from .kubernetes import KubernetesEvidenceProjector
 from .krca import KRCAPIEdgeEvidenceProjector
 from .loki import LokiKernelOOMEvidenceProjector
+from .network_policy import NetworkPolicyPathEvidenceProjector
 from .prometheus import (
     PrometheusMetricEvidenceProjector,
     PrometheusWorkloadMetricEvidenceProjector,
@@ -16,6 +17,7 @@ __all__ = [
     "KRCAPIEdgeEvidenceProjector",
     "KubernetesEvidenceProjector",
     "LokiKernelOOMEvidenceProjector",
+    "NetworkPolicyPathEvidenceProjector",
     "PrometheusMetricEvidenceProjector",
     "PrometheusWorkloadMetricEvidenceProjector",
 ]

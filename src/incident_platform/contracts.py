@@ -38,6 +38,10 @@ def _schema_assets() -> Tuple[Dict[str, Dict[str, Any]], Registry]:
 def validate_contract(schema_name: str, instance: Any) -> None:
     """Validate one value and raise a stable domain error on failure."""
 
+    if isinstance(instance, dict) and instance.get("schema_version") == "1.2.0" and schema_name in {
+        "agent-rca-draft.schema.json", "rca-report.schema.json"
+    }:
+        schema_name = schema_name.replace(".schema.json", "-v1.2.schema.json")
     schemas, registry = _schema_assets()
     try:
         schema = schemas[schema_name]

@@ -243,7 +243,8 @@ export type HypothesisStatus = "supported" | "competing" | "rejected" | "unresol
 export type RootCauseId =
   | "kubernetes.container-oomkilled"
   | "kubernetes.image-pull-failure"
-  | "kubernetes.missing-configmap";
+  | "kubernetes.missing-configmap"
+  | "network.policy-denied-dependency";
 
 export interface RcaHypothesis {
   rank: number;
@@ -261,7 +262,7 @@ export interface RcaHypothesis {
 
 /** contracts/schemas/rca-report.schema.json */
 export interface RcaReport {
-  schema_version: "1.0.0" | "1.1.0";
+  schema_version: "1.0.0" | "1.1.0" | "1.2.0";
   report_id: string;
   incident_id: string;
   context_id: string;

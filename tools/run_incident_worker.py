@@ -56,6 +56,7 @@ from incident_platform.projectors import (
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     LokiKernelOOMEvidenceProjector,
+    NetworkPolicyPathEvidenceProjector,
     PrometheusMetricEvidenceProjector,
     PrometheusWorkloadMetricEvidenceProjector,
 )
@@ -70,6 +71,9 @@ from incident_platform.providers.kubernetes import (
     KubernetesStateProvider,
 )
 from incident_platform.providers.loki import LokiHTTPAPI, LokiKernelOOMProvider
+from incident_platform.providers.network_policy import (
+    NetworkEvidenceCollector, NetworkPolicyPathProvider, load_network_paths,
+)
 from incident_platform.providers.prometheus import (
     PrometheusHTTPAPI,
     PrometheusMetricProvider,
@@ -130,6 +134,7 @@ class IncidentWorkerRuntimeConfig:
     postgres_database: str
     postgres_username: str
     postgres_password: str
+    network_paths_config_path: str = ""
 
     def __post_init__(self) -> None:
         validate_claim_request(
@@ -209,6 +214,7 @@ class IncidentWorkerRuntimeConfig:
             postgres_database=_required_environment("POSTGRES_DATABASE"),
             postgres_username=_required_environment("POSTGRES_USERNAME"),
             postgres_password=_required_secret_environment("POSTGRES_PASSWORD"),
+            network_paths_config_path=os.environ.get("INCIDENT_WORKER_NETWORK_PATHS_CONFIG", ""),
         )
 
 
@@ -538,6 +544,12 @@ def build_collection_service(
         max_scoped_resources=8,
         max_raw_flows=500,
     )
+    if config.network_paths_config_path:
+        hubble_provider = NetworkEvidenceCollector(
+            hubble_provider,
+            NetworkPolicyPathProvider(HubbleCLIClient(config.hubble_server), prometheus_client,
+                load_network_paths(config.network_paths_config_path), cluster_id=config.cluster_id),
+        )
     return ProfileAwareIncidentCollectionService(
         incident_repository,
         (
@@ -958,6 +970,7 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
             HubbleNetworkFlowEvidenceProjector(),
             KubernetesEvidenceProjector(),
             LokiKernelOOMEvidenceProjector(),
+            NetworkPolicyPathEvidenceProjector(),
             PrometheusMetricEvidenceProjector(),
             PrometheusWorkloadMetricEvidenceProjector(),
             KRCAPIEdgeEvidenceProjector(),
