@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -104,6 +105,15 @@ def payload(*, source_label: str = "service", krca_profile: str | None = None) -
             }
         ]
     }
+
+
+def claimed_collection_fixture():
+    incidents = InMemoryIncidentRepository()
+    incident = AlertmanagerIngestionService(incidents).ingest(payload(), received_at=NOW)[0].incident
+    work = InMemoryIncidentWorkRepository(incidents)
+    work.enqueue(incident["incident_id"], available_at=NOW)
+    claim = work.claim_next(worker_id="scope-test", now=NOW, lease_duration=timedelta(seconds=30), max_attempts=3)
+    return incidents, work, claim
 
 
 class StaticProvider:
@@ -295,11 +305,13 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         )
 
     def test_kubernetes_incident_scope_adds_only_root_derived_prefixes(self) -> None:
+        incidents, work, claim = claimed_collection_fixture()
         service = ProfileAwareIncidentCollectionService(
-            IncidentLookupOnlyRepository(),
+            incidents,
             (CollectorSpec("kubernetes", KubernetesStaticProvider()),),
             object(),
             krca_config(),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         scope = ResourceScope(
             namespace="online-boutique",
@@ -314,11 +326,16 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             )
 
             service.collect_claimed_incident(
-                "inc-worker-rooted-scope-0001",
+                claim,
+                work_repository=work,
                 scope=scope,
                 observed_at=NOW,
             )
 
+        forwarded = service_factory.return_value.collect_claimed_incident.call_args
+        self.assertIs(forwarded.args[0], claim)
+        self.assertIs(forwarded.kwargs["work_repository"], work)
+        self.assertEqual(service_factory.call_args.kwargs["clock"](), NOW + timedelta(seconds=1))
         orchestrator = service_factory.call_args.args[1]
         rooted_scope = orchestrator._specs[0].request_scope
         self.assertEqual(rooted_scope.resource_names, ("frontend",))
@@ -327,11 +344,13 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(rooted_scope.max_items, 32)
 
     def test_workload_metric_scope_adds_only_root_derived_prefixes(self) -> None:
+        incidents, work, claim = claimed_collection_fixture()
         service = ProfileAwareIncidentCollectionService(
-            IncidentLookupOnlyRepository(),
+            incidents,
             (CollectorSpec("prometheus-workload", StaticProvider()),),
             object(),
             krca_config(),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         scope = ResourceScope(
             namespace="online-boutique",
@@ -346,11 +365,16 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             )
 
             service.collect_claimed_incident(
-                "inc-worker-workload-scope-0001",
+                claim,
+                work_repository=work,
                 scope=scope,
                 observed_at=NOW,
             )
 
+        forwarded = service_factory.return_value.collect_claimed_incident.call_args
+        self.assertIs(forwarded.args[0], claim)
+        self.assertIs(forwarded.kwargs["work_repository"], work)
+        self.assertEqual(service_factory.call_args.kwargs["clock"](), NOW + timedelta(seconds=1))
         orchestrator = service_factory.call_args.args[1]
         rooted_scope = orchestrator._specs[0].request_scope
         self.assertEqual(rooted_scope.resource_names, ("frontend",))
@@ -359,11 +383,13 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(rooted_scope.max_items, 32)
 
     def test_kernel_oom_scope_adds_only_root_derived_prefixes(self) -> None:
+        incidents, work, claim = claimed_collection_fixture()
         service = ProfileAwareIncidentCollectionService(
-            IncidentLookupOnlyRepository(),
+            incidents,
             (CollectorSpec("loki-kernel-oom", StaticProvider()),),
             object(),
             krca_config(),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         scope = ResourceScope(
             namespace="online-boutique",
@@ -378,11 +404,16 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             )
 
             service.collect_claimed_incident(
-                "inc-worker-kernel-oom-scope-0001",
+                claim,
+                work_repository=work,
                 scope=scope,
                 observed_at=NOW,
             )
 
+        forwarded = service_factory.return_value.collect_claimed_incident.call_args
+        self.assertIs(forwarded.args[0], claim)
+        self.assertIs(forwarded.kwargs["work_repository"], work)
+        self.assertEqual(service_factory.call_args.kwargs["clock"](), NOW + timedelta(seconds=1))
         orchestrator = service_factory.call_args.args[1]
         rooted_scope = orchestrator._specs[0].request_scope
         self.assertEqual(rooted_scope.resource_names, ("frontend",))
@@ -391,11 +422,13 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(rooted_scope.max_items, 32)
 
     def test_hubble_scope_adds_only_root_derived_prefixes(self) -> None:
+        incidents, work, claim = claimed_collection_fixture()
         service = ProfileAwareIncidentCollectionService(
-            IncidentLookupOnlyRepository(),
+            incidents,
             (CollectorSpec("hubble", StaticProvider()),),
             object(),
             krca_config(),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         scope = ResourceScope(
             namespace="online-boutique",
@@ -410,11 +443,16 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             )
 
             service.collect_claimed_incident(
-                "inc-worker-hubble-scope-0001",
+                claim,
+                work_repository=work,
                 scope=scope,
                 observed_at=NOW,
             )
 
+        forwarded = service_factory.return_value.collect_claimed_incident.call_args
+        self.assertIs(forwarded.args[0], claim)
+        self.assertIs(forwarded.kwargs["work_repository"], work)
+        self.assertEqual(service_factory.call_args.kwargs["clock"](), NOW + timedelta(seconds=1))
         orchestrator = service_factory.call_args.args[1]
         rooted_scope = orchestrator._specs[0].request_scope
         self.assertEqual(rooted_scope.resource_names, ("frontend",))
@@ -434,6 +472,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             CollectorOrchestrator(
                 [CollectorSpec("prometheus", StaticProvider())]
             ),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         worker = IncidentWorker(
             config(),
@@ -450,6 +489,38 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(incidents.get(incident["incident_id"])["status"], "LOCALIZING")
         self.assertEqual(len(incidents.list_evidence(incident["incident_id"])), 1)
 
+    def test_stale_worker_cannot_commit_or_fail_replacement_work(self) -> None:
+        incidents = InMemoryIncidentRepository()
+        work = InMemoryIncidentWorkRepository(incidents)
+        incident = AlertmanagerIngestionService(incidents).ingest(payload(), received_at=NOW)[0].incident
+        incident_id = incident["incident_id"]
+        work.enqueue(incident_id, available_at=NOW)
+        clock_value = [NOW]
+        snapshots = []
+        def snapshot():
+            return (incidents.get(incident_id), incidents.list_evidence(incident_id),
+                    incidents.list_audit_events(incident_id), copy.deepcopy(work._items[incident_id]))
+        class PausingProvider(StaticProvider):
+            def collect(provider, request):
+                work.claim_next(worker_id="replacement-worker", now=NOW + timedelta(seconds=121),
+                                lease_duration=timedelta(seconds=120), max_attempts=3)
+                snapshots.append(snapshot())
+                clock_value[0] = NOW + timedelta(seconds=122)
+                return super().collect(request)
+        clock = lambda: clock_value[0]
+        collection = IncidentCollectionService(
+            incidents, CollectorOrchestrator([CollectorSpec("prometheus", PausingProvider())]), clock=clock,
+        )
+        worker = IncidentWorker(config(), incidents, work, collection, clock=clock)
+
+        result = worker.process_one()
+
+        self.assertEqual(result["status"], "FAILURE_PERSISTENCE_FAILED")
+        self.assertEqual(result["error_code"], "INVALIDTRANSITION")
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshot(), snapshots[0])
+        self.assertEqual(work._items[incident_id]["worker_id"], "replacement-worker")
+
     def test_worker_finishes_localization_before_claiming_more_collection(self) -> None:
         incidents = InMemoryIncidentRepository()
         collection_work = InMemoryIncidentWorkRepository(incidents)
@@ -463,6 +534,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             CollectorOrchestrator(
                 [CollectorSpec("kubernetes", KubernetesStaticProvider())]
             ),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         graph = InMemoryStateGraphRepository()
         localization = ResolvedIncidentLocalizationService(
@@ -524,6 +596,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
                     ),
                 ]
             ),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         graph = InMemoryStateGraphRepository()
         resolver = ServiceToEntityResolver(graph)
@@ -578,6 +651,7 @@ class IncidentWorkerRuntimeTests(unittest.TestCase):
             CollectorOrchestrator(
                 [CollectorSpec("prometheus", StaticProvider())]
             ),
+            clock=lambda: NOW + timedelta(seconds=1),
         )
         worker = IncidentWorker(
             config(),

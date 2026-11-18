@@ -45,6 +45,7 @@ from .deterministic import (
 from .errors import ContractViolation, EvidenceGateViolation, InvalidTransition
 from .evidence import format_time
 from .knowledge import BoundedKnowledgeRetriever, KnowledgeRetrievalRun
+from .proof_binding import bound_root_proof
 from .reporting import render_markdown
 from .repository import IncidentRepository, context_evidence_ids
 from .root_cause_taxonomy import ROOT_CAUSE_IDS, RootCauseId
@@ -1005,14 +1006,41 @@ class EvidenceGate:
                     "GATE_ROOT_LEADING_MISMATCH",
                     "Agent root cause taxonomy ID must match the leading hypothesis"
                 )
+            if candidate["hypotheses"][0]["entity_id"] != root_cause["entity_id"]:
+                raise EvidenceGateViolation(
+                    "GATE_ROOT_LEADING_MISMATCH",
+                    "Agent root cause Entity must match the leading hypothesis",
+                )
             supporting = set(root_cause["supporting_evidence_ids"])
             supporting_items = [
                 item for item in evidence if item["evidence_id"] in supporting
             ]
-            proof = self._proof_engine.evaluate_rule(
-                root_cause["cause_id"], supporting_items
+            root_entity = next(
+                entity for entity in investigation_view.package["entity_catalog"]
+                if entity["entity_id"] == root_cause["entity_id"]
             )
-            if proof.status != "PROVEN":
+            bound_proof = bound_root_proof(
+                cause_id=root_cause["cause_id"], context=context,
+                entity=root_entity, evidence=supporting_items,
+                proof_engine=self._proof_engine,
+            )
+            if bound_proof is None:
+                # Preserve the existing insufficient-proof diagnostic, but a
+                # global proof can only classify rejection, never authorize it.
+                proof = self._proof_engine.evaluate_rule(
+                    root_cause["cause_id"], supporting_items
+                )
+                if proof.status == "PROVEN":
+                    if root_cause["cause_id"] == NETWORK_POLICY_CAUSE:
+                        raise EvidenceGateViolation(
+                            "GATE_PROOF_ENTITY_MISMATCH",
+                            "Network denial proof must bind to its caller Service",
+                        )
+                    raise EvidenceGateViolation(
+                        "GATE_PROOF_INSUFFICIENT",
+                        "Accepted Agent root cause Evidence does not prove the "
+                        "claimed Entity",
+                    )
                 missing = "; ".join(proof.missing_requirements) or (
                     "the cited Evidence does not contain the registered proof pair"
                 )
@@ -1021,17 +1049,13 @@ class EvidenceGate:
                     "Accepted Agent root cause does not satisfy its registered "
                     f"Evidence policy: {missing}"
                 )
-            if root_cause["cause_id"] == NETWORK_POLICY_CAUSE:
-                caller = next(item for item in supporting_items if item["source"] == "hubble"
-                              and item["evidence_id"] in proof.supporting_evidence_ids)
-                entity = next(item for item in investigation_view.package["entity_catalog"]
-                              if item["entity_id"] == root_cause["entity_id"])
-                if not _subject_matches_source_entity(caller["subject"], entity):
-                    raise EvidenceGateViolation("GATE_PROOF_ENTITY_MISMATCH",
-                        "Network denial proof must bind to its caller Service")
-                if candidate["decision"] != "PARTIAL":
-                    raise EvidenceGateViolation("GATE_NETWORK_COVERAGE_UNPROVEN",
-                        "Network dependency proof requires PARTIAL with unknown retention")
+            # Caller-Service binding for this cause is enforced by bound_root_proof.
+            if (root_cause["cause_id"] == NETWORK_POLICY_CAUSE
+                    and candidate["decision"] != "PARTIAL"):
+                raise EvidenceGateViolation(
+                    "GATE_NETWORK_COVERAGE_UNPROVEN",
+                    "Network dependency proof requires PARTIAL with unknown retention",
+                )
         if candidate["decision"] == "CONCLUSIVE":
             if root_cause is None:
                 raise EvidenceGateViolation(
