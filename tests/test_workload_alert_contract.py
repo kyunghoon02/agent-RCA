@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import yaml
 
 from incident_platform.collectors import CollectorSpec
 from incident_platform.evidence import ResourceScope
+from incident_platform.incident_work import InMemoryIncidentWorkRepository
 from incident_platform.incidents import AlertmanagerIngestionService
 from incident_platform.krca_runtime import load_krca_runtime_config
 from incident_platform.repository import InMemoryIncidentRepository
@@ -51,9 +52,14 @@ class WorkloadAlertContractTests(unittest.TestCase):
             object(),
             config,
         )
+        now = datetime(2026, 9, 5, 1, 0, 2, tzinfo=timezone.utc)
+        work = InMemoryIncidentWorkRepository(repository)
+        work.enqueue(incident["incident_id"], available_at=now)
+        claim = work.claim_next(worker_id="workload-alert-test", now=now, lease_duration=timedelta(seconds=30), max_attempts=3)
         with patch("tools.run_incident_worker.IncidentCollectionService") as factory:
             collection.collect_claimed_incident(
-                incident["incident_id"],
+                claim,
+                work_repository=work,
                 scope=ResourceScope(
                     namespace="online-boutique",
                     resource_names=("checkoutservice",),

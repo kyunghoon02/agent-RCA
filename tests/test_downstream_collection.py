@@ -277,6 +277,7 @@ class DownstreamCollectionTests(unittest.TestCase):
             ),
             None,
             krca_config(),
+            clock=lambda: self.now,
         )
         self.worker = IncidentWorker(
             config(),

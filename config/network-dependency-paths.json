@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0.0",
+  "paths": [
+    {
+      "path_id": "frontend-catalog-get",
+      "source_service": "frontend",
+      "destination_service": "productcatalogservice",
+      "destination_port": 3550,
+      "protocol": "TCP",
+      "client_operation": "hipstershop.ProductCatalogService/GetProduct"
+    }
+  ]
+}

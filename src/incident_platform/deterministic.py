@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence, Tuple
 
 from .contracts import validate_contract
+from .network_policy import NETWORK_POLICY_CAUSE, NetworkPolicyDeniedRule
 
 
 OOM_RESTART_DELTA_MINIMUM = 1.0
@@ -14,6 +15,11 @@ OOM_EVIDENCE_GATE_POLICY = "oom-signature-union-restart-v3"
 
 
 ROOT_CAUSE_EVIDENCE_REQUIREMENTS: Mapping[str, Tuple[str, ...]] = {
+    NETWORK_POLICY_CAUSE: (
+        "Trusted Hubble policy denial for an exact registered caller/destination/port/protocol path",
+        "Overlapping Prometheus CLIENT RPC errors for the same caller operation and directed path",
+        "Retained Hubble observations do not identify a unique policy object or individual HTTP request; report PARTIAL",
+    ),
     "kubernetes.container-oomkilled": (
         "An exact Pod-scoped OOMKilled termination or kernel memcg OOM signature",
         "Prometheus restart_count_delta at or above 1 for the same Pod UID",
@@ -301,7 +307,7 @@ def registered_rule_evaluations(
 
     return tuple(
         rule.evaluate(evidence)
-        for rule in (OOMKilledRule(), ImagePullRule(), MissingConfigMapRule())
+        for rule in (OOMKilledRule(), ImagePullRule(), MissingConfigMapRule(), NetworkPolicyDeniedRule())
     )
 
 
@@ -312,7 +318,7 @@ class DeterministicRCAEngine:
         self._rules = tuple(
             rules
             if rules is not None
-            else (OOMKilledRule(), ImagePullRule(), MissingConfigMapRule())
+            else (OOMKilledRule(), ImagePullRule(), MissingConfigMapRule(), NetworkPolicyDeniedRule())
         )
         rule_ids = [rule.rule_id for rule in self._rules]
         if len(rule_ids) != len(set(rule_ids)):

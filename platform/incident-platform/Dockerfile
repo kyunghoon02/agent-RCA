@@ -19,6 +19,7 @@ COPY contracts /app/contracts
 COPY db /app/db
 COPY knowledge /app/knowledge
 COPY config/online-boutique-krca.yaml /app/config/online-boutique-krca.yaml
+COPY config/network-dependency-paths.json /app/config/network-dependency-paths.json
 COPY tools/run_stategraph_reconciler.py /app/tools/run_stategraph_reconciler.py
 COPY tools/run_incident_receiver.py /app/tools/run_incident_receiver.py
 COPY tools/run_incident_worker.py /app/tools/run_incident_worker.py

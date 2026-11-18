@@ -45,9 +45,11 @@ from .deterministic import (
 from .errors import ContractViolation, EvidenceGateViolation, InvalidTransition
 from .evidence import format_time
 from .knowledge import BoundedKnowledgeRetriever, KnowledgeRetrievalRun
+from .proof_binding import bound_root_proof
 from .reporting import render_markdown
 from .repository import IncidentRepository, context_evidence_ids
 from .root_cause_taxonomy import ROOT_CAUSE_IDS, RootCauseId
+from .network_policy import NETWORK_POLICY_CAUSE
 from .stategraph import stable_graph_id
 
 
@@ -139,7 +141,7 @@ class AgentRCADraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.1.0"]
+    schema_version: Literal["1.2.0"]
     incident_id: AgentIncidentId
     context_id: AgentContextId
     decision: Literal["CONCLUSIVE", "INCONCLUSIVE", "PARTIAL"] = Field(
@@ -815,6 +817,11 @@ verification_conditions must name the observable Evidence needed to confirm or
 reject the leading hypotheses. Keep accepted remediation advisory. If proof is
 incomplete, return INCONCLUSIVE or PARTIAL. Never claim to have changed any
 system; read_only must be true.
+Use schema_version 1.2.0 for new drafts. For network.policy-denied-dependency,
+use PARTIAL with the caller Service as entity: Hubble retention is unknown,
+RPC error intervals are aggregate observations, and a unique enforcing policy
+object or individual frontend HTTP request has not been identified. Never
+claim that every frontend error was caused by the observed policy denial.
 """.strip()
 
 
@@ -999,14 +1006,41 @@ class EvidenceGate:
                     "GATE_ROOT_LEADING_MISMATCH",
                     "Agent root cause taxonomy ID must match the leading hypothesis"
                 )
+            if candidate["hypotheses"][0]["entity_id"] != root_cause["entity_id"]:
+                raise EvidenceGateViolation(
+                    "GATE_ROOT_LEADING_MISMATCH",
+                    "Agent root cause Entity must match the leading hypothesis",
+                )
             supporting = set(root_cause["supporting_evidence_ids"])
             supporting_items = [
                 item for item in evidence if item["evidence_id"] in supporting
             ]
-            proof = self._proof_engine.evaluate_rule(
-                root_cause["cause_id"], supporting_items
+            root_entity = next(
+                entity for entity in investigation_view.package["entity_catalog"]
+                if entity["entity_id"] == root_cause["entity_id"]
             )
-            if proof.status != "PROVEN":
+            bound_proof = bound_root_proof(
+                cause_id=root_cause["cause_id"], context=context,
+                entity=root_entity, evidence=supporting_items,
+                proof_engine=self._proof_engine,
+            )
+            if bound_proof is None:
+                # Preserve the existing insufficient-proof diagnostic, but a
+                # global proof can only classify rejection, never authorize it.
+                proof = self._proof_engine.evaluate_rule(
+                    root_cause["cause_id"], supporting_items
+                )
+                if proof.status == "PROVEN":
+                    if root_cause["cause_id"] == NETWORK_POLICY_CAUSE:
+                        raise EvidenceGateViolation(
+                            "GATE_PROOF_ENTITY_MISMATCH",
+                            "Network denial proof must bind to its caller Service",
+                        )
+                    raise EvidenceGateViolation(
+                        "GATE_PROOF_INSUFFICIENT",
+                        "Accepted Agent root cause Evidence does not prove the "
+                        "claimed Entity",
+                    )
                 missing = "; ".join(proof.missing_requirements) or (
                     "the cited Evidence does not contain the registered proof pair"
                 )
@@ -1014,6 +1048,13 @@ class EvidenceGate:
                     "GATE_PROOF_INSUFFICIENT",
                     "Accepted Agent root cause does not satisfy its registered "
                     f"Evidence policy: {missing}"
+                )
+            # Caller-Service binding for this cause is enforced by bound_root_proof.
+            if (root_cause["cause_id"] == NETWORK_POLICY_CAUSE
+                    and candidate["decision"] != "PARTIAL"):
+                raise EvidenceGateViolation(
+                    "GATE_NETWORK_COVERAGE_UNPROVEN",
+                    "Network dependency proof requires PARTIAL with unknown retention",
                 )
         if candidate["decision"] == "CONCLUSIVE":
             if root_cause is None:
@@ -1497,6 +1538,11 @@ class AgentRCAService:
             for item in draft["hypotheses"]
         ]
         limitations = list(draft["limitations"])
+        if root is not None and root["cause_id"] == NETWORK_POLICY_CAUSE:
+            limitations.append(
+                "Observed policy denial and aggregate caller RPC errors identify an affected dependency; "
+                "Hubble retention, individual HTTP-request causation and enforcing policy identity remain unproven."
+            )
         if context["missing_evidence"]:
             limitations.append("Frozen Context records missing Evidence.")
         if context["collector_failures"]:
@@ -1512,7 +1558,7 @@ class AgentRCAService:
             "cited_evidence_ids": audit["cited_evidence_ids"],
         }
         report = {
-            "schema_version": "1.1.0",
+            "schema_version": draft["schema_version"],
             "report_id": stable_graph_id("rpt", identity),
             "incident_id": context["incident_id"],
             "context_id": context["context_id"],

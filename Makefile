@@ -19,7 +19,7 @@ CHECKOUT_MISSING_CONFIGMAP_SCENARIO_PATH ?= evaluation/scenarios/checkoutservice
 NO_FAULT_CONTROL_SCENARIO_PATH ?= evaluation/scenarios/frontend-no-fault-normal.yaml
 NATIVE_ALERT_NAME ?= OnlineBoutiqueCheckoutHighFailureRate
 
-.PHONY: bootstrap-dev validate-docs validate-phase0 test-core validate-core validate-alert-rules deploy-workload-alerts smoke-agent-rca \
+.PHONY: bootstrap-dev validate-docs validate-phase0 test-core validate-core test-network-policy-rca validate-alert-rules deploy-workload-alerts smoke-agent-rca \
 	smoke-live-krca smoke-live-stategraph \
 	sync-knowledge-vectors evaluate-knowledge-retrieval evaluate-rca gcp-readiness \
 	render-online-boutique build-online-boutique-otel-images terraform-fmt terraform-validate \
@@ -55,6 +55,9 @@ test-core:
 	PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
 validate-core: validate-phase0 test-core
+
+test-network-policy-rca:
+	PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_network_policy_rca.py' -v
 
 validate-alert-rules:
 	.venv/bin/python tools/test_alert_rules.py

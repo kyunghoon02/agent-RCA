@@ -3,9 +3,13 @@ from __future__ import annotations
 import os
 import unittest
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
+from incident_platform.deterministic import DeterministicDecision
+from incident_platform.reporting import FastPathReportBuilder
 from incident_platform.evidence import (
     EvidenceBuilder,
     EvidenceDraft,
@@ -17,6 +21,7 @@ from incident_platform.postgresql import (
     PostgreSQLIncidentAnalysisWorkRepository,
     PostgreSQLIncidentLocalizationWorkRepository,
     PostgreSQLIncidentRepository,
+    PostgreSQLIncidentWorkRepository,
     PostgreSQLIncidentWorkQueueTelemetryRepository,
     PostgreSQLStateGraphObservationRepository,
     apply_migrations,
@@ -32,6 +37,7 @@ from incident_platform.stategraph_observations import (
 from incident_platform.viewer import IncidentViewerQueryService
 
 from contract_suites import FIXED_TIME, IncidentRepositoryContract, contract_request
+from tests.test_incident_work import collection_result
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +55,7 @@ ANALYSIS_WORK_MIGRATION = (
 )
 
 
-def contract_incident() -> dict:
+def contract_incident(fingerprint="postgresql-repository-contract-01") -> dict:
     payload = {
         "alerts": [
             {
@@ -63,7 +69,7 @@ def contract_incident() -> dict:
                 "annotations": {},
                 "startsAt": "2026-08-12T01:00:00Z",
                 "endsAt": "0001-01-01T00:00:00Z",
-                "fingerprint": "postgresql-repository-contract-01",
+                "fingerprint": fingerprint,
             }
         ]
     }
@@ -697,6 +703,264 @@ class PostgreSQLLiveContractTests(unittest.TestCase):
         self.assertEqual(
             repository.get_localization_collection(incident["incident_id"]), checkpoint
         )
+
+    def _collection_fixture(self):
+        repository = PostgreSQLIncidentRepository(self.connection_factory)
+        work = PostgreSQLIncidentWorkRepository(self.connection_factory)
+        incident = contract_incident(f"collection-commit-{uuid.uuid4().hex}")
+        repository.create_or_get_by_deduplication_key(incident, occurred_at=FIXED_TIME)
+        claim = work.claim_next(worker_id="collection-a", now=FIXED_TIME,
+                               lease_duration=timedelta(seconds=30), max_attempts=3)
+        self.assertEqual(claim.incident_id, incident["incident_id"])
+        statuses, evidence = collection_result(claim.incident_id, now=FIXED_TIME, name="checkoutservice")
+        # Successful collection creates real localization work through the
+        # trigger. Retire only this fixture's Incident after assertions so a
+        # later test's untargeted localization claim cannot consume its row.
+        def retire_fixture():
+            current = repository.get(claim.incident_id)
+            if current["status"] == "LOCALIZING":
+                repository.transition(claim.incident_id, expected_status="LOCALIZING",
+                                      next_status="FAILED", occurred_at=FIXED_TIME + timedelta(seconds=90))
+        self.addCleanup(retire_fixture)
+        return repository, work, claim, statuses, evidence
+
+    def _collection_snapshot(self, repository, incident_id):
+        with self.connection_factory() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT state, claim_token, worker_id, lease_expires_at, attempt_count, completed_at, last_error_code FROM incident_work_items WHERE incident_id = %s", (incident_id,))
+                work_row = cursor.fetchone()
+                cursor.execute("SELECT count(*) FROM incident_localization_work_items WHERE incident_id = %s", (incident_id,))
+                localization_count = cursor.fetchone()[0]
+        return (repository.get(incident_id), repository.list_evidence(incident_id),
+                repository.query_audit_events(incident_id, limit=100), work_row, localization_count)
+
+    def test_collection_commit_rejects_replaced_claim_without_business_writes(self) -> None:
+        repository, work, stale, statuses, evidence = self._collection_fixture()
+        current = work.claim_next(worker_id="collection-b", now=FIXED_TIME + timedelta(seconds=31),
+                                  lease_duration=timedelta(seconds=30), max_attempts=3)
+        self.assertEqual(current.incident_id, stale.incident_id)
+        before = self._collection_snapshot(repository, current.incident_id)
+        for rejected in (stale, replace(current, worker_id="wrong-worker"), replace(current, claim_token="claim-wrong-token")):
+            with self.assertRaisesRegex(InvalidTransition, "stale"):
+                work.commit_collection(rejected, collector_statuses=statuses, evidence_items=evidence,
+                                       outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=32))
+            self.assertEqual(self._collection_snapshot(repository, current.incident_id), before)
+        self.assertEqual(before[3][1:3], (current.claim_token, "collection-b"))
+        work.commit_collection(current, collector_statuses=statuses, evidence_items=evidence,
+                               outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=32))
+        self.assertEqual(repository.list_evidence(current.incident_id), evidence)
+        self.assertEqual(repository.get(current.incident_id)["status"], "LOCALIZING")
+        self.assertEqual(self._collection_snapshot(repository, current.incident_id)[4], 1)
+        work.complete(current, now=FIXED_TIME + timedelta(seconds=33), outcome="SUCCEEDED")
+
+    def test_collection_commit_rejects_expired_unreclaimed_lease(self) -> None:
+        repository, work, claim, statuses, evidence = self._collection_fixture()
+        before = self._collection_snapshot(repository, claim.incident_id)
+        with self.assertRaisesRegex(InvalidTransition, "expired"):
+            work.commit_collection(claim, collector_statuses=statuses, evidence_items=evidence,
+                                   outcome="SUCCEEDED", now=claim.lease_expires_at)
+        self.assertEqual(self._collection_snapshot(repository, claim.incident_id), before)
+        work.fail(claim, now=FIXED_TIME + timedelta(seconds=31), error_code="TEST_CLEANUP")
+
+    def test_collection_commit_honors_renewal_of_persisted_lease(self) -> None:
+        repository, work, claim, statuses, evidence = self._collection_fixture()
+        renewed = work.renew(claim, now=FIXED_TIME + timedelta(seconds=20), lease_duration=timedelta(seconds=30))
+        self.assertGreater(renewed.lease_expires_at, claim.lease_expires_at)
+        work.commit_collection(claim, collector_statuses=statuses, evidence_items=evidence,
+                               outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=31))
+        self.assertEqual(repository.list_evidence(claim.incident_id), evidence)
+        self.assertEqual(repository.get(claim.incident_id)["status"], "LOCALIZING")
+        work.complete(claim, now=FIXED_TIME + timedelta(seconds=32), outcome="SUCCEEDED")
+
+    def test_collection_commit_partial_and_failed_outcomes_preserve_results(self) -> None:
+        for outcome in ("PARTIAL", "FAILED"):
+            with self.subTest(outcome=outcome):
+                repository, work, claim, statuses, evidence = self._collection_fixture()
+                statuses[0].update(status=outcome, error="bounded fixture failure")
+                work.commit_collection(claim, collector_statuses=statuses, evidence_items=evidence,
+                                       outcome=outcome, now=FIXED_TIME + timedelta(seconds=1))
+                expected = "FAILED" if outcome == "FAILED" else "LOCALIZING"
+                self.assertEqual(repository.get(claim.incident_id)["status"], expected)
+                self.assertEqual(repository.get(claim.incident_id)["collector_statuses"], statuses)
+                self.assertEqual(repository.list_evidence(claim.incident_id), evidence)
+                snapshot = self._collection_snapshot(repository, claim.incident_id)
+                self.assertEqual(snapshot[4], 0 if outcome == "FAILED" else 1)
+                completed = [event for event in snapshot[2] if event.event_type == "COLLECTION_COMPLETED"]
+                self.assertEqual(len(completed), 1)
+                self.assertEqual(completed[0].details, {"collector_statuses": {"prometheus": outcome}})
+                work.complete(claim, now=FIXED_TIME + timedelta(seconds=2), outcome=outcome)
+
+    def test_collection_commit_invalid_batch_rolls_back_every_boundary(self) -> None:
+        repository, work, claim, statuses, evidence = self._collection_fixture()
+        before = self._collection_snapshot(repository, claim.incident_id)
+        invalid = {**evidence[0], "schema_version": "invalid-fixture-marker"}
+        foreign = collection_result("inc-other-collection-test", now=FIXED_TIME)[1][0]
+        for status_batch, evidence_batch, outcome, exception in (
+            (statuses, [*evidence, invalid], "SUCCEEDED", ContractViolation),
+            (statuses, [*evidence, foreign], "SUCCEEDED", InvalidTransition),
+            ([*statuses, *statuses], evidence, "SUCCEEDED", InvalidTransition),
+            ([{**statuses[0], "status": "invalid"}], evidence, "SUCCEEDED", ContractViolation),
+            (statuses, evidence, "unknown", ValueError),
+        ):
+            with self.assertRaises(exception) as raised:
+                work.commit_collection(claim, collector_statuses=status_batch, evidence_items=evidence_batch,
+                                       outcome=outcome, now=FIXED_TIME + timedelta(seconds=1))
+            self.assertNotIn("invalid-fixture-marker", str(raised.exception))
+            self.assertEqual(self._collection_snapshot(repository, claim.incident_id), before)
+        work.fail(claim, now=FIXED_TIME + timedelta(seconds=2), error_code="TEST_CLEANUP")
+
+    def test_collection_commit_collision_rolls_back_inserted_prefix(self) -> None:
+        for persisted_collision in (False, True):
+            with self.subTest(persisted=persisted_collision):
+                repository, work, claim, statuses, evidence = self._collection_fixture()
+                other = collection_result(claim.incident_id, now=FIXED_TIME, name="checkoutservice", value=2)[1][0]
+                collision = {**other, "evidence_id": evidence[0]["evidence_id"]}
+                if persisted_collision:
+                    repository.store_evidence(claim.incident_id, evidence)
+                    candidates = [other, collision]
+                else:
+                    candidates = [*evidence, collision]
+                before = self._collection_snapshot(repository, claim.incident_id)
+                with self.assertRaisesRegex(InvalidTransition, "collision"):
+                    work.commit_collection(claim, collector_statuses=statuses, evidence_items=candidates,
+                                           outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=1))
+                self.assertEqual(self._collection_snapshot(repository, claim.incident_id), before)
+                work.fail(claim, now=FIXED_TIME + timedelta(seconds=2), error_code="TEST_CLEANUP")
+
+    def test_collection_commit_failure_after_trigger_rolls_back_every_write(self) -> None:
+        repository, work, claim, statuses, evidence = self._collection_fixture()
+        before = self._collection_snapshot(repository, claim.incident_id)
+        append_audit = PostgreSQLIncidentRepository._append_audit_event
+        observed_pending_writes = []
+
+        def fail_after_audit(cursor, incident_id, event_type, occurred_at, details):
+            append_audit(cursor, incident_id, event_type, occurred_at, details)
+            if event_type == "COLLECTION_COMPLETED":
+                cursor.execute("SELECT status FROM incidents WHERE incident_id = %s", (incident_id,))
+                self.assertEqual(cursor.fetchone()[0], "LOCALIZING")
+                cursor.execute("SELECT count(*) FROM incident_localization_work_items WHERE incident_id = %s", (incident_id,))
+                self.assertEqual(cursor.fetchone()[0], 1)
+                observed_pending_writes.append(True)
+                raise RuntimeError("injected collection commit failure")
+
+        with patch.object(PostgreSQLIncidentRepository, "_append_audit_event", side_effect=fail_after_audit):
+            with self.assertRaisesRegex(RuntimeError, "injected collection commit failure"):
+                work.commit_collection(claim, collector_statuses=statuses, evidence_items=evidence,
+                                       outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=1))
+        self.assertEqual(observed_pending_writes, [True])
+        self.assertEqual(self._collection_snapshot(repository, claim.incident_id), before)
+        work.commit_collection(claim, collector_statuses=statuses, evidence_items=evidence,
+                               outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=2))
+        self.assertEqual(repository.list_evidence(claim.incident_id), evidence)
+        work.complete(claim, now=FIXED_TIME + timedelta(seconds=3), outcome="SUCCEEDED")
+
+    def test_collection_commit_before_ack_is_recovered_without_duplicate_enqueue(self) -> None:
+        repository, work, claim, statuses, evidence = self._collection_fixture()
+        work.commit_collection(claim, collector_statuses=statuses, evidence_items=evidence,
+                               outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=1))
+        before = self._collection_snapshot(repository, claim.incident_id)
+        self.assertEqual(before[3][0], "RUNNING")
+        self.assertEqual(before[4], 1)
+        self.assertEqual(work.reap_exhausted(now=FIXED_TIME + timedelta(seconds=31), max_attempts=3), 1)
+        after = self._collection_snapshot(repository, claim.incident_id)
+        self.assertEqual(after[:2], before[:2])
+        self.assertEqual(after[3][0], "SUCCEEDED")
+        self.assertIsNone(after[3][3])
+        self.assertIsNone(after[3][6])
+        self.assertEqual(after[4], 1)
+        self.assertEqual([event for event in after[2] if event.event_type == "COLLECTION_COMPLETED"],
+                         [event for event in before[2] if event.event_type == "COLLECTION_COMPLETED"])
+        self.assertEqual(work.reap_exhausted(now=FIXED_TIME + timedelta(seconds=32), max_attempts=3), 0)
+        self.assertEqual(self._collection_snapshot(repository, claim.incident_id), after)
+        with self.assertRaisesRegex(InvalidTransition, "stale"):
+            work.commit_collection(claim, collector_statuses=statuses, evidence_items=evidence,
+                                   outcome="SUCCEEDED", now=FIXED_TIME + timedelta(seconds=32))
+
+    def _reported_localization_fixture(self):
+        repository = PostgreSQLIncidentRepository(self.connection_factory)
+        work = PostgreSQLIncidentLocalizationWorkRepository(self.connection_factory)
+        incident = contract_incident(f"localization-reported-{uuid.uuid4().hex}")
+        incident_id = incident["incident_id"]
+        repository.create_or_get_by_deduplication_key(incident, occurred_at=FIXED_TIME)
+        repository.transition(incident_id, expected_status="RECEIVED", next_status="COLLECTING", occurred_at=FIXED_TIME)
+        evidence = contract_evidence(incident_id)
+        repository.store_evidence(incident_id, [evidence])
+        repository.transition(incident_id, expected_status="COLLECTING", next_status="LOCALIZING", occurred_at=FIXED_TIME + timedelta(seconds=1))
+        claim = work.claim_next(
+            worker_id="localization-reported-test", now=FIXED_TIME + timedelta(seconds=2),
+            lease_duration=timedelta(seconds=30), max_attempts=3,
+        )
+        self.assertEqual(claim.incident_id, incident_id)
+        artifacts = FastPathReportBuilder().build(
+            incident=repository.get(incident_id), evidence=[evidence],
+            decision=DeterministicDecision(
+                status="ABSTAIN", root_cause_id=None, statement=None,
+                supporting_evidence_ids=(), missing_requirements=("fixture has no complete signature",),
+                evaluations=(),
+            ),
+            generated_at=FIXED_TIME + timedelta(seconds=3),
+        )
+        repository.store_context(artifacts.context)
+        repository.transition(incident_id, expected_status="LOCALIZING", next_status="ANALYZING", occurred_at=FIXED_TIME + timedelta(seconds=4))
+        analysis = repository.query_work_state(incident_id)["analysis"]
+        self.assertEqual(analysis["state"], "READY")
+        self.assertEqual(analysis["context_id"], artifacts.context["context_id"])
+        repository.store_report(artifacts.report, artifacts.markdown)
+        repository.transition(incident_id, expected_status="ANALYZING", next_status="REPORTED", occurred_at=FIXED_TIME + timedelta(seconds=5))
+        return repository, work, claim, artifacts
+
+    def _assert_localization_succeeded_without_downstream_changes(
+        self, repository, claim, artifacts, incident_before, work_before, *, completed_at, event_type, outcome,
+    ):
+        work_after = repository.query_work_state(claim.incident_id)
+        localization = work_after["localization"]
+        self.assertEqual(localization["state"], "SUCCEEDED")
+        self.assertIsNone(localization["lease_expires_at"])
+        self.assertIsNone(localization["last_error_code"])
+        self.assertEqual(localization["completed_at"], completed_at.isoformat().replace("+00:00", "Z"))
+        self.assertEqual(work_after["analysis"], work_before["analysis"])
+        self.assertEqual(work_after["collection"], work_before["collection"])
+        self.assertEqual(repository.get(claim.incident_id), incident_before)
+        self.assertEqual(repository.get_context(artifacts.context["context_id"]), artifacts.context)
+        self.assertEqual(repository.query_reports(claim.incident_id, limit=10), [(artifacts.report, artifacts.markdown)])
+        events = [event for event in repository.query_audit_events(claim.incident_id, limit=100) if event.event_type == event_type]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].details, {"attempt": claim.attempt_count, "outcome": outcome})
+
+    def test_localization_complete_after_reported(self) -> None:
+        repository, work, claim, artifacts = self._reported_localization_fixture()
+        incident_before = repository.get(claim.incident_id)
+        work_before = repository.query_work_state(claim.incident_id)
+        completed_at = FIXED_TIME + timedelta(seconds=6)
+
+        work.complete(claim, now=completed_at, outcome="SUCCEEDED")
+
+        self._assert_localization_succeeded_without_downstream_changes(
+            repository, claim, artifacts, incident_before, work_before,
+            completed_at=completed_at, event_type="INCIDENT_LOCALIZATION_WORK_COMPLETED", outcome="SUCCEEDED",
+        )
+        with self.assertRaisesRegex(InvalidTransition, "stale"):
+            work.complete(claim, now=completed_at + timedelta(seconds=1), outcome="SUCCEEDED")
+
+    def test_localization_reaper_after_reported(self) -> None:
+        repository, work, claim, artifacts = self._reported_localization_fixture()
+        incident_before = repository.get(claim.incident_id)
+        work_before = repository.query_work_state(claim.incident_id)
+        self.assertEqual(work.reap_exhausted(now=FIXED_TIME + timedelta(seconds=31), max_attempts=3), 0)
+        self.assertEqual(repository.query_work_state(claim.incident_id), work_before)
+        completed_at = FIXED_TIME + timedelta(seconds=33)
+
+        self.assertEqual(work.reap_exhausted(now=completed_at, max_attempts=3), 1)
+
+        self._assert_localization_succeeded_without_downstream_changes(
+            repository, claim, artifacts, incident_before, work_before,
+            completed_at=completed_at, event_type="INCIDENT_LOCALIZATION_WORK_REAPED", outcome="RECOVERED_SUCCEEDED",
+        )
+        events_before = repository.query_audit_events(claim.incident_id, limit=100)
+        self.assertEqual(work.reap_exhausted(now=completed_at + timedelta(seconds=1), max_attempts=3), 0)
+        self.assertEqual(repository.query_audit_events(claim.incident_id, limit=100), events_before)
+        with self.assertRaisesRegex(InvalidTransition, "stale"):
+            work.complete(claim, now=completed_at + timedelta(seconds=2), outcome="SUCCEEDED")
 
     def test_viewer_search_and_filtered_pagination_execute_in_postgresql(self) -> None:
         repository = PostgreSQLIncidentRepository(self.connection_factory)

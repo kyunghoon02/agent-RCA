@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Set
 
+from .collection_commit import prepare_collection_commit
 from .contracts import validate_contract
 from .errors import InvalidTransition
 from .evidence import EvidenceWindow
@@ -321,6 +322,39 @@ class InMemoryIncidentRepository:
                         f"evidence_id collision with different content: {evidence_id}"
                     )
                 stored[evidence_id] = candidate
+
+    def _commit_collection(
+        self,
+        incident_id: str,
+        *,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        outcome: str,
+        now: datetime,
+    ) -> None:
+        """Publish a prepared result atomically while the caller holds its work lock."""
+        with self._lock:
+            incident = self._require_incident_locked(incident_id)
+            updated, candidates, details = prepare_collection_commit(
+                incident, collector_statuses=collector_statuses,
+                evidence_items=evidence_items, outcome=outcome, now=now,
+            )
+            stored = copy.deepcopy(self._evidence_by_incident[incident_id])
+            for candidate in candidates:
+                evidence_id = candidate["evidence_id"]
+                if evidence_id in stored and stored[evidence_id] != candidate:
+                    raise InvalidTransition("collection evidence_id collision")
+                stored[evidence_id] = candidate
+            events = [*self._audit_events[incident_id],
+                AuditEvent(incident_id, "COLLECTION_COMPLETED", _format_time(now), details),
+                AuditEvent(incident_id, "STATUS_TRANSITIONED", _format_time(now),
+                           {"from": "COLLECTING", "to": updated["status"]}),
+            ]
+            # Everything that can reject the result has finished. Readers hold
+            # this same lock and see either the old result or the whole commit.
+            self._evidence_by_incident[incident_id] = stored
+            self._incidents[incident_id] = updated
+            self._audit_events[incident_id] = events
 
     def list_evidence(self, incident_id: str) -> List[Dict[str, Any]]:
         with self._lock:

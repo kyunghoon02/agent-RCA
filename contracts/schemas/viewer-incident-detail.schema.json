@@ -25,7 +25,10 @@
         "type": "object", "additionalProperties": false,
         "required": ["report", "markdown"],
         "properties": {
-          "report": {"$ref": "urn:agent-rca:schema:rca-report"},
+          "report": {"oneOf": [
+            {"$ref": "urn:agent-rca:schema:rca-report"},
+            {"$ref": "urn:agent-rca:schema:rca-report-v1.2"}
+          ]},
           "markdown": {"type": "string", "minLength": 1, "maxLength": 200000}
         }
       }

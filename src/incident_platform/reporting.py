@@ -13,11 +13,16 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from .contracts import validate_contract
 from .deterministic import DeterministicDecision, RuleEvaluation
 from .errors import ContractViolation
+from .network_policy import NETWORK_POLICY_CAUSE
 
 
 _FAILED_COLLECTOR_STATUSES = frozenset({"PARTIAL", "FAILED", "TIMED_OUT"})
 
 _REMEDIATION_CATALOG = {
+    "network.policy-denied-dependency": {
+        "suggestions": ("Review policies affecting the registered dependency through the deployment source of truth; do not remove policies blindly.",),
+        "verification_conditions": ("The registered caller RPC succeeds and matching policy denials stop during a reviewed recovery window.",),
+    },
     "kubernetes.container-oomkilled": {
         "suggestions": (
             "Review the workload memory request and limit, then apply an approved "
@@ -313,7 +318,7 @@ class FastPathReportBuilder:
             }
 
         failures = context["collector_failures"]
-        if failures:
+        if failures or decision.root_cause_id == NETWORK_POLICY_CAUSE:
             status = "partial"
         elif decision.status == "PROVEN":
             status = "conclusive"
@@ -330,6 +335,8 @@ class FastPathReportBuilder:
             f"Collector {failure['collector']} was incomplete: {failure['error']}"
             for failure in failures
         )
+        if decision.root_cause_id == NETWORK_POLICY_CAUSE:
+            limitations.append("Hubble retention is unknown; aggregate RPC errors do not establish a unique policy object or individual HTTP-request cause.")
         if decision.status == "ABSTAIN":
             limitations.append(
                 "The available Evidence did not satisfy a complete deterministic rule."
@@ -347,7 +354,9 @@ class FastPathReportBuilder:
             "evidence_ids": context["evidence_ids"],
         }
         report = {
-            "schema_version": "1.1.0",
+            "schema_version": "1.2.0" if any(
+                item.get("cause_id") == NETWORK_POLICY_CAUSE for item in hypotheses
+            ) else "1.1.0",
             "report_id": _stable_id("rpt", report_identity),
             "incident_id": incident["incident_id"],
             "context_id": context["context_id"],

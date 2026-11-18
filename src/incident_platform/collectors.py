@@ -19,6 +19,7 @@ from .evidence import (
     parse_time,
     validate_provider_batch,
 )
+from .incident_work import IncidentCollectionWorkRepository, IncidentWorkClaim
 from .repository import IncidentRepository
 
 
@@ -352,23 +353,25 @@ class IncidentCollectionService:
 
     def collect_claimed_incident(
         self,
-        incident_id: str,
+        claim: IncidentWorkClaim,
         *,
+        work_repository: IncidentCollectionWorkRepository,
         scope: ResourceScope,
         observed_at: Optional[datetime] = None,
     ) -> CollectionRun:
-        """Collect an Incident already moved to COLLECTING by a fenced claim."""
-
+        """Collect outside locks, then atomically commit under the current claim."""
         now = observed_at or self._clock()
-        incident = self._validated_incident(incident_id, scope)
+        incident = self._validated_incident(claim.incident_id, scope)
         if incident["status"] != "COLLECTING":
             raise ValueError("claimed Incident must be COLLECTING")
-        return self._collect_started(
-            incident_id,
-            incident=incident,
-            scope=scope,
-            observed_at=now,
+        run = self._collect_only(
+            claim.incident_id, incident=incident, scope=scope, observed_at=now,
         )
+        work_repository.commit_collection(
+            claim, collector_statuses=run.collector_statuses,
+            evidence_items=run.evidence, outcome=run.status, now=self._clock(),
+        )
+        return run
 
     def _validated_incident(
         self,
@@ -391,6 +394,28 @@ class IncidentCollectionService:
         scope: ResourceScope,
         observed_at: datetime,
     ) -> CollectionRun:
+        run = self._collect_only(
+            incident_id, incident=incident, scope=scope, observed_at=observed_at,
+        )
+        self._repository.replace_collector_statuses(
+            incident_id, run.collector_statuses, occurred_at=self._clock(),
+        )
+        self._repository.store_evidence(incident_id, run.evidence)
+        self._repository.transition(
+            incident_id, expected_status="COLLECTING",
+            next_status="FAILED" if run.status == "FAILED" else "LOCALIZING",
+            occurred_at=self._clock(),
+        )
+        return run
+
+    def _collect_only(
+        self,
+        incident_id: str,
+        *,
+        incident: Dict[str, Any],
+        scope: ResourceScope,
+        observed_at: datetime,
+    ) -> CollectionRun:
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
         end = incident["window"]["incident_end"] or _format_time(observed_at)
@@ -402,19 +427,5 @@ class IncidentCollectionService:
             ),
             scope=scope,
             observed_at=observed_at,
-        )
-        self._repository.replace_collector_statuses(
-            incident_id,
-            run.collector_statuses,
-            # observed_at pins the query cutoff, not when collectors finished.
-            occurred_at=self._clock(),
-        )
-        self._repository.store_evidence(incident_id, run.evidence)
-        self._repository.transition(
-            incident_id,
-            expected_status="COLLECTING",
-            next_status="FAILED" if run.status == "FAILED" else "LOCALIZING",
-            # Record the lifecycle transition after Evidence persistence.
-            occurred_at=self._clock(),
         )
         return run

@@ -26,6 +26,7 @@ from typing import (
     Tuple,
 )
 
+from .collection_commit import prepare_collection_commit
 from .contracts import validate_contract
 from .evidence import EvidenceWindow, parse_time
 from .errors import InvalidTransition
@@ -983,6 +984,47 @@ class PostgreSQLIncidentWorkRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connection_factory = connection_factory
 
+    def commit_collection(
+        self,
+        claim: IncidentWorkClaim,
+        *,
+        collector_statuses: Sequence[Mapping[str, Any]],
+        evidence_items: Sequence[Mapping[str, Any]],
+        outcome: str,
+        now: datetime,
+    ) -> None:
+        if now.tzinfo is None:
+            raise ValueError("collection completion time must be timezone-aware")
+        with _connection(self._connection_factory) as connection:
+            with connection.cursor() as cursor:
+                # Lock order matches claim/ack: initial collection work first,
+                # then Incident. Use persisted expiry so renewals are honored.
+                cursor.execute(
+                    """SELECT lease_expires_at FROM incident_work_items
+                       WHERE incident_id = %s AND state = 'RUNNING'
+                         AND claim_token = %s AND worker_id = %s FOR UPDATE""",
+                    (claim.incident_id, claim.claim_token, claim.worker_id),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise InvalidTransition("Incident work claim is stale")
+                if row[0] <= now:
+                    raise InvalidTransition("Incident collection work lease expired")
+                incident = PostgreSQLIncidentRepository._locked_incident(cursor, claim.incident_id)
+                updated, candidates, details = prepare_collection_commit(
+                    incident, collector_statuses=collector_statuses,
+                    evidence_items=evidence_items, outcome=outcome, now=now,
+                )
+                PostgreSQLIncidentRepository._store_evidence(cursor, claim.incident_id, candidates)
+                PostgreSQLIncidentRepository._update_incident(cursor, updated)
+                PostgreSQLIncidentRepository._append_audit_event(
+                    cursor, claim.incident_id, "COLLECTION_COMPLETED", now, details,
+                )
+                PostgreSQLIncidentRepository._append_audit_event(
+                    cursor, claim.incident_id, "STATUS_TRANSITIONED", now,
+                    {"from": "COLLECTING", "to": updated["status"]},
+                )
+
     def claim_next(
         self,
         *,
@@ -1496,7 +1538,7 @@ class PostgreSQLIncidentLocalizationWorkRepository:
                 incident = PostgreSQLIncidentRepository._locked_incident(
                     cursor, claim.incident_id
                 )
-                if incident["status"] != "ANALYZING":
+                if incident["status"] not in {"ANALYZING", "REPORTED"}:
                     raise InvalidTransition(
                         "localization work can complete only after Incident localization"
                     )
@@ -1569,7 +1611,7 @@ class PostgreSQLIncidentLocalizationWorkRepository:
                     WHERE work.state = 'RUNNING'
                       AND work.lease_expires_at <= %s
                       AND (
-                        incident.status IN ('ANALYZING', 'FAILED')
+                        incident.status IN ('ANALYZING', 'REPORTED', 'FAILED')
                         OR (incident.status = 'LOCALIZING'
                             AND work.attempt_count >= %s)
                       )
@@ -1582,7 +1624,7 @@ class PostgreSQLIncidentLocalizationWorkRepository:
                 rows = cursor.fetchall()
                 for incident_id, attempt_count, document in rows:
                     incident = _decode_document(document)
-                    if incident["status"] == "ANALYZING":
+                    if incident["status"] in {"ANALYZING", "REPORTED"}:
                         work_state = "SUCCEEDED"
                         error_code = None
                         outcome = "RECOVERED_SUCCEEDED"

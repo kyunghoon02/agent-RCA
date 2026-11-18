@@ -22,7 +22,8 @@ from incident_platform.collectors import (
 from incident_platform.evidence import EvidenceWindow, ResourceScope, format_time, parse_time
 from incident_platform.incident_work import (
     IncidentLocalizationWorkRepository,
-    IncidentWorkRepository,
+    IncidentCollectionWorkRepository,
+    IncidentWorkClaim,
     validate_claim_request,
 )
 from incident_platform.localization import IncidentLocalizationService
@@ -56,6 +57,7 @@ from incident_platform.projectors import (
     KRCAPIEdgeEvidenceProjector,
     KubernetesEvidenceProjector,
     LokiKernelOOMEvidenceProjector,
+    NetworkPolicyPathEvidenceProjector,
     PrometheusMetricEvidenceProjector,
     PrometheusWorkloadMetricEvidenceProjector,
 )
@@ -70,6 +72,9 @@ from incident_platform.providers.kubernetes import (
     KubernetesStateProvider,
 )
 from incident_platform.providers.loki import LokiHTTPAPI, LokiKernelOOMProvider
+from incident_platform.providers.network_policy import (
+    NetworkEvidenceCollector, NetworkPolicyPathProvider, load_network_paths,
+)
 from incident_platform.providers.prometheus import (
     PrometheusHTTPAPI,
     PrometheusMetricProvider,
@@ -130,6 +135,7 @@ class IncidentWorkerRuntimeConfig:
     postgres_database: str
     postgres_username: str
     postgres_password: str
+    network_paths_config_path: str = ""
 
     def __post_init__(self) -> None:
         validate_claim_request(
@@ -209,6 +215,7 @@ class IncidentWorkerRuntimeConfig:
             postgres_database=_required_environment("POSTGRES_DATABASE"),
             postgres_username=_required_environment("POSTGRES_USERNAME"),
             postgres_password=_required_secret_environment("POSTGRES_PASSWORD"),
+            network_paths_config_path=os.environ.get("INCIDENT_WORKER_NETWORK_PATHS_CONFIG", ""),
         )
 
 
@@ -300,8 +307,9 @@ def _prometheus_workload_query_specs() -> tuple[PrometheusQuerySpec, ...]:
 class ClaimedIncidentCollectionService(Protocol):
     def collect_claimed_incident(
         self,
-        incident_id: str,
+        claim: IncidentWorkClaim,
         *,
+        work_repository: IncidentCollectionWorkRepository,
         scope: ResourceScope,
         observed_at: Optional[datetime] = None,
     ) -> CollectionRun:
@@ -344,7 +352,10 @@ class ProfileAwareIncidentCollectionService:
         base_specs: tuple[CollectorSpec, ...],
         prometheus_client: PrometheusHTTPAPI,
         krca_config: KRCARuntimeConfig,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self._clock = clock
         self._repository = repository
         self._base_specs = base_specs
         self._prometheus_client = prometheus_client
@@ -352,12 +363,13 @@ class ProfileAwareIncidentCollectionService:
 
     def collect_claimed_incident(
         self,
-        incident_id: str,
+        claim: IncidentWorkClaim,
         *,
+        work_repository: IncidentCollectionWorkRepository,
         scope: ResourceScope,
         observed_at: Optional[datetime] = None,
     ) -> CollectionRun:
-        incident = self._repository.get(incident_id)
+        incident = self._repository.get(claim.incident_id)
         profile = _selected_krca_profile(incident, self._krca_config)
         specs = list(self._rooted_specs(scope))
         if profile is not None:
@@ -378,9 +390,11 @@ class ProfileAwareIncidentCollectionService:
         service = IncidentCollectionService(
             self._repository,
             CollectorOrchestrator(tuple(specs)),
+            clock=self._clock,
         )
         return service.collect_claimed_incident(
-            incident_id,
+            claim,
+            work_repository=work_repository,
             scope=scope,
             observed_at=observed_at,
         )
@@ -538,6 +552,12 @@ def build_collection_service(
         max_scoped_resources=8,
         max_raw_flows=500,
     )
+    if config.network_paths_config_path:
+        hubble_provider = NetworkEvidenceCollector(
+            hubble_provider,
+            NetworkPolicyPathProvider(HubbleCLIClient(config.hubble_server), prometheus_client,
+                load_network_paths(config.network_paths_config_path), cluster_id=config.cluster_id),
+        )
     return ProfileAwareIncidentCollectionService(
         incident_repository,
         (
@@ -589,7 +609,7 @@ class IncidentWorker:
         self,
         config: IncidentWorkerRuntimeConfig,
         incident_repository: IncidentRepository,
-        work_repository: IncidentWorkRepository,
+        work_repository: IncidentCollectionWorkRepository,
         collection_service: ClaimedIncidentCollectionService,
         localization_work_repository: IncidentLocalizationWorkRepository | None = None,
         localization_service: ResolvedIncidentLocalizationService | None = None,
@@ -664,7 +684,8 @@ class IncidentWorker:
                 max_items=self._config.max_evidence_items,
             )
             run = self._collection.collect_claimed_incident(
-                claim.incident_id,
+                claim,
+                work_repository=self._work,
                 scope=scope,
                 observed_at=now,
             )
@@ -958,6 +979,7 @@ def build_worker(config: IncidentWorkerRuntimeConfig) -> IncidentWorker:
             HubbleNetworkFlowEvidenceProjector(),
             KubernetesEvidenceProjector(),
             LokiKernelOOMEvidenceProjector(),
+            NetworkPolicyPathEvidenceProjector(),
             PrometheusMetricEvidenceProjector(),
             PrometheusWorkloadMetricEvidenceProjector(),
             KRCAPIEdgeEvidenceProjector(),
